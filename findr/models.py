@@ -110,7 +110,17 @@ def pull(folders, token=None):
     own = [f for f in folders if f in ("rank", "gate", "qu") and not have(f)]
     if own:
         print(f"  findr 모델 받는 중 ({', '.join(own)}) ...", flush=True)
-        snapshot_download(OWN, local_dir=paths.MODELS, allow_patterns=[f"{f}/*" for f in own], token=token)
+        cpu = gpu()[0] == "cpu"
+        pats = [p for f in own for p in ([f"{f}/*.json", f"{f}/model_int8.onnx"] if f == "rank" and cpu else [f"{f}/*"])]
+        # a CPU-only PC ranks with the int8 model (543 MB); a GPU PC never uses it
+        snapshot_download(OWN, local_dir=paths.MODELS, allow_patterns=pats, ignore_patterns=None if cpu else ["*.onnx"], token=token)
+
+
+def pull_rank_fp32(token=None):
+    """the full-precision reranker weights, when the int8 model cannot run on this PC"""
+    from huggingface_hub import snapshot_download
+    print("  재정렬 모델(전체 정밀도) 받는 중 ...", flush=True)
+    snapshot_download(OWN, local_dir=paths.MODELS, allow_patterns=["rank/*"], ignore_patterns=["*.onnx"], token=token)
     for f in folders:
         if f in PUBLIC and not have(f):
             repo, files, why = PUBLIC[f]

@@ -57,6 +57,7 @@ def cmd_setup(a):
     if not a.no_llm:
         models.pull_llama_server(dev)
     # the components must really load: a missing Windows runtime (#3) used to pass as "done"
+    _check_reranker()
     err = _check_runtime()
     if err:
         print(f"\n  준비가 끝나지 않았습니다: {err}")
@@ -76,6 +77,22 @@ def cmd_setup(a):
 
 
 FIRST_PIECES = 8   # first pass: meaning vectors for each file's opening pieces; the rest are found by words until a deep run
+
+
+def _check_reranker():
+    """on a CPU-only PC the int8 reranker must load; if it cannot (onnxruntime missing or broken), fetch the fp32 weights"""
+    if models.gpu()[0] != "cpu":
+        return ""
+    ox = paths.MODELS / "rank" / "model_int8.onnx"
+    try:
+        import onnxruntime as ort
+        ort.InferenceSession(str(ox), providers=["CPUExecutionProvider"])
+        return "int8"
+    except Exception as e:
+        print(f"  가벼운 재정렬 모델을 쓸 수 없어 전체 모델을 받습니다 ({type(e).__name__})", flush=True)
+        if not (paths.MODELS / "rank" / "model.safetensors").exists():
+            models.pull_rank_fp32()
+        return "fp32"
 
 
 def _check_runtime():
@@ -317,6 +334,9 @@ def cmd_doctor(a):
             print("    → Visual C++ 런타임 업데이트: winget install Microsoft.VCRedist.2015+.x64")
     for w in want:
         print(f"  {'✓' if models.have(w) else '✗'} 모델 {w}")
+    if dev == "cpu":
+        ox = (paths.MODELS / "rank" / "model_int8.onnx").exists()
+        print(f"  {'✓' if ox or (paths.MODELS / 'rank' / 'model.safetensors').exists() else '✗'} 재정렬: {'가벼운 8비트 (CPU용)' if ox else '전체 정밀도'}")
     print(f"  {'✓' if models.llama_server() else '✗'} llama-server (없으면 질문을 규칙으로 읽음)")
     miss = _missing_deps()
     if miss:   # #31: an update by `git pull` does not install what was added since
@@ -347,7 +367,7 @@ def cmd_doctor(a):
             ph = 0
         print(f"  ✓ 색인: 파일 {n:,}개, 의미 벡터 {v:,}개, 사진 벡터 {ph:,}개")
     else:
-        print("  ✗ 색인 없음 (findr index)")
+        print("  ○ 아직 색인 전입니다 → findr index")
     return 0
 
 

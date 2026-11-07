@@ -210,6 +210,44 @@ def _auto_device():
     return "cpu"
 
 
+_QT = [0.0]   # when the current question started (the whole-question reranker budget on a CPU)
+
+
+class _OrtRanker:
+    """the reranker as int8 ONNX on the CPU (about 2.7x faster than PyTorch fp32, 543 MB instead of 2.2 GB);
+    called like the PyTorch model, so the scoring code is the same"""
+    def __init__(self, path):
+        import onnxruntime as ort
+        import torch
+        so = ort.SessionOptions(); so.intra_op_num_threads = int(os.environ.get("OMP_NUM_THREADS") or max(1, (os.cpu_count() or 2) // 2))
+        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        self.s = ort.InferenceSession(str(path), so, providers=["CPUExecutionProvider"]); self.device = torch.device("cpu")
+
+    def eval(self):
+        return self
+
+    def __call__(self, input_ids=None, attention_mask=None, **_):
+        import torch
+        from types import SimpleNamespace
+        out = self.s.run(None, {"input_ids": input_ids.cpu().numpy().astype("int64"), "attention_mask": attention_mask.cpu().numpy().astype("int64")})[0]
+        return SimpleNamespace(logits=torch.from_numpy(out))
+
+
+def _cpu_ranker_for(d, load_fp32):
+    """int8 ONNX when it is there and onnxruntime imports (CE_ONNX=0 turns it off), else the fp32 model"""
+    ox = Path(d) / "model_int8.onnx"
+    if ox.exists() and os.environ.get("CE_ONNX", "1") != "0":
+        try:
+            m = _OrtRanker(ox)
+            print(f"FINDR_RERANKER cpu int8-onnx ({ox.stat().st_size // 2**20} MB)", flush=True)
+            return m
+        except Exception as e:
+            print(f"FINDR_RERANKER cpu fp32 (int8 model could not load: {type(e).__name__})", flush=True)
+    else:
+        print("FINDR_RERANKER cpu fp32" + ("" if ox.exists() else " (no int8 model in the model folder)"), flush=True)
+    return _cpu_ranker(load_fp32())
+
+
 def _cpu_ranker(m):
     """on a PC without a GPU the reranker can run with 8-bit weights (CE_INT8=1): several times faster on laptop CPUs"""
     if os.environ.get("CE_INT8", "0") == "1":
@@ -716,7 +754,7 @@ class Finder:
     def search(self, q, k=10, mode="base"):
         import unicodedata as _ud; q = _ud.normalize("NFC", q or "")
         self.refresh()
-        t0 = time.time(); p = parse(q); text = p["text"]
+        t0 = time.time(); p = parse(q); text = p["text"]; _QT[0] = t0
         pfut = None
         if PHOTO_URL and mode in ("xce", "fxce", "exce", "base") and self.load_photos():
             pw = EPI.action_dates(q)
@@ -1289,7 +1327,7 @@ def ce_scores(q, res, d=None, nosumm=None):
         tok = AutoTokenizer.from_pretrained(d)
         m = (AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float16).to(DEVICE) if DEVICE == "cuda"
              else AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float32).to(DEVICE) if DEVICE == "mps"
-             else _cpu_ranker(AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float32))).eval()
+             else _cpu_ranker_for(d, lambda: AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float32))).eval()
         CE[d] = (tok, m)
         nb = Path(d) / "none_bias.txt"   # a none-aware reranker carries its learned 'no answer' score
         if nb.exists():
@@ -1305,7 +1343,11 @@ def ce_scores(q, res, d=None, nosumm=None):
     # the rest keep their first-stage order below the scored ones
     n = len(docs)
     if m.device.type == "cpu" and CE_RATE.get(d):
-        n = min(n, max(5, int(float(os.environ.get("CE_BUDGET") or 3) / CE_RATE[d])))   # never more than there are (a small index has fewer than 5)
+        # one budget for the whole question (CE_TOTAL s): the first pass gets up to CE_BUDGET, and later passes (repair,
+        # memory cues) only what is left, at least 3 candidates. Per-call budgets used to add up to 15-20 s on a laptop.
+        left = float(os.environ.get("CE_TOTAL") or 4) - (time.time() - _QT[0])
+        cap = min(float(os.environ.get("CE_BUDGET") or 3), max(left, 0.0))
+        n = min(n, max(3 if left < 1 else 5, int(cap / CE_RATE[d])))   # never more than there are (a small index has fewer than 5)
     t_ = time.time()
     with torch.no_grad():
         b = tok([q] * n, docs[:n], padding=True, truncation=True, max_length=CE_MAXLEN, return_tensors="pt").to(m.device)
