@@ -3,7 +3,7 @@ A person searches for what they made, received, opened or saved — not for what
     user_roots()      -> [(order, label, path)]  the folders to index, most likely to be searched first
     skip_dir(rel, d)  -> True for system / program / cache / library folders (walked by the indexer)
 Location is the main signal; file types and the indexer's own rules (tiers, secrets, libraries) do the rest."""
-import os, re
+import os, re, stat
 from pathlib import Path
 
 SYS_TOP = re.compile(r"^(windows|program files|program files \(x86\)|programdata|\$recycle\.bin|system volume information|recovery|perflogs|"
@@ -50,9 +50,23 @@ def skip_dir(rel, d):
     return n in JUNK_DIRS or d.startswith("$") or d.startswith("~")
 
 
+IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003   # a Windows junction (cloud placeholders such as OneDrive's carry other tags)
+
+
+def is_link(p):
+    """a symlink or a Windows junction. Path.is_symlink() misses junctions, and os.walk follows them: the legacy
+    'Application Data' / 'Local Settings' in the home folder lead into AppData, 'Documents/My Music' back into Music"""
+    try:
+        st = os.lstat(p)
+    except OSError:
+        return False
+    return stat.S_ISLNK(st.st_mode) or getattr(st, "st_reparse_tag", 0) == IO_REPARSE_TAG_MOUNT_POINT
+
+
 def _hidden_or_system(p):
-    """Windows: hidden or system folders (Boot, recovery partitions' folders, vendor tools) are not the person's"""
-    a = getattr(p.stat(), "st_file_attributes", 0)
+    """Windows: hidden or system folders (Boot, recovery partitions' folders, vendor tools) are not the person's.
+    lstat: a junction's own attributes, not those of the folder it leads to"""
+    a = getattr(p.lstat(), "st_file_attributes", 0)
     return bool(a & (0x2 | 0x4))   # FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM
 
 
@@ -116,7 +130,7 @@ def user_roots(mnt="/mnt"):
         for p in kids:
             n = p.name.lower()
             try:
-                ok = p.is_dir() and not p.is_symlink() and not n.startswith(".") and n not in std and n not in HOME_SKIP \
+                ok = p.is_dir() and not is_link(p) and not n.startswith(".") and n not in std and n not in HOME_SKIP \
                     and not n.startswith(("onedrive", "google drive", "dropbox")) and not skip_dir("", p.name) and not _hidden_or_system(p)
             except OSError:
                 ok = False
@@ -129,7 +143,7 @@ def user_roots(mnt="/mnt"):
             continue
         for t in tops:
             try:
-                ok = t.is_dir() and not t.is_symlink() and not skip_dir("/", t.name) and not _hidden_or_system(t)   # junctions point back into Users
+                ok = t.is_dir() and not is_link(t) and not skip_dir("/", t.name) and not _hidden_or_system(t)   # junctions point back into Users
             except OSError:
                 continue
             if ok and t.resolve() not in seen:
