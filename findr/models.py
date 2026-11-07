@@ -143,6 +143,17 @@ def llama_server():
     return None
 
 
+def llama_env():
+    """environment for llama-server. The Linux CUDA build comes as two archives, and the runtime (libcudart, libcublas)
+    lands in its own folder: without it on the library path the build finds no GPU and runs the models on the CPU"""
+    env = dict(os.environ)
+    if sys.platform.startswith("linux"):
+        libs = sorted({str(p.parent) for p in paths.BIN.glob("llama/**/lib*.so*")})
+        if libs:
+            env["LD_LIBRARY_PATH"] = os.pathsep.join(libs + [x for x in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if x])
+    return env
+
+
 def pull_llama_server(dev):
     """the official llama.cpp build for this system (GitHub releases); without it findr reads questions by rules"""
     if llama_server():
