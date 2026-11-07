@@ -455,7 +455,9 @@ def _vision_lines(img):
     buf = io.BytesIO(); im.save(buf, format="JPEG", quality=92); b = buf.getvalue()
     req = Vision.VNRecognizeTextRequest.alloc().init()
     req.setRecognitionLevel_(0)   # accurate: the level that has Korean
-    req.setRecognitionLanguages_(["ko-KR", "en-US"]); req.setUsesLanguageCorrection_(True)
+    # language correction roughly doubles the time (M3: 0.45 -> 0.23 s/page without it) and fixes Korean words
+    # (장연 -> 장면, 명렁 -> 명령); kept on unless FINDR_OCR_FAST=1
+    req.setRecognitionLanguages_(["ko-KR", "en-US"]); req.setUsesLanguageCorrection_(os.environ.get("FINDR_OCR_FAST") != "1")
     h = Vision.VNImageRequestHandler.alloc().initWithData_options_(NSData.dataWithBytes_length_(b, len(b)), None)
     ok, err = h.performRequests_error_([req], None)
     if not ok:
@@ -488,8 +490,47 @@ def _page_scale(page, side=None):
     return max(0.5, min(2.0, (side or OCR_SIDE) / max(w, h, 1)))
 
 
-def ocr_wave(con, root, first_pages=10, deep_pages=50):
-    """scanned PDFs and screenshots now; every photo on a deep run. Each file is read once (files.ocr)."""
+OCR_FIRST_PAGES = int(os.environ.get("FINDR_OCR_FIRST_PAGES") or 3)
+OCR_PARTIAL = 3   # files.ocr: 1 = read, 3 = only the first pages read (a deep run reads the rest)
+
+
+def _file_sig(path):
+    """content fingerprint for finding copies ('견적서 (1).pdf' next to '견적서.pdf'): sha1 of the whole file"""
+    import hashlib
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def _ocr_copy_of(con, fid, path, size, deep):
+    """an identical file that was already OCR'd (same size, same bytes): (its chunk texts, its ocr state), or None"""
+    want = (1,) if deep else (1, OCR_PARTIAL)
+    rows = con.execute(f"SELECT id, path, ocr FROM files WHERE size=? AND id<>? AND ocr IN ({','.join('?' * len(want))})",
+                       (size, fid, *want)).fetchall()
+    if not rows:
+        return None
+    try:
+        sig = _file_sig(path)
+    except OSError:
+        return None
+    for oid, opath, ost in rows:
+        try:
+            if _file_sig(opath) != sig:
+                continue
+        except OSError:
+            continue
+        texts = [t for (t,) in con.execute("SELECT text FROM chunks WHERE file=? AND n>=0 ORDER BY n", (oid,))]
+        return texts, ost
+    return None
+
+
+def ocr_wave(con, root, first_pages=None, deep_pages=50):
+    """scanned PDFs and screenshots now; every photo on a deep run. Each file is read once (files.ocr).
+    First pass: the first OCR_FIRST_PAGES pages of a PDF (files.ocr = 3 when pages are left); a deep run reads the rest.
+    A copy of a file already read gets that file's text instead of a second OCR."""
+    first_pages = first_pages or OCR_FIRST_PAGES
     if ocr_engine() != "vision":
         try:
             import easyocr  # noqa: F401
@@ -498,29 +539,37 @@ def ocr_wave(con, root, first_pages=10, deep_pages=50):
     if "ocr" not in [r[1] for r in con.execute("PRAGMA table_info(files)")]:
         con.execute("ALTER TABLE files ADD COLUMN ocr INT DEFAULT 0")
     deep = int(os.environ.get("FINDR_FIRST_PIECES") or 0) == 0
-    try:   # without a GPU, reading a scan is slow: the first pass takes the first pages, a deep run the rest
-        import torch
-        if not (torch.cuda.is_available() or (getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available())):
-            first_pages = min(first_pages, 3)
-    except Exception:
-        pass
     pre = root.as_posix().rstrip("/") + "/"
-    pdfs = [r for r in con.execute("""SELECT f.id, f.path FROM files f WHERE f.ext='.pdf' AND f.tier=1 AND COALESCE(f.ocr,0)=0
-              AND f.path LIKE ? AND (SELECT COALESCE(sum(length(c.text)),0) FROM chunks c WHERE c.file=f.id) < 200
-              ORDER BY f.mtime DESC""", (pre + "%",))]
+    pdfs = [r for r in con.execute("""SELECT f.id, f.path FROM files f WHERE f.ext='.pdf' AND f.tier=1 AND f.path LIKE ?
+              AND ((COALESCE(f.ocr,0)=0 AND (SELECT COALESCE(sum(length(c.text)),0) FROM chunks c WHERE c.file=f.id) < 200)
+                   OR (? AND f.ocr=?))
+              ORDER BY f.mtime DESC""", (pre + "%", 1 if deep else 0, OCR_PARTIAL))]
     imgs = [(i, s) for i, s, e in con.execute("SELECT id, path, ext FROM files WHERE tier=3 AND COALESCE(ocr,0)=0 AND path LIKE ? AND size < 30000000 "
                                               "ORDER BY mtime DESC", (pre + "%",)) if (e or "").lower() in PHOTO_EXT and (deep or SHOTLIKE.search(s))]
     if not pdfs and not imgs:
         return
-    t0, got, chars = time.time(), 0, 0
+    t0, got, chars, copied = time.time(), 0, 0, 0
     heif_on()
-    for fid, s in pdfs + imgs:
-        lines = []
-        if s.lower().endswith(".pdf"):
+    items = pdfs + imgs
+    for k, (fid, s) in enumerate(items):
+        lines, state, texts = [], 1, None
+        if k % 10 == 0:
+            progress("ocr", k, len(items), folder=root.name)
+        try:
+            size = os.path.getsize(s)
+        except OSError:
+            size = -1
+        same = _ocr_copy_of(con, fid, s, size, deep) if size > 0 else None
+        if same:
+            texts, state = same; copied += 1
+        elif s.lower().endswith(".pdf"):
             try:
                 import numpy as _np, pypdfium2 as pdfium
                 doc = pdfium.PdfDocument(s); end = time.time() + 3 * FILE_SECONDS   # reading a scan is slower than reading text
-                for i in range(min(len(doc), deep_pages if deep else first_pages)):
+                upto = min(len(doc), deep_pages if deep else first_pages)
+                if not deep and len(doc) > upto:
+                    state = OCR_PARTIAL   # pages left for the deep run
+                for i in range(upto):
                     if time.time() > end:
                         break
                     pg = doc[i]
@@ -536,19 +585,20 @@ def ocr_wave(con, root, first_pages=10, deep_pages=50):
                 lines = ocr_lines(_np.array(im))
             except Exception:
                 lines = []
-        txt = "\n".join(lines)
+        txt = "\n".join(texts if texts is not None else lines)
         if len(re.sub(r"\s", "", txt)) >= 8:   # real text, not a stray mark
             p_ = Path(s); rel = s[len(root.as_posix()):]
             con.execute("DELETE FROM fts WHERE rowid IN (SELECT id FROM chunks WHERE file=? AND n>=0)", (fid,))
             con.execute("DELETE FROM chunks WHERE file=? AND n>=0", (fid,))
-            for n, c in enumerate(chunks(txt)[:2000] or [""]):
+            for n, c in enumerate((texts if texts is not None else chunks(txt))[:2000] or [""]):
                 cid = con.execute("INSERT INTO chunks(file,n,text) VALUES(?,?,?)", (fid, n, c)).lastrowid
                 con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(p_.name), nfc(rel), nfc(c)))
             got += 1; chars += len(txt)
-        con.execute("UPDATE files SET ocr=1 WHERE id=?", (fid,))
+        con.execute("UPDATE files SET ocr=? WHERE id=?", (state, fid))
         con.commit()   # each file: progress is visible and an interrupted run keeps what it read
     con.commit()
-    print(f"FINDR_OCR {len(pdfs)} scanned PDFs + {len(imgs)} images read, text found in {got} ({chars:,} chars) {time.time() - t0:.0f}s", flush=True)
+    print(f"FINDR_OCR {len(pdfs)} scanned PDFs + {len(imgs)} images read, text found in {got} ({chars:,} chars), "
+          f"{copied} copies of files already read, {time.time() - t0:.0f}s", flush=True)
 
 
 def remask(con):
