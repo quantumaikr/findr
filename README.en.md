@@ -41,6 +41,20 @@ Measured during development on questions that were never used for tuning. Result
 | Response time on a GPU PC | about 0.3 s median |
 | First index, 2,100 documents, GPU PC | names searchable after ~1 min, contents after ~2.5 min |
 
+## How it works
+
+Three parts work together on this PC. The indexer reads files and writes the index. The search engine reads the index and answers questions. The app starts and stops both and runs the work that waits for idle time.
+
+![The parts: app, indexer, index, search engine, search page](assets/architecture-overview-en.svg)
+
+**Indexing: fast first, smarter over time.** Each finished stage widens what can be found, and heavy work waits until the PC is idle. Times in the figure are for a 4-core laptop without a GPU and 2,081 files. On a real PC, accuracy right after the first pass was close to accuracy after everything had been read.
+
+![Indexing stages: file list, name meaning, document openings, meaning, scanned text, then idle-time work](assets/architecture-indexing-en.svg)
+
+**Search: from a question to results.** Candidates are gathered along several paths. A reranker then reads the question with each candidate to reorder them, and rules and a judge finish the list. Each result carries the odds that it is the one; when nothing is a sure match, the page says so. The person makes the final call.
+
+![Search stages: normalize, route, four candidate paths, fuse, rerank, rule adjustments, judge, results](assets/architecture-search-en.svg)
+
 ## Installation
 
 ### Desktop app (recommended)

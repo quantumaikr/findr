@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="330" font-family="-apple-system, Segoe UI, Apple SD Gothic Neo, Malgun Gothic, Noto Sans KR, sans-serif" viewBox="0 0 1120 330" role="img" aria-label="Five indexing stages finish in turn, enabling search by name, name meaning, document text, meaning and scanned text; the rest is filled in during idle time"><rect x="0" y="0" width="100%" height="100%" rx="12" fill="#f7f6f2"/>
+<defs><marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1d1c1a"/></marker></defs>
+<rect fill="#ffffff" stroke="#d9d5cc" stroke-width="1.2" x="20" y="40" width="150" height="150" rx="10"/>
+<text font-size="13.5" font-weight="650" fill="#1d1c1a" x="34" y="66">Scope</text>
+<text font-size="11.5" fill="#6b6862" x="34" y="88">the person's files</text>
+<text font-size="11.5" fill="#1d1c1a" x="34" y="114">no system·app·cache</text>
+<text font-size="11.5" fill="#1d1c1a" x="34" y="134">no app browser data</text>
+<text font-size="11.5" fill="#1d1c1a" x="34" y="154">exclude.txt</text>
+<text font-size="11.5" fill="#6b6862" x="34" y="176">special files skipped</text>
+<rect fill="#e7eef6" stroke="#2f5d8a" stroke-width="1.4" x="200" y="40" width="160" height="150" rx="10"/>
+<text font-size="11" font-weight="700" fill="#2f5d8a" x="214" y="64">①</text><text font-size="13.5" font-weight="650" fill="#1d1c1a" x="232" y="64">File list</text>
+<text font-size="11.5" fill="#1d1c1a" x="214" y="90">name · folder · dates</text>
+<text font-size="11.5" fill="#1d1c1a" x="214" y="110">trigram word index</text>
+<text font-size="11.5" fill="#6b6862" x="214" y="134">Korean names in NFC</text>
+<text font-size="11" fill="#2e7d4f" font-weight="600" x="214" y="172">by name: 4 s</text>
+<rect fill="#e7eef6" stroke="#2f5d8a" stroke-width="1.4" x="380" y="40" width="160" height="150" rx="10"/>
+<text font-size="11" font-weight="700" fill="#2f5d8a" x="394" y="64">②</text><text font-size="13.5" font-weight="650" fill="#1d1c1a" x="412" y="64">Name meaning</text>
+<text font-size="11.5" fill="#1d1c1a" x="394" y="90">a vector per file</text>
+<text font-size="11.5" fill="#1d1c1a" x="394" y="110">from name + folders</text>
+<text font-size="11.5" fill="#6b6862" x="394" y="134">short, so fast</text>
+<text font-size="11" fill="#2e7d4f" font-weight="600" x="394" y="172">similar words: 18 s</text>
+<rect fill="#e7eef6" stroke="#2f5d8a" stroke-width="1.4" x="560" y="40" width="160" height="150" rx="10"/>
+<text font-size="11" font-weight="700" fill="#2f5d8a" x="574" y="64">③</text><text font-size="13.5" font-weight="650" fill="#1d1c1a" x="592" y="64">Text, opening</text>
+<text font-size="11.5" fill="#1d1c1a" x="574" y="90">12k chars per doc</text>
+<text font-size="11.5" fill="#1d1c1a" x="574" y="110">properties (title…)</text>
+<text font-size="11.5" fill="#6b6862" x="574" y="134">PDF·Office·HWP·xls…</text>
+<text font-size="11" fill="#2e7d4f" font-weight="600" x="574" y="172">words in docs: 27 s</text>
+<rect fill="#e7eef6" stroke="#2f5d8a" stroke-width="1.4" x="740" y="40" width="160" height="150" rx="10"/>
+<text font-size="11" font-weight="700" fill="#2f5d8a" x="754" y="64">④</text><text font-size="13.5" font-weight="650" fill="#1d1c1a" x="772" y="64">Meaning</text>
+<text font-size="11.5" fill="#1d1c1a" x="754" y="90">first 8 pieces/file</text>
+<text font-size="11.5" fill="#1d1c1a" x="754" y="110">same piece once</text>
+<text font-size="11.5" fill="#6b6862" x="754" y="134">GPU large · CPU small</text>
+<text font-size="11" fill="#2e7d4f" font-weight="600" x="754" y="172">as you recall: 4.4 min</text>
+<rect fill="#e7eef6" stroke="#2f5d8a" stroke-width="1.4" x="920" y="40" width="180" height="150" rx="10"/>
+<text font-size="11" font-weight="700" fill="#2f5d8a" x="934" y="64">⑤</text><text font-size="13.5" font-weight="650" fill="#1d1c1a" x="952" y="64">Scanned text</text>
+<text font-size="11.5" fill="#1d1c1a" x="934" y="90">Mac Vision 0.85 s/page</text>
+<text font-size="11.5" fill="#1d1c1a" x="934" y="110">Windows OCR 0.14 s/page</text>
+<text font-size="11.5" fill="#6b6862" x="934" y="134">first: 3 pages · copies once</text>
+<text font-size="11.5" fill="#6b6862" x="934" y="152">CPU only: in idle time</text>
+<text font-size="11" fill="#2e7d4f" font-weight="600" x="934" y="172">scans · screenshots</text>
+<line stroke="#1d1c1a" stroke-width="1.3" fill="none" x1="170" y1="115" x2="198" y2="115" marker-end="url(#ar2)"/>
+<line stroke="#1d1c1a" stroke-width="1.3" fill="none" x1="360" y1="115" x2="378" y2="115" marker-end="url(#ar2)"/>
+<line stroke="#1d1c1a" stroke-width="1.3" fill="none" x1="540" y1="115" x2="558" y2="115" marker-end="url(#ar2)"/>
+<line stroke="#1d1c1a" stroke-width="1.3" fill="none" x1="720" y1="115" x2="738" y2="115" marker-end="url(#ar2)"/>
+<line stroke="#1d1c1a" stroke-width="1.3" fill="none" x1="900" y1="115" x2="918" y2="115" marker-end="url(#ar2)"/>
+<rect fill="#ffffff" stroke="#6b6862" stroke-width="1.2" stroke-dasharray="5 4" x="380" y="235" width="720" height="70" rx="10"/>
+<text font-size="13.5" font-weight="650" fill="#1d1c1a" x="398" y="262">Idle time (on power, low priority)</text>
+<text font-size="11.5" fill="#1d1c1a" x="398" y="288">rest of long docs · remaining scan pages (≤ 50) · text in photos · later pieces · small → large model</text>
+<path stroke="#6b6862" stroke-width="1.2" fill="none" stroke-dasharray="4 4" d="M640,190 L640,233"/><path stroke="#6b6862" stroke-width="1.2" fill="none" stroke-dasharray="4 4" d="M820,190 L820,233"/><path stroke="#6b6862" stroke-width="1.2" fill="none" stroke-dasharray="4 4" d="M1010,190 L1010,233"/>
+<text font-size="11" fill="#6b6862" x="200" y="262">pause: auto-resume in 1 h</text>
+<text font-size="11" fill="#6b6862" x="200" y="282">only changed files are re-read</text>
+</svg>

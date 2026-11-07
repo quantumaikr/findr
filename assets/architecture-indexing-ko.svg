@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="330" font-family="-apple-system, Segoe UI, Apple SD Gothic Neo, Malgun Gothic, Noto Sans KR, sans-serif" viewBox="0 0 1120 330" role="img" aria-label="색인 다섯 단계가 차례로 끝나며 이름, 이름 뜻, 문서 글자, 뜻, 스캔 글자 검색이 가능해지고, 나머지는 쉬는 시간에 채워지는 흐름"><rect x="0" y="0" width="100%" height="100%" rx="12" fill="#f7f6f2"/>
+<defs><marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1d1c1a"/></marker></defs>
+<rect fill="#ffffff" stroke="#d9d5cc" stroke-width="1.2" x="20" y="40" width="150" height="150" rx="10"/>
+<text font-size="13.5" font-weight="650" fill="#1d1c1a" x="34" y="66">폴더 범위</text>
+<text font-size="11.5" fill="#6b6862" x="34" y="88">내 파일만</text>
+<text font-size="11.5" fill="#1d1c1a" x="34" y="114">시스템·앱·캐시 제외</text>
+<text font-size="11.5" fill="#1d1c1a" x="34" y="134">앱 내장 브라우저 제외</text>
+<text font-size="11.5" fill="#1d1c1a" x="34" y="154">exclude.txt</text>
+<text font-size="11.5" fill="#6b6862" x="34" y="176">특수 파일 건너뜀</text>
+<g>
+<rect fill="#e7eef6" stroke="#2f5d8a" stroke-width="1.4" x="200" y="40" width="160" height="150" rx="10"/>
+<text font-size="11" font-weight="700" fill="#2f5d8a" x="214" y="64">①</text><text font-size="13.5" font-weight="650" fill="#1d1c1a" x="232" y="64">파일 목록</text>
+<text font-size="11.5" fill="#1d1c1a" x="214" y="90">이름·폴더·날짜</text>
+<text font-size="11.5" fill="#1d1c1a" x="214" y="110">3글자 단어 색인</text>
+<text font-size="11.5" fill="#6b6862" x="214" y="134">한글 이름 NFC</text>
+<text font-size="11" fill="#2e7d4f" font-weight="600" x="214" y="172">이름으로 찾기 4초</text>
+</g>
+<g>
+<rect fill="#e7eef6" stroke="#2f5d8a" stroke-width="1.4" x="380" y="40" width="160" height="150" rx="10"/>
+<text font-size="11" font-weight="700" fill="#2f5d8a" x="394" y="64">②</text><text font-size="13.5" font-weight="650" fill="#1d1c1a" x="412" y="64">이름 뜻</text>
+<text font-size="11.5" fill="#1d1c1a" x="394" y="90">이름+폴더로</text>
+<text font-size="11.5" fill="#1d1c1a" x="394" y="110">파일마다 뜻 벡터</text>
+<text font-size="11.5" fill="#6b6862" x="394" y="134">짧아서 빠름</text>
+<text font-size="11" fill="#2e7d4f" font-weight="600" x="394" y="172">비슷한 말로 18초</text>
+</g>
+<g>
+<rect fill="#e7eef6" stroke="#2f5d8a" stroke-width="1.4" x="560" y="40" width="160" height="150" rx="10"/>
+<text font-size="11" font-weight="700" fill="#2f5d8a" x="574" y="64">③</text><text font-size="13.5" font-weight="650" fill="#1d1c1a" x="592" y="64">내용 앞부분</text>
+<text font-size="11.5" fill="#1d1c1a" x="574" y="90">문서마다 1.2만 자</text>
+<text font-size="11.5" fill="#1d1c1a" x="574" y="110">문서 속성(제목 등)</text>
+<text font-size="11.5" fill="#6b6862" x="574" y="134">PDF·오피스·HWP·xls…</text>
+<text font-size="11" fill="#2e7d4f" font-weight="600" x="574" y="172">문서 속 글자 27초</text>
+</g>
+<g>
+<rect fill="#e7eef6" stroke="#2f5d8a" stroke-width="1.4" x="740" y="40" width="160" height="150" rx="10"/>
+<text font-size="11" font-weight="700" fill="#2f5d8a" x="754" y="64">④</text><text font-size="13.5" font-weight="650" fill="#1d1c1a" x="772" y="64">뜻 계산</text>
+<text font-size="11.5" fill="#1d1c1a" x="754" y="90">파일마다 앞 8조각</text>
+<text font-size="11.5" fill="#1d1c1a" x="754" y="110">같은 조각은 한 번</text>
+<text font-size="11.5" fill="#6b6862" x="754" y="134">GPU 큰 모델 · CPU 작은</text>
+<text font-size="11" fill="#2e7d4f" font-weight="600" x="754" y="172">기억대로 묻기 4.4분</text>
+</g>
+<g>
+<rect fill="#e7eef6" stroke="#2f5d8a" stroke-width="1.4" x="920" y="40" width="180" height="150" rx="10"/>
+<text font-size="11" font-weight="700" fill="#2f5d8a" x="934" y="64">⑤</text><text font-size="13.5" font-weight="650" fill="#1d1c1a" x="952" y="64">스캔 글자</text>
+<text font-size="11.5" fill="#1d1c1a" x="934" y="90">맥 Vision 0.85초/쪽</text>
+<text font-size="11.5" fill="#1d1c1a" x="934" y="110">Windows OCR 0.14초/쪽</text>
+<text font-size="11.5" fill="#6b6862" x="934" y="134">첫 색인: 앞 3쪽 · 사본 1번</text>
+<text font-size="11.5" fill="#6b6862" x="934" y="152">CPU만: 쉬는 시간으로</text>
+<text font-size="11" fill="#2e7d4f" font-weight="600" x="934" y="172">스캔·스크린샷 글자</text>
+</g>
+<line stroke="#1d1c1a" stroke-width="1.3" fill="none" x1="170" y1="115" x2="198" y2="115" marker-end="url(#ar2)"/>
+<line stroke="#1d1c1a" stroke-width="1.3" fill="none" x1="360" y1="115" x2="378" y2="115" marker-end="url(#ar2)"/>
+<line stroke="#1d1c1a" stroke-width="1.3" fill="none" x1="540" y1="115" x2="558" y2="115" marker-end="url(#ar2)"/>
+<line stroke="#1d1c1a" stroke-width="1.3" fill="none" x1="720" y1="115" x2="738" y2="115" marker-end="url(#ar2)"/>
+<line stroke="#1d1c1a" stroke-width="1.3" fill="none" x1="900" y1="115" x2="918" y2="115" marker-end="url(#ar2)"/>
+<!-- idle -->
+<rect fill="#ffffff" stroke="#6b6862" stroke-width="1.2" stroke-dasharray="5 4" x="380" y="235" width="720" height="70" rx="10"/>
+<text font-size="13.5" font-weight="650" fill="#1d1c1a" x="398" y="262">쉬는 시간 (전원 연결, 낮은 우선순위)</text>
+<text font-size="11.5" fill="#1d1c1a" x="398" y="288">문서 뒷부분 · 남은 쪽 스캔(최대 50쪽) · 사진 글자 · 뒤쪽 조각의 뜻 · 작은 모델 → 큰 모델 전환(다 되면 한 번에)</text>
+<path stroke="#6b6862" stroke-width="1.2" fill="none" stroke-dasharray="4 4" d="M640,190 L640,233"/><path stroke="#6b6862" stroke-width="1.2" fill="none" stroke-dasharray="4 4" d="M820,190 L820,233"/><path stroke="#6b6862" stroke-width="1.2" fill="none" stroke-dasharray="4 4" d="M1010,190 L1010,233"/>
+<text font-size="11" fill="#6b6862" x="200" y="262">멈추기: 1시간 뒤 저절로 이어서</text>
+<text font-size="11" fill="#6b6862" x="200" y="282">바뀐 파일만 다시 읽음</text>
+</svg>
