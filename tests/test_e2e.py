@@ -92,6 +92,8 @@ def test_search_page(world):   # the app's page: sign-in, search, progress (#7: 
             if not line and p.poll() is not None:
                 break
         assert ready, "engine did not start"
+        import threading   # keep reading the engine's output (as the app does): a full pipe would stall it (macOS pipes are small)
+        threading.Thread(target=lambda: [None for _ in p.stdout], daemon=True).start()
         key = (home / ".password").read_text().strip()
         base = "http://127.0.0.1:8596"
         try:
