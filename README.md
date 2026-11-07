@@ -49,6 +49,8 @@ All numbers are measured on questions that were not used to tune findr. They dep
 | Same PC indexed from scratch: right after the fast first pass | 45 | 82% | 87% |
 | Same PC indexed from scratch: after the idle-time deep run | 45 | 82% | 89% |
 | Photos mixed with documents, photo questions (NVIDIA GPU) | 47 | 85% | — |
+| The real PC on 4 CPU cores without a GPU, first day | 45 | 56% | 62% |
+| The real PC on 4 CPU cores without a GPU, after the idle-time model upgrade | 45 | 78% | 82% |
 
 **Speed of the first index** (4-core laptop, no GPU, 2,081 files)
 
@@ -70,7 +72,7 @@ On a GPU PC, a real home folder of 4,780 files took 263 seconds for the whole fi
 | macOS Vision | 99.8% | 0.85 s |
 | EasyOCR on 4 CPU cores, page scaled to 1600 px | 96% | 4.1 s |
 
-**Answer time.** About 0.07–0.3 s per question on an NVIDIA GPU. On a CPU-only laptop, 2–3 s on a few thousand files. On a large index a CPU-only laptop can still take 10–20 s; this is the top item on the roadmap.
+**Answer time.** On an NVIDIA GPU, the real PC above answers in 0.2 s for half the questions and within 0.4 s for nine in ten (clean install). On 4 CPU cores without a GPU, the same real PC answers in 2.2 s for half the questions and within about 4 s for nine in ten. Each question has a fixed time budget for the reranker, so a hard question does not run on. Without a GPU, questions are read by rules: the small reading model took 3 s per question on 4 cores, slower than it helps.
 
 **Large indexes.** A Mac home folder of about 57,000 files (5.7 GB index) used to stall for about 25 s once a minute. After the fixes in 0.2.10, no search out of 48 took longer than 8 s.
 
@@ -171,6 +173,7 @@ What the tools return goes to the assistant that asked. If the assistant runs in
 | Meaning search | large model | large model (small if the self-check finds it slow) | small model first, large model in idle time |
 | Text in scans | GPU recognizer | macOS Vision | Windows OCR if installed, otherwise in idle time |
 | Second-pass comparison | 6 GB+ GPU memory | 24 GB+ memory, close calls only | off |
+| Reading the question | small language model | small language model | rules |
 | Photo content search | 10 GB+ GPU memory | name and date | name and date |
 
 ## Data and privacy
@@ -179,7 +182,7 @@ File contents, questions and search history never leave the PC. Everything findr
 
 ## Known limitations
 
-- On a CPU-only laptop, answers on a large index can take 10–20 s.
+- On a laptop without a GPU, the first day is less accurate (56% top-1 on the real PC, against 84% on a GPU). It reaches 78% once the larger meaning model has been built in idle time.
 - History such as who sent a file or when it was printed can only be used if the PC keeps such records. Without them findr searches by content and says the history could not be checked.
 - Scanned images whose names do not look like documents are read only in idle time on CPU-only PCs, so right after the first index they are found by name.
 - Broad photo requests ("donut photo") over thousands of photos match many pictures; adding a time ("last spring") narrows them a lot.
@@ -198,7 +201,7 @@ Most of what changed in 0.2.x came from people installing findr on their own mac
 
 ## Roadmap
 
-- Fast answers on CPU-only laptops with large indexes.
+- Closing the accuracy gap on laptops without a GPU, above all on the first day.
 - Reading the files people look for first: a small model that tells, from a file's name, place and first bytes, what kind of file it is and how likely someone is to search for it.
 - Learning more from use: the files people open and pick should shape both ranking and what gets read first.
 - Code-signed installers for Windows and macOS.
