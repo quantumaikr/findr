@@ -539,7 +539,9 @@ def read_wave(con, root, a):
     print(f"FINDR_READ {len(rows)} files in {time.time() - t0:.0f}s, still pending {left}" + (f" (in use by another program: {locked})" if locked else ""))
 
 
-SHOTLIKE = re.compile(r"screenshot|screen ?shot|스크린샷|캡처|캡쳐|화면 ?캡|capture|snip|clip|scan|스캔|영수증|receipt", re.I)
+SHOTLIKE = re.compile(r"screenshot|screen ?shot|스크린샷|캡처|캡쳐|화면 ?캡|capture|snip|clip|scan|스캔|영수증|receipt"
+                      r"|등록증|증명|확인서|신분증|명함|계약서|통장|사본|진단서|청구서|여권|면허|certificate|license|passport|contract|invoice", re.I)
+# (images named like documents: a photographed certificate or contract is a document; its text is read on the first pass)
 _OCR = None
 
 

@@ -76,6 +76,7 @@ import datetime as dt
 import html
 import json
 import re
+import unicodedata
 import sqlite3
 import sys
 import time
@@ -598,6 +599,34 @@ class Finder:
                  "kind": {1: "문서·코드", 2: "라이브러리", 3: "이름만"}.get(r[4], ""), "snippet": (r[6] or "")[:160], "score": 0, "fid": r[5]}
                 for f in fids for r in [rows.get(f)] if r]
 
+    def name_floor(self, q, res):
+        """the files a system file search would list for these words (every word in the NAME) are not lost: if one
+        exists and #1 is not one of them, the best of them goes first (the one already ranked highest, else the newest)"""
+        words = name_words(q)
+        if not words or not res:
+            return res
+        key = lambda s: re.sub(r"[\s_\-.()\[\]]+", "", unicodedata.normalize("NFC", s or "").lower())
+        if all(w in key(res[0].get("name")) for w in words):
+            return res
+        for i, x in enumerate(res[1:], 1):   # one already among the results: move it up
+            if all(w in key(x.get("name")) for w in words):
+                return [res[i]] + res[:i] + res[i + 1:]
+        import unicodedata as _ud
+        self.con.create_function("nfc", 1, lambda s: _ud.normalize("NFC", s) if s else s, deterministic=True)
+        sql = ("SELECT id FROM files WHERE tier IN (1,3) AND " + " AND ".join(["lower(nfc(name)) LIKE ?"] * len(words))
+               + " ORDER BY mtime DESC LIMIT 20")
+        try:
+            hit = [fid for (fid,) in self.con.execute(sql, [f"%{w}%" for w in words])]
+        except sqlite3.OperationalError:
+            return res
+        hit = [h for h in hit if all(w in key(self.con.execute("SELECT name FROM files WHERE id=?", (h,)).fetchone()[0]) for w in words)]
+        if not hit:
+            return res
+        top = self.files_out(hit[:1])
+        if top:
+            top[0]["why"] = (top[0].get("why") or []) + ["이름에 찾는 말이 모두 있음"]
+        return (top + [x for x in res if x.get("fid") != hit[0]])[:len(res)]
+
     def version_first(self, q, res, cap=50, latest=False):
         """version_pick over the whole family, not only the versions that happened to be among the candidates
         (v2..v7 in one folder, but only v3 and v4 retrieved: '바로 전 판' must be v6)"""
@@ -749,6 +778,8 @@ class Finder:
                     if found and self.last_repair_score >= REPAIR_RATIO * max(r.get("top_ce") or 0, 1e-6):
                         r["results"] = self.files_out(found) + [x for x in r["results"] if x["fid"] not in set(found)]
                         r["results"] = r["results"][:k]; r["repaired"] = miss[2]
+                    elif found:   # the word is in some file, which fits the rest of the question less
+                        r["note"] = f"'{miss[2]}'이(가) 들어간 파일은 있지만 질문 전체와는 덜 맞습니다. 가장 가까운 파일을 보여 드립니다."
                     else:
                         r["note"] = f"'{miss[2]}'이(가) 들어간 파일은 없습니다. 가장 가까운 파일을 보여 드립니다."
             if rer == "ce" and r["results"]:
@@ -845,6 +876,7 @@ class Finder:
                     r["results"] = self.version_first(q, r["results"], latest=True)
                 elif OLDQ.search(q):
                     r["results"] = older_sibling_first(r["results"])
+                r["results"] = self.name_floor(q, r["results"])   # never worse than the system's own name search
                 ces = sorted((x.get("ce") or 0 for x in r["results"]), reverse=True) + [0, 0]
                 unchecked = bool(r.get("_cq")) and not r.get("episodic_ok") and not r.get("hard_none") and not r.get("agree")
                 gate_text = r["_cq"] if (unchecked and os.environ.get("GATE_CONTENT", "0") == "1") else (p.get("text") or q)
@@ -922,7 +954,8 @@ class Finder:
                 eng = (eng + " " + late.result(timeout=10)).strip()
             except Exception:
                 pass
-        words = [w for w in re.split(r"[\s/\\,.()\[\]\"']+", text + " " + eng) if w]
+        split_ = lambda t: [w for w in re.split(r"[\s/\\,.()\[\]\"']+", t) if w]
+        words = split_(text) + distinct_words(split_(eng))   # English expansions: one idea once (gen + generate), #32
         lex = []
         long_ = [w for w in words if len(w) >= 3]
         if long_:
@@ -1470,6 +1503,16 @@ def xling_name_first(q, res, top=10):
     return 0
 
 
+_NAME_STOP = {"파일", "문서", "자료", "찾아", "찾아줘", "줘", "주세요", "그", "거", "것", "좀", "있는", "관련", "어디", "있어", "있나요"}
+
+
+def name_words(q):
+    """the words a system file search would look for in names: the question's words without particles' noise
+    (2+ letters, no request words); none when the question reads like a sentence (5+ words): then it is not a name search"""
+    ws = [w.lower() for w in re.findall(r"[0-9A-Za-z가-힣]{2,}", unicodedata.normalize("NFC", q or "")) if w not in _NAME_STOP]
+    return ws if 0 < len(ws) <= 4 else []
+
+
 def refine_skip(res):
     """why the page's side-by-side second pass is not worth it now ('' = run it). About 1 s on an NVIDIA GPU, so it always runs
     there; on an Apple GPU or a CPU it takes ~10 s (#20): only when the top two are close, and not while indexing runs.
@@ -1489,6 +1532,24 @@ def refine_skip(res):
     if None not in ps and ps[0] >= 0.6 and ps[0] - ps[1] >= 0.3:
         return "clear"
     return ""
+
+
+def distinct_words(ws):
+    """one idea counts once among expansions: a word inside another word of the list is dropped. GLOSS turns 생성 into
+    "gen generate", and the name rule counting 'two question words' then took every Gemini_Generated_Image.png as a match (#32).
+    Used on the English expansions only: the person's own words stay as typed (보고서 and 월간보고서 are both kept)."""
+    ws = list(dict.fromkeys(ws))
+    return [w for w in ws if not any(w != v and w in v for v in ws)]
+
+
+def _has_facts(f):
+    """the understanding-first route reads work facts; an index built without them uses the reranker route"""
+    if getattr(f, "_facts_ok", None) is None:
+        try:
+            f._facts_ok = bool(f.con.execute("SELECT 1 FROM facts LIMIT 1").fetchone())
+        except Exception:
+            f._facts_ok = False
+    return f._facts_ok
 
 
 def add_probs(res):
@@ -1683,6 +1744,9 @@ def serve(f, port):
                     return self.reply(200, b'{"results": [], "note": ""}', "application/json; charset=utf-8")
                 if mode == "auto":   # route by what the question asks: business conditions -> understanding-first, else reranker
                     mode = "ng" if ((ROUTE_NG.search(q_) or prev_) and _has_facts(f)) else "xce"   # understanding-first needs work facts in the index
+                no_facts = mode == "ng" and not _has_facts(f)   # '이해 우선' on an index without work facts: no such table -> 500 (#32)
+                if no_facts:
+                    mode = "xce"   # the reranker answers, and route / the /refine cache say so
                 with SEARCH_LOCK:
                   global EVAL_NOW
                   try:
@@ -1702,6 +1766,8 @@ def serve(f, port):
                   finally:
                     EVAL_NOW = None; EPI.TODAY = None
                 res["route"] = mode
+                if no_facts:
+                    res["info"] = "이 PC의 색인에는 업무 정보(사람·기관·금액 등)가 없어 정밀 검색으로 찾았습니다."
                 if personal() is not None and res.get("results"):
                     with SEARCH_LOCK:
                         res = personal().apply(f, q_, res)

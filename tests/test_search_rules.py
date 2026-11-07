@@ -103,3 +103,21 @@ def test_korean_words_english_name():
     assert search.xling_name_first("원격 설계 메모", res) == 0   # same-script name: left to the usual rules
     assert search.xling_name_first("접속 설계 문서", [res[4], res[0]]) == 0   # already first
     assert search.xling_name_first("사진", res) == 0   # one idea is not enough to override the ranker
+
+
+def test_name_floor_never_worse_than_system_search(tmp_path):
+    """stage 3: a file whose name holds every word of the question is first, as a system file search would list it"""
+    import sqlite3
+    assert search.name_words("온누리식품 견적서") == ["온누리식품", "견적서"]
+    assert search.name_words("작년에 만든 그 발표 자료 어디 있었더라 기억이 안 나") == []   # a sentence is not a name search
+    con = sqlite3.connect(tmp_path / "i.db")
+    con.executescript("CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT, name TEXT, ext TEXT, size INT, mtime REAL, tier INT);"
+                      "CREATE TABLE chunks(id INTEGER PRIMARY KEY, file INT, n INT, text TEXT);")
+    con.execute("INSERT INTO files VALUES(1,'/d/견적서_온누리식품_v2.pdf','견적서_온누리식품_v2.pdf','.pdf',1,2,1)")
+    con.execute("INSERT INTO files VALUES(2,'/d/메모.txt','메모.txt','.txt',1,1,1)")
+    f = search.Finder.__new__(search.Finder); f.con = con
+    res = [{"name": "메모.txt", "path": "/d/메모.txt", "fid": 2}]
+    assert f.name_floor("온누리식품 견적서", res)[0]["fid"] == 1   # not among the results: brought in and put first
+    res2 = [{"name": "메모.txt", "fid": 2}, {"name": "견적서_온누리식품_v2.pdf", "fid": 1}]
+    assert [x["fid"] for x in f.name_floor("온누리식품 견적서", res2)] == [1, 2]   # among them: moved up
+    assert f.name_floor("메모", res2)[0]["fid"] == 2   # #1 already fits: unchanged

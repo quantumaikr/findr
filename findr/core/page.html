@@ -46,7 +46,7 @@ mark{background:var(--mark);color:inherit;border-radius:3px;padding:0 1px}
 .side{display:flex;flex-direction:column;align-items:flex-end;gap:6px;font-size:12px;color:var(--faint);white-space:nowrap}
 .act{display:flex;gap:4px}.act button{border:1px solid var(--line);background:transparent;border-radius:7px;padding:3px 8px;font-size:12px;color:var(--mut)}
 .odds{display:inline-block;color:#fff;font-size:11.5px;font-weight:700;border-radius:9px;padding:0 7px;margin-right:6px;vertical-align:1px}
-.why{font-size:12px;color:var(--mut);margin-top:3px}.card.rej{opacity:.4}.refine{font-size:12px;color:var(--mut);margin:4px 0}
+.why{font-size:12px;color:var(--mut);margin-top:3px}.card.rej{opacity:.4}.refine{font-size:12px;color:var(--mut);margin:4px 0}.rf{color:var(--faint)}
 .act button:hover{border-color:var(--acc);color:var(--acc)}.act button.done{border-color:var(--good);color:var(--good)}
 .empty{margin-top:40px;color:var(--mut)}.empty h2{font-size:22px;color:var(--fg);margin:0 0 6px;font-weight:700}
 .groups{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin-top:18px}
@@ -179,11 +179,15 @@ async function go(){
 }
 let tried=[];
 async function refine(qq,r){   // a small local model lays the top 10 side by side and moves its picks up
- if(!r.results||r.results.length<2)return; $('#notice').insertAdjacentHTML('beforeend','<div class="refine" id="rf">후보를 열어 보고 비교하는 중…</div>');
+ // the status sits inline in the count line (no block that pushes the list down), and the list is drawn again only when
+ // the order really changed: redrawing an unchanged list a few seconds after the results made the page flicker
+ if(!r.results||r.results.length<2)return; const say=t=>{r.rfText=t;const e=$('#rf');if(e)e.textContent=t};say('후보를 열어 보고 비교하는 중…');
  try{const f=await (await fetch('/refine?'+new URLSearchParams({q:qq,mode:r.route||mode}))).json(); if(!last||last.q0!==qq)return;
-  if(f.skipped){const e=$('#rf');if(e)e.remove();return}   // not needed this time (clear order, or indexing on a slower PC)
-  if(f.results){const no=new Set(last.results.filter(x=>x.no).map(x=>x.path)); f.results.forEach(x=>{if(no.has(x.path))x.no=true}); last.results=f.results; list()}
-  const e=$('#rf'); if(e)e.textContent=f.changed?'열어 보고 순서를 다듬었습니다.':'열어 보고 확인했습니다.'}catch(e){const x=$('#rf');if(x)x.remove()}}
+  if(f.skipped){say('');return}   // not needed this time (clear order, or indexing on a slower PC)
+  if(f.results){const no=new Set(last.results.filter(x=>x.no).map(x=>x.path)); f.results.forEach(x=>{if(no.has(x.path))x.no=true});
+   const moved=f.results.map(x=>x.path).join('\n')!==last.results.map(x=>x.path).join('\n'); last.results=f.results;
+   if(moved){last.rfText='열어 보고 순서를 다듬었습니다.';list();return}}
+  say('열어 보고 확인했습니다.')}catch(e){say('')}}
 function understanding(r){
  const chips=[]; const p=r.parsed||{};
  const plan=r.plan||{};
@@ -268,7 +272,7 @@ function filtered(){return (last&&last.results||[]).filter(x=>(!fKind||kindOf(x.
 function list(){
  const rs=filtered(), r=last;
  const routeTxt={auto:'자동',ng:'이해 우선',xce:'정밀',base:'빠른 찾기'}[r.route||mode]||'';
- $('#meta').innerHTML='<span>'+rs.length+'개'+(fKind||fDir?' (거름)':'')+' · '+routeTxt+'</span><span>서버 '+r.ms+'ms · 화면 '+r._rt+'ms</span>';
+ $('#meta').innerHTML='<span>'+rs.length+'개'+(fKind||fDir?' (거름)':'')+' · '+routeTxt+' <span id="rf" class="rf">'+esc(r.rfText||'')+'</span></span><span>서버 '+r.ms+'ms · 화면 '+r._rt+'ms</span>';
  $('#res').innerHTML=rs.map((x,i)=>{const k=kindOf(x.path);const d=dir(x.path);
   return '<div class="card'+(x.no?' rej':'')+'" data-i="'+i+'" style="animation-delay:'+Math.min(i,8)*30+'ms"><div class="badge" style="background:'+k[1]+'">'+k[0]+'</div>'+
   '<div><div class="nm"><span class="rank">'+(i+1)+'</span>'+(x.prob!=null?'<span class="odds" style="background:'+(x.prob>=.7?'var(--acc)':x.prob>=.3?'#c27a2c':'#8a8780')+'">'+Math.round(x.prob*100)+'%</span>':'')+hl(base(x.path))+'</div><div class="path">'+
