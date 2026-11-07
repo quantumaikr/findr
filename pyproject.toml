@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "findr-ai"
-version = "0.2.7"
+version = "0.2.8"
 description = "기억나는 대로 물으면, 내 PC가 찾아 줍니다 - 내 PC 안에서만 동작하는 자연어 파일·사진 검색"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -24,9 +24,9 @@ dependencies = [
   "olefile>=0.46",
   "pillow>=10.0",
   "pillow-heif>=0.18",          # iPhone photos (HEIC)
-  "easyocr>=1.7",
+  "easyocr>=1.7",               # text in scanned PDFs, screenshots and photos (Korean + English)
   "pyobjc-framework-Vision>=10.0; sys_platform == 'darwin'",   # macOS built-in text recognition: faster and better Korean than EasyOCR
-  "truststore>=0.9",            # system certificates (company networks)               # text in scanned PDFs, screenshots and photos (Korean + English)
+  "truststore>=0.9",            # system certificates (company networks)
   "accelerate>=1.0",
 ]
 
