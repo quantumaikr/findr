@@ -358,8 +358,26 @@ SHOTLIKE = re.compile(r"screenshot|screen ?shot|스크린샷|캡처|캡쳐|화�
 _OCR = None
 
 
+OCR_SIDE = int(os.environ.get("FINDR_OCR_SIDE") or 2400)   # longest side of a page image given to OCR (pixels)
+
+
+def ocr_engine():
+    """'vision' (macOS built-in, Korean in accurate mode) or 'easyocr'. FINDR_OCR_ENGINE overrides.
+    On an M3, 6 Korean slide pages: Vision 0.6 s/page, EasyOCR on the Apple GPU 4.3 s, on the CPU 22.8 s; Vision also misread less."""
+    want = (os.environ.get("FINDR_OCR_ENGINE") or "").lower()
+    if want in ("vision", "easyocr"):
+        return want
+    if sys.platform == "darwin":
+        try:
+            import Vision  # noqa: F401  (pyobjc-framework-Vision)
+            return "vision"
+        except ImportError:
+            pass
+    return "easyocr"
+
+
 def ocr_reader():
-    """EasyOCR (Korean + English), loaded once; its models live in findr's model folder"""
+    """EasyOCR (Korean + English), loaded once; its models live in findr's model folder. Uses NVIDIA or the Apple GPU when present."""
     global _OCR
     if _OCR is None:
         import easyocr, torch
@@ -370,20 +388,56 @@ def ocr_reader():
     return _OCR
 
 
+def _vision_lines(img):
+    """macOS Vision text recognition (accurate, Korean + English), lines top to bottom"""
+    import io
+    import Vision
+    from Foundation import NSData
+    from PIL import Image
+    im = Image.fromarray(img) if not isinstance(img, (str, Path)) else Image.open(img).convert("RGB")
+    buf = io.BytesIO(); im.save(buf, format="JPEG", quality=92); b = buf.getvalue()
+    req = Vision.VNRecognizeTextRequest.alloc().init()
+    req.setRecognitionLevel_(0)   # accurate: the level that has Korean
+    req.setRecognitionLanguages_(["ko-KR", "en-US"]); req.setUsesLanguageCorrection_(True)
+    h = Vision.VNImageRequestHandler.alloc().initWithData_options_(NSData.dataWithBytes_length_(b, len(b)), None)
+    ok, err = h.performRequests_error_([req], None)
+    if not ok:
+        raise RuntimeError(str(err))
+    obs = []
+    for o in req.results() or []:
+        c = o.topCandidates_(1)
+        if c and c[0].string().strip():
+            bb = o.boundingBox()   # normalised, origin bottom-left
+            obs.append((-round(bb.origin.y + bb.size.height, 2), bb.origin.x, c[0].string()))
+    return [t for _, _, t in sorted(obs)]
+
+
 def ocr_lines(img):
     """text lines of one image (a path or an RGB array), top to bottom"""
+    try:
+        if ocr_engine() == "vision":
+            return _vision_lines(img)
+    except Exception:
+        pass   # Vision failed on this image: EasyOCR below
     try:
         return [t for t in ocr_reader().readtext(img, detail=0, paragraph=True) if t.strip()]
     except Exception:
         return []
 
 
+def _page_scale(page, side=None):
+    """2x for normal pages, less for big ones so the image's longest side stays near OCR_SIDE (a 3670-pt slide was 7339 px)"""
+    w, h = page.get_size()
+    return max(0.5, min(2.0, (side or OCR_SIDE) / max(w, h, 1)))
+
+
 def ocr_wave(con, root, first_pages=10, deep_pages=50):
     """scanned PDFs and screenshots now; every photo on a deep run. Each file is read once (files.ocr)."""
-    try:
-        import easyocr  # noqa: F401
-    except ImportError:
-        return
+    if ocr_engine() != "vision":
+        try:
+            import easyocr  # noqa: F401
+        except ImportError:
+            return
     if "ocr" not in [r[1] for r in con.execute("PRAGMA table_info(files)")]:
         con.execute("ALTER TABLE files ADD COLUMN ocr INT DEFAULT 0")
     deep = int(os.environ.get("FINDR_FIRST_PIECES") or 0) == 0
@@ -412,7 +466,8 @@ def ocr_wave(con, root, first_pages=10, deep_pages=50):
                 for i in range(min(len(doc), deep_pages if deep else first_pages)):
                     if time.time() > end:
                         break
-                    lines += ocr_lines(_np.array(doc[i].render(scale=2).to_pil().convert("RGB")))
+                    pg = doc[i]
+                    lines += ocr_lines(_np.array(pg.render(scale=_page_scale(pg)).to_pil().convert("RGB")))
                 doc.close()
             except Exception:
                 pass
@@ -434,8 +489,7 @@ def ocr_wave(con, root, first_pages=10, deep_pages=50):
                 con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, p_.name, rel, c))
             got += 1; chars += len(txt)
         con.execute("UPDATE files SET ocr=1 WHERE id=?", (fid,))
-        if (got + 1) % 50 == 0:
-            con.commit()
+        con.commit()   # each file: progress is visible and an interrupted run keeps what it read
     con.commit()
     print(f"FINDR_OCR {len(pdfs)} scanned PDFs + {len(imgs)} images read, text found in {got} ({chars:,} chars) {time.time() - t0:.0f}s", flush=True)
 

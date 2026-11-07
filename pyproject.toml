@@ -25,6 +25,7 @@ dependencies = [
   "pillow>=10.0",
   "pillow-heif>=0.18",          # iPhone photos (HEIC)
   "easyocr>=1.7",
+  "pyobjc-framework-Vision>=10.0; sys_platform == 'darwin'",   # macOS built-in text recognition: faster and better Korean than EasyOCR
   "truststore>=0.9",            # system certificates (company networks)               # text in scanned PDFs, screenshots and photos (Korean + English)
   "accelerate>=1.0",
 ]
