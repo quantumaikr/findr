@@ -23,11 +23,12 @@ import numpy as np
 TEXT = {".md", ".txt", ".py", ".pyi", ".js", ".ts", ".jsx", ".tsx", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".ini",
         ".cfg", ".csv", ".tsv", ".log", ".html", ".htm", ".css", ".sh", ".ps1", ".bat", ".cmd", ".c", ".h", ".cpp", ".hpp",
         ".cu", ".cuh", ".java", ".go", ".rs", ".sql", ".xml", ".rst", ".ipynb", ".jinja", ".tex", ".r", ".m", ".lua", ""}
-DOC = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".hwp", ".doc", ".ppt", ".xls"}
+DOC = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".hwp", ".doc", ".ppt", ".xls", ".key"}
 AUD = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".wma", ".ogg"}   # transcribed locally by stt_cache.py (faster-whisper)
 OLD = {".hwp", ".doc", ".ppt", ".xls"}   # old binary formats: converted locally by LibreOffice (+ H2Orestart for hwp), cached
 SECRET = re.compile(r"^(\.env(\..*)?|\.netrc|\.pgpass|\.git-credentials|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|credentials(\.json|\.ya?ml|\.txt)?"
-                    r"|secrets?\.(json|ya?ml|toml|txt|env)|.*\.(pem|key|pfx|p12|kdbx|keystore|jks))$", re.I)
+                    r"|secrets?\.(json|ya?ml|toml|txt|env)|.*\.(pem|pfx|p12|kdbx|keystore|jks))$", re.I)
+# '.key' is both a cryptographic key and an Apple Keynote deck: Keynote is a ZIP, a key file is not (see is_secret)
 # values that look like keys are masked inside indexed text (a key pasted into a note or log never reaches the index)
 KEYLIKE = re.compile(r"(sk-[A-Za-z0-9_\-]{20,}|sk-ant-[A-Za-z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|hf_[A-Za-z0-9]{30,}"
                      r"|xox[abpr]-[A-Za-z0-9\-]{10,}|AIza[0-9A-Za-z_\-]{35}|-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"
@@ -55,9 +56,22 @@ def real_ext(p: Path):
     return Path(name).suffix.lower() if name != p.name else p.suffix.lower()
 
 
+def is_secret(p: Path):
+    """key and credential files are never read; a '.key' file is a secret unless it is a Keynote deck (a ZIP)"""
+    if SECRET.search(p.name) or SECRET.search(BAK.sub("", p.name)):
+        return True
+    if real_ext(p) == ".key":
+        try:
+            with open(p, "rb") as f:
+                return f.read(4) != b"PK\x03\x04"
+        except OSError:
+            return True
+    return False
+
+
 def tier(p: Path):
     s = p.as_posix(); ext = real_ext(p)
-    if SECRET.search(p.name) or SECRET.search(BAK.sub("", p.name)):
+    if is_secret(p):
         return 0
     if ext in AUD:
         return 1 if transcript(p) is not None else 3
@@ -88,6 +102,8 @@ def extract(p: Path, limit):
             return (transcript(p) or "")[:limit]
         if ext == ".pdf":
             return pdf_text(p, limit)
+        if ext == ".key":
+            return keynote_text(p, limit)
         if ext in (".docx", ".xlsx", ".pptx", ".hwpx"):
             import zipfile
             z = zipfile.ZipFile(p); parts = []
@@ -340,6 +356,105 @@ def embed_photos(con, url, bs=16):
                         [(i, base64.b64decode(v), taken_at(p)) for (i, p), v in zip(b, vecs) if v])
         con.commit(); done += sum(1 for v in vecs if v)
     print(f"FINDR_PHOTO {done}/{len(rows)} photos {time.time() - t0:.0f}s")
+
+
+def _snappy(b):
+    """raw snappy block (what Keynote's .iwa chunks hold)"""
+    i = n = sh = 0
+    while True:
+        c = b[i]; i += 1; n |= (c & 0x7F) << sh; sh += 7
+        if c < 0x80:
+            break
+    out = bytearray()
+    while i < len(b):
+        tag = b[i]; i += 1; t = tag & 3
+        if t == 0:
+            ln = tag >> 2
+            if ln >= 60:
+                k = ln - 59; ln = int.from_bytes(b[i:i + k], "little"); i += k
+            ln += 1; out += b[i:i + ln]; i += ln
+            continue
+        if t == 1:
+            ln = ((tag >> 2) & 7) + 4; off = ((tag >> 5) << 8) | b[i]; i += 1
+        elif t == 2:
+            ln = (tag >> 2) + 1; off = int.from_bytes(b[i:i + 2], "little"); i += 2
+        else:
+            ln = (tag >> 2) + 1; off = int.from_bytes(b[i:i + 4], "little"); i += 4
+        if off >= ln:
+            out += out[-off:len(out) - off + ln]
+        else:   # overlapping copy
+            for _ in range(ln):
+                out.append(out[-off])
+    return bytes(out)
+
+
+def _iwa(data):
+    """an .iwa file: chunks of [0x00][3-byte length][snappy block]"""
+    out, i = [], 0
+    while i + 4 <= len(data):
+        ln = int.from_bytes(data[i + 1:i + 4], "little"); i += 4
+        try:
+            out.append(_snappy(data[i:i + ln]))
+        except Exception:
+            break
+        i += ln
+    return b"".join(out)
+
+
+_WORDY = re.compile(r"[가-힣A-Za-z]")
+_STYLEID = re.compile(r"(paragraph|character|list|shape|cell|table|chart|slide|text|caption|connection|drawable)s?style|^#?[a-z]+-\d+(-|$)|^!", re.I)
+
+
+def _pb_strings(buf):
+    """text in protobuf bytes: every length-delimited field whose bytes read as text (Keynote's slide text, notes, titles)"""
+    out, i, n = [], 0, len(buf)
+    while i < n - 2:
+        if buf[i] & 7 == 2 and buf[i] >> 3:
+            j, ln, sh = i + 1, 0, 0
+            while j < n and sh < 35:
+                c = buf[j]; j += 1; ln |= (c & 0x7F) << sh; sh += 7
+                if c < 0x80:
+                    break
+            if 2 <= ln <= 20000 and j + ln <= n:
+                try:
+                    t = buf[j:j + ln].decode("utf-8")
+                except UnicodeDecodeError:
+                    t = None
+                if t and _WORDY.search(t) and sum(ch.isprintable() or ch in "\n\t" for ch in t) >= 0.95 * len(t) \
+                        and not re.fullmatch(r"[A-Za-z0-9_.\-/]+", t):   # identifiers, style and class names are not text
+                    out.append(t); i = j + ln; continue
+        i += 1
+    return out
+
+
+def keynote_text(p, limit):
+    """Apple Keynote: '09 and older keep XML (index.apxl); 6+ keep snappy-framed protobuf (Index/*.iwa, sometimes in Index.zip)"""
+    import gzip, io, zipfile
+    try:
+        z = zipfile.ZipFile(p)
+        names = z.namelist()
+        for nm in names:
+            if nm.endswith(("index.apxl", "index.apxl.gz")):
+                raw = z.read(nm)
+                raw = gzip.decompress(raw) if nm.endswith(".gz") else raw
+                return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", raw.decode("utf-8", "ignore"))).strip()[:limit]
+        if "Index.zip" in names:
+            z = zipfile.ZipFile(io.BytesIO(z.read("Index.zip"))); names = z.namelist()
+        seen, out, size = set(), [], 0
+        for nm in sorted(names, key=lambda x: (not x.startswith("Index/Slide"), x)):   # slides first
+            if not (nm.startswith("Index/") and nm.endswith(".iwa")) or z.getinfo(nm).file_size > 50_000_000:
+                continue
+            for t in _pb_strings(_iwa(z.read(nm))):
+                t = t.strip()
+                if len(_WORDY.findall(t)) < 2 or _STYLEID.search(t):   # style ids, symbols: not what people search for
+                    continue
+                if t and t not in seen:
+                    seen.add(t); out.append(t); size += len(t)
+            if size >= limit:
+                break
+        return "\n".join(out)[:limit]
+    except Exception:
+        return ""
 
 
 def pdf_text(p, limit):
