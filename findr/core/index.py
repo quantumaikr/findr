@@ -219,6 +219,13 @@ def main():
             print(f"FINDR_NFC {moved} files with decomposed (NFD) names moved to NFC", flush=True)
     if a.model in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and not con.execute("SELECT 1 FROM chunks WHERE emb IS NOT NULL LIMIT 1").fetchone():
         con.execute("INSERT OR REPLACE INTO meta VALUES('encoder', ?)", (a.model,))   # known from the start: search works while indexing (#9)
+    excl = {disk_path(Path(x).as_posix()) for x in os.environ.get("FINDR_EXCLUDE", "").split(os.pathsep) if x}
+    for x in excl:   # folders this PC chose not to search (exclude.txt): files already indexed under them leave the index
+        ids = [i for (i,) in con.execute("SELECT id FROM files WHERE path=? OR substr(path, 1, ?)=?", (x, len(x) + 1, x + "/"))]
+        for fid in ids:
+            drop(con, fid)
+        if ids:
+            print(f"FINDR_EXCLUDE removed {len(ids)} files", flush=True)
     con.commit()
     progress("names", 0, len(roots))
     for k, root in enumerate(roots):   # stage 1: names and folders of every chosen folder first (seconds)
@@ -234,6 +241,8 @@ def main():
                 from scope import skip_dir
                 rel = "/" if Path(dp) == root else ""
                 dns[:] = [d for d in dns if not skip_dir(rel, d)]
+            if excl:
+                dns[:] = [d for d in dns if disk_path((Path(dp) / d).as_posix()) not in excl]
             for fn in fns:
                 if not a.with_libs and JUNK.search(fn):
                     continue
