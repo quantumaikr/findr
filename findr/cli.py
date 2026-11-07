@@ -16,7 +16,7 @@ from pathlib import Path
 
 from . import __version__, models, paths
 
-PORTS = {"qu": 8093, "checker": 8095, "photo": 8099}
+PORTS = dict(zip(("qu", "checker", "photo"), map(int, os.environ.get("FINDR_PORTS", "8093,8095,8099").split(","))))   # helper servers (local only)
 
 
 def _engine_env(photo_url=""):
