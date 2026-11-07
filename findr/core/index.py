@@ -304,7 +304,8 @@ def progress(stage, done, total, **kw):
     if not d:
         return
     try:
-        Path(d, "progress.json").write_text(json.dumps({"stage": stage, "done": done, "total": total, "t": time.time(), **kw}), encoding="utf-8")
+        Path(d, "progress.json").write_text(json.dumps({"stage": stage, "done": done, "total": total, "t": time.time(), "pid": os.getpid(), **kw}),
+                                            encoding="utf-8")
     except OSError:
         pass
 

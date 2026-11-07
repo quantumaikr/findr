@@ -6,8 +6,8 @@
 *{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--fg);font:14.5px/1.55 -apple-system,"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif}
 button{font:inherit;color:inherit;cursor:pointer}
 .app{display:grid;grid-template-columns:250px 1fr;min-height:100vh}
-aside{border-right:1px solid var(--line);padding:18px 14px;position:sticky;top:0;height:100vh;overflow:auto;background:var(--bg)}
-.brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:17px;margin-bottom:14px}
+aside{border-right:1px solid var(--line);padding:18px 14px;position:sticky;top:var(--bar,0px);height:calc(100vh - var(--bar,0px));overflow:auto;background:var(--bg)}
+.brand{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;font-weight:700;font-size:17px;margin-bottom:14px}.brand a{white-space:nowrap}
 .dot{width:10px;height:10px;border-radius:50%;background:var(--acc);box-shadow:0 0 0 4px var(--acc2)}
 .sec{font-size:11.5px;color:var(--faint);letter-spacing:.04em;margin:16px 0 6px;display:flex;justify-content:space-between;align-items:center}
 .sec button{border:0;background:none;color:var(--faint);font-size:11.5px;padding:0}
@@ -194,10 +194,10 @@ const APP=!!(window.__TAURI__&&window.__TAURI__.core);   // inside the desktop a
  const bar=document.createElement('div');bar.style.cssText='position:fixed;top:0;left:0;right:0;z-index:50;font-size:12.5px;padding:5px 14px;background:var(--acc,#2f5d8a);color:#fff;display:none';
  document.body.appendChild(bar);
  async function tick(){try{const p=await (await fetch('/progress')).json();
-  if(!p.stage||p.stage==='done'||Date.now()/1000-p.t>900){bar.style.display='none';return}
+  if(!p.stage||p.stage==='done'||Date.now()/1000-p.t>900){bar.style.display='none';document.body.style.paddingTop='';document.body.style.removeProperty('--bar');setTimeout(tick,15000);return}
   const n=p.total?` ${Number(p.done).toLocaleString()}/${Number(p.total).toLocaleString()}`:'';
   bar.textContent=`색인 진행 중: ${ST[p.stage]||p.stage}${n}${p.minutes_left?` · 약 ${p.minutes_left}분 남음`:''} · 지금도 검색할 수 있고, 새로 읽은 내용은 곧 결과에 들어갑니다`;
-  bar.style.display='block'}catch(e){} setTimeout(tick,5000)}
+  bar.style.display='block';document.body.style.paddingTop=bar.offsetHeight+'px';document.body.style.setProperty('--bar',bar.offsetHeight+'px')}catch(e){} setTimeout(tick,5000)}   /* the bar pushes the page down instead of covering its top */
  tick()})();
 function show(r){
  $('#under').innerHTML=understanding(r); $('#pipe').innerHTML=pipeline(r);
