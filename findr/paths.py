@@ -15,7 +15,7 @@ def home():
 
 
 HOME = home()
-MODELS = HOME / "models"
+MODELS = Path(os.environ["FINDR_MODELS"]).expanduser() if os.environ.get("FINDR_MODELS") else HOME / "models"   # models can live on another drive
 BIN = HOME / "bin"
 DB = HOME / "index.db"
 LOGS = HOME / "logs"
