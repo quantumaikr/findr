@@ -1,139 +1,203 @@
 # findr
 
-기억나는 대로 물으면 내 PC에서 파일을 찾아 주는 검색 프로그램입니다. 모든 처리는 내 컴퓨터 안에서 이루어집니다.
+Find files on your PC the way you remember them. Ask "the quote that supplier sent last month" or "the draft right before the final one", and findr lists the likely files with the odds that each one is it. Everything runs on your own computer: no account, no upload, no cloud.
 
-[English](README.en.md)
-
-현재 0.2 시험판입니다.
-
-## 왜 만들었나
-
-파일을 찾을 때 이름이 기억나는 경우는 많지 않습니다. 대신 "지난달 거래처에서 받은 견적서", "작년 여름 바다에서 찍은 사진", "최종본 말고 그 직전 판"처럼 그 파일과 얽힌 일을 떠올립니다. findr는 이런 질문을 그대로 받아 맞을 가능성이 높은 순서로 후보를 보여 줍니다. 조건에 맞는 파일이 없으면 가까운 후보와 함께 그 사실을 알려 줍니다.
+[Download](https://github.com/quantumaikr/findr/releases/latest) · [한국어](README.ko.md) · [How it works](#how-it-works) · [Performance](#performance) · [Lessons from the field](docs/LESSONS.md)
 
 ```
-> 작년 여름 휴가 때 찍은 바다 사진
+> beach photos from last summer's vacation
   1  92%  IMG_5082.jpg      2025-08-12
   2  71%  IMG_5090.jpg      2025-08-13
   3  38%  KakaoTalk_...jpg  2025-08-20
+
+> 2019 tax refund receipt
+  no sure match: the closest candidates below, with their odds
 ```
 
-## 할 수 있는 것
+findr is built Korean-first, for the files Korean offices actually keep (HWP, scanned forms, Korean-named folders on a Mac), and it reads English names and text as well. It is an early project: version 0.2, released as installers for Windows, macOS and Linux.
 
-- 질문 속의 내용, 때, 사람, 한 일을 함께 읽습니다. "작년 8월", "겨울방학 때", "회의 전에 고친", "김 부장이 보낸" 같은 표현을 이해합니다.
-- 사진은 찍힌 내용으로 찾습니다. "노트북 위에 누운 고양이"처럼 물으면 되고, 찍은 날짜로 범위를 좁힙니다. GPU가 있는 PC에서 동작합니다.
-- 후보마다 맞을 가능성과 근거를 표시합니다. 최종 판단은 사용자가 하고, 고른 파일과 "아님"으로 표시한 파일을 기억해 다음 검색에 반영합니다. 기억한 내용은 화면에서 확인하고 지울 수 있습니다.
-- PC 전체를 색인하되 시스템, 프로그램, 캐시 폴더는 건너뜁니다. 바탕화면과 다운로드부터 처리하므로 몇 분 안에 검색을 시작할 수 있습니다.
-- GPU가 없는 PC에서는 가벼운 구성으로 자동 전환합니다.
+## Why findr
 
-읽을 수 있는 형식은 PDF, HWP(배포용 문서 포함), HWPX, DOC, DOCX, XLSX, PPTX, Keynote, TXT, Markdown, 소스 코드, 사진(JPG, PNG, WEBP, 아이폰 HEIC 등)입니다. 스캔한 PDF와 스크린샷 속 글자도 읽습니다(글자 인식). 그 밖의 파일은 이름, 폴더, 날짜로 찾습니다.
+People rarely remember file names. They remember what happened around a file: who sent it, roughly when, what it was for, which version it was. Desktop search tools match names and words, so they fail exactly when memory is vague. Cloud assistants can answer vague questions, but only after your files leave your PC.
 
-## 성능
+findr sits between the two. It understands vague, conversational questions, and it does all of its work on the PC that holds the files.
 
-개발 과정에서 결과 조정에 쓰지 않은 질문으로 잰 값입니다. PC와 파일 구성에 따라 달라질 수 있습니다.
+## What makes it different
 
-| 측정 조건 | 결과 |
+**Useful in seconds, smarter over time.** The first index is built for speed, and the rest is filled in while the PC is idle. On a 4-core laptop without a GPU, files are searchable by name after 4 seconds and by meaning of their names after 18 seconds. Words inside documents follow at 27 seconds, and full meaning search at 4.4 minutes. On a real PC, accuracy right after this first pass was within the run-to-run noise of accuracy after everything had been read.
+
+**Asks the way people talk.** Time ("last August", "before the meeting"), people ("the one Mr. Kim sent"), versions ("the draft right before the final"), and Korean words for English file names (터널링 finds `Tunneling_Design.pdf`) are read together with the content of the question.
+
+**Reads what is really on office PCs.** It reads PDF, Word, Excel, PowerPoint and HWP/HWPX, including HWP distribution documents (decrypted following Hancom's published specification). It also reads legacy .xls and .ods, RTF in Korean code pages, e-mail (.eml), Keynote, Pages and Numbers, and iPhone HEIC photos. Text in scans and screenshots is read with the operating system's own recognizer where there is one: 0.14 s per page on Windows, 0.85 s on macOS.
+
+**Honest about uncertainty.** Every candidate shows its odds. When nothing matches all of a question, findr says so instead of presenting the closest file as the answer. The person makes the final call, and findr learns from what they pick and what they mark as wrong.
+
+**Private by construction.** Indexing and search run on the PC. The search page listens only on 127.0.0.1 and is protected by a password. Values that look like passwords or keys are masked, never indexed.
+
+**Runs on the PC you have.** It adapts to NVIDIA GPUs, Apple silicon and CPU-only laptops. A PC without a GPU starts with a small model and moves to the larger one bit by bit while nobody is using it.
+
+## Performance
+
+All numbers are measured on questions that were not used to tune findr. They depend on the PC and its files; we report how each was measured.
+
+**Accuracy**
+
+| Set | Questions | Top-1 | Top-3 |
+|---|---|---|---|
+| 6 synthetic PCs never seen in development, no activity history | 288 | 76% | 90% |
+| A real personal PC, held-out questions | 45 | 84% | 89% |
+| Same PC indexed from scratch: right after the fast first pass | 45 | 82% | 87% |
+| Same PC indexed from scratch: after the idle-time deep run | 45 | 82% | 89% |
+| Photos mixed with documents, photo questions (NVIDIA GPU) | 47 | 85% | — |
+
+**Speed of the first index** (4-core laptop, no GPU, 2,081 files)
+
+| Searchable by | Time |
 |---|---|
-| 처음 보는 가상 PC 6대, 질문 288개, 활동 기록 없음 | 1순위 76%, 3위 안 90% |
-| 실제 개인 PC, 처음 보는 질문 45개 | 1순위 84% |
-| 사진 240장과 문서가 섞인 PC, 사진 질문 47개 | 1순위 85% (문서 검색 결과는 변화 없음) |
-| 응답 시간, GPU PC | 중간값 약 0.3초 |
-| 첫 색인, 문서 2,100개, GPU PC | 이름 검색까지 약 1분, 내용 검색까지 약 2분 30초 |
+| file name | 4 s |
+| meaning of file names | 18 s |
+| words inside documents | 27 s |
+| meaning of contents | 4.4 min |
+| full first index (scans left for idle time) | 4.4 min, down from 7 min in 0.2.8 |
 
-## 동작 방식
+On a GPU PC, a real home folder of 4,780 files took 263 seconds for the whole first pass, text recognition included.
 
-세 부분이 이 PC 안에서 함께 일합니다. 색인기는 파일을 읽어 색인에 쓰고, 검색 엔진은 그 색인을 읽어 질문에 답합니다. 앱은 둘을 켜고 끄고, PC를 쓰지 않는 시간의 작업을 맡습니다.
+**Text recognition, per page** (Korean and English pages with known text)
 
-![전체 구성: 앱, 색인기, 색인 저장소, 검색 엔진, 검색 화면](assets/architecture-overview-ko.svg)
+| Engine | Characters right | Time |
+|---|---|---|
+| Windows built-in OCR (Korean) | 97.5% | 0.14 s |
+| macOS Vision | 99.8% | 0.85 s |
+| EasyOCR on 4 CPU cores, page scaled to 1600 px | 96% | 4.1 s |
 
-**색인: 처음엔 빠르게, 점점 스마트하게.** 단계가 하나 끝날 때마다 찾을 수 있는 범위가 넓어집니다. 무거운 일은 PC를 쓰지 않는 시간으로 미룹니다. 그림의 시간은 GPU 없는 4코어 노트북, 파일 2,081개 기준입니다. 실제 PC에서 잰 정확도는 첫 색인 직후와 모든 내용을 읽은 뒤가 거의 같았습니다.
+**Answer time.** About 0.07–0.3 s per question on an NVIDIA GPU. On a CPU-only laptop, 2–3 s on a few thousand files. On a large index a CPU-only laptop can still take 10–20 s; this is the top item on the roadmap.
 
-![색인 단계: 파일 목록, 이름 뜻, 내용 앞부분, 뜻 계산, 스캔 글자, 그리고 쉬는 시간의 보완](assets/architecture-indexing-ko.svg)
+**Large indexes.** A Mac home folder of about 57,000 files (5.7 GB index) used to stall for about 25 s once a minute. After the fixes in 0.2.10, no search out of 48 took longer than 8 s.
 
-**검색: 질문이 결과가 되기까지.** 여러 길로 후보를 넓게 모읍니다. 그다음 질문과 후보를 함께 읽어 다시 줄 세우고, 규칙과 판단기가 마지막으로 다듬습니다. 결과마다 맞을 확률이 붙고, 확실한 답이 없으면 그렇다고 알려 줍니다. 최종 선택은 사람이 합니다.
+## How it works
 
-![검색 단계: 질문 정리, 경로 선택, 네 갈래 후보 수집, 합치기, 다시 순위, 규칙 보정, 판단, 결과](assets/architecture-search-ko.svg)
+Three parts work together on the PC. The indexer reads files and writes the index. The search engine reads the index and answers questions. The app starts and stops both and runs the work that waits for idle time.
 
-## 설치
+![The parts: app, indexer, index, search engine, search page](assets/architecture-overview-en.svg)
 
-### 데스크톱 앱 (권장)
+**Indexing: fast first, smarter over time.** Each finished stage widens what can be found, and heavy work waits until the PC is idle.
 
-[릴리스 페이지](https://github.com/quantumaikr/findr/releases/latest)에서 운영체제에 맞는 파일을 받아 설치합니다.
+![Indexing stages: file list, name meaning, document openings, meaning, scanned text, then idle-time work](assets/architecture-indexing-en.svg)
 
-| 운영체제 | 파일 |
+**Search: from a question to results.** Candidates are gathered along several paths. A reranker then reads the question with each candidate to reorder them, and rules and a judge finish the list.
+
+![Search stages: normalize, route, four candidate paths, fuse, rerank, rule adjustments, judge, results](assets/architecture-search-en.svg)
+
+## Installation
+
+### Desktop app (recommended)
+
+Download the file for your system from the [releases page](https://github.com/quantumaikr/findr/releases/latest).
+
+| System | File |
 |---|---|
-| Windows 10·11 | `findr_<버전>_x64-setup.exe` |
-| macOS (Apple 칩) | `findr_<버전>_aarch64.dmg` |
-| Ubuntu·Debian | `findr_<버전>_amd64.deb` (`sudo apt install ./파일이름.deb`) |
-| Fedora 등 | `findr-<버전>-1.x86_64.rpm` |
-| 그 밖의 Linux | `findr_<버전>_amd64.AppImage` (실행 권한을 주고 실행) |
+| Windows 10, 11 | `findr_<version>_x64-setup.exe` |
+| macOS (Apple silicon) | `findr_<version>_aarch64.dmg` |
+| Ubuntu, Debian | `findr_<version>_amd64.deb` (`sudo apt install ./<file>.deb`) |
+| Fedora and similar | `findr-<version>-1.x86_64.rpm` |
+| Other Linux | `findr_<version>_amd64.AppImage` (make it executable, then run) |
 
-처음 실행하면 이 PC에 맞는 구성 요소와 모델을 받습니다(5~20분, 3~13GB). 그다음 색인할 폴더를 고르면 됩니다.
+On the first run the app sets up what suits the PC: 5–20 minutes and 2–12 GB depending on the hardware. It then asks which folders to index, and moves to the search screen as soon as file names are in.
 
-아직 코드 서명이 없는 시험판이라 처음 열 때 경고가 나올 수 있습니다.
+The installers are not code-signed yet, so the first launch may show a warning:
 
-- Windows: "Windows의 PC 보호" 화면에서 "추가 정보" → "실행".
-- macOS: "확인되지 않은 개발자" 경고는 앱을 오른쪽 클릭해 "열기". "손상되었기 때문에 열 수 없습니다"라고 나오면 앱을 응용 프로그램 폴더로 옮긴 뒤 터미널에서 `xattr -cr /Applications/findr.app`을 한 번 실행합니다(인터넷에서 받은 표시를 지우는 명령).
-- Linux AppImage: `chmod +x findr_*.AppImage` 후 실행. Ubuntu 22.04 이상이 필요합니다.
+- Windows: on "Windows protected your PC", choose "More info", then "Run anyway".
+- macOS: right-click the app and choose "Open". If macOS says the app "is damaged", move it to Applications and run `xattr -cr /Applications/findr.app` once in Terminal.
+- Linux AppImage: `chmod +x findr_*.AppImage`, then run it. Ubuntu 22.04 or later.
 
-### 명령줄
+### Command line
 
-git과 10GB 정도의 여유 공간이 필요합니다. 파이썬은 설치 스크립트가 별도로 준비하므로 미리 설치하지 않아도 됩니다. 인터넷은 처음 모델을 받을 때만 씁니다.
-
-Windows (PowerShell):
+You need git and about 10 GB of free disk space. The installer sets up its own Python. The internet is used only to download models on the first run.
 
 ```powershell
+# Windows (PowerShell)
 git clone https://github.com/quantumaikr/findr
 cd findr
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-macOS, Linux:
-
 ```bash
+# macOS, Linux
 git clone https://github.com/quantumaikr/findr && cd findr
 bash install.sh
 ```
 
-스크립트가 전용 파이썬 환경을 만들고 GPU 유무를 확인한 뒤 그에 맞는 모델을 받습니다. 로그인은 필요 없습니다.
+To update, run `git pull` and then the install script again. `findr doctor` lists anything that is missing and prints the one-line fix.
 
-업데이트할 때는 `git pull` 뒤에 설치 스크립트를 한 번 더 실행하세요. 새로 추가된 구성 요소가 설치됩니다. 빠진 것이 있으면 `findr doctor`가 알려 줍니다.
+## Usage
 
-## 사용법
-
-Windows에서는 저장소 폴더에서 `.\findr`, macOS와 Linux에서는 `./findr.sh`로 실행합니다.
+Run `.\findr` on Windows or `./findr.sh` on macOS and Linux, from the repository folder.
 
 ```
-findr index                       PC 전체의 내 파일 색인 (다시 실행하면 바뀐 파일만)
-findr index D:\자료 E:\사진        지정한 폴더만 색인
-findr serve                       검색 화면 열기 (http://127.0.0.1:8096)
-findr ask "지난주에 고친 보고서"     터미널에서 바로 검색
-findr setup                       모델 다시 받기, 구성 바꾸기 (--lite, --photo)
-findr doctor                      설치와 색인 상태 확인
+findr index                          index your own files across the PC (later runs pick up changes only)
+findr index D:\docs E:\photos        index only these folders
+findr serve                          open the search page (http://127.0.0.1:8096)
+findr ask "report I edited last week"   search from the terminal
+findr setup                          re-download models or change the setup (--lite, --photo)
+findr doctor                         check the installation and the index
 ```
 
-색인이 진행되는 동안에도 검색할 수 있습니다. 검색 화면은 비밀번호로 보호되며, `findr serve`를 처음 실행할 때 비밀번호를 만들어 알려 줍니다. 사용자 이름은 아무 값이나 입력하면 됩니다.
+You can search while indexing runs. The search page shows a small progress chip that opens a live view of every stage, with a pause button. To leave a folder out of a whole-PC index, list it in `exclude.txt` in the data folder.
 
-## PC 사양에 따른 차이
+## Differences by hardware
 
-| | NVIDIA GPU | Apple 칩 Mac | GPU 없음 |
+| | NVIDIA GPU | Apple silicon Mac | No GPU |
 |---|---|---|---|
-| 내용 검색 | 고정밀 | 고정밀 | 경량 |
-| 후보 비교 단계 | 사용 | 사용 | 생략 |
-| 사진 내용 검색 | 사용 (GPU 메모리 10GB 이상) | 이름과 날짜로만 | 이름과 날짜로만 |
-| 받는 모델 용량 | 약 5GB, 사진 포함 시 약 12GB | 약 5GB | 약 2GB |
+| Meaning search | large model | large model (small if the self-check finds it slow) | small model first, large model in idle time |
+| Text in scans | GPU recognizer | macOS Vision | Windows OCR if installed, otherwise in idle time |
+| Second-pass comparison | 6 GB+ GPU memory | 24 GB+ memory, close calls only | off |
+| Photo content search | 10 GB+ GPU memory | name and date | name and date |
 
-## 데이터와 개인정보
+## Data and privacy
 
-파일 내용, 질문, 검색 기록은 PC 밖으로 보내지 않습니다. findr가 만드는 데이터는 Windows에서는 `%LOCALAPPDATA%\findr`, macOS와 Linux에서는 `~/.findr` 한 곳에만 저장되고, 이 폴더를 지우면 모두 사라집니다. 검색 대상 파일은 읽기만 하며 수정하지 않습니다. 비밀번호, 인증서, 키 파일은 색인하지 않습니다. 여러 사람이 쓰는 PC에서는 현재 로그인한 사용자의 폴더만 색인합니다.
+File contents, questions and search history never leave the PC. Everything findr creates is kept in one folder, `%LOCALAPPDATA%\findr` on Windows and `~/.findr` on macOS and Linux; deleting it removes all of it. Searched files are only read, never modified. Passwords, certificates and key files are not indexed. On a shared PC only the signed-in user's folders are indexed.
 
-## 알려진 한계
+## Known limitations
 
-- "누가 보냈는지", "언제 인쇄했는지" 같은 이력은 PC에 그런 기록이 남아 있을 때만 확인할 수 있습니다. 기록이 없으면 내용으로 찾고, 이력은 확인하지 못했다고 표시합니다.
-- 사진이 수천 장 있으면 "도넛 사진"처럼 범위가 넓은 질문에 맞는 사진이 여러 장 나올 수 있습니다. "작년 봄"처럼 때를 함께 적으면 훨씬 정확해집니다.
-- GPU가 없는 PC에서는 후보를 정밀하게 다시 비교하는 단계가 느려 응답에 1~2초가 걸릴 수 있습니다.
+- On a CPU-only laptop, answers on a large index can take 10–20 s.
+- History such as who sent a file or when it was printed can only be used if the PC keeps such records. Without them findr searches by content and says the history could not be checked.
+- Scanned images whose names do not look like documents are read only in idle time on CPU-only PCs, so right after the first index they are found by name.
+- Broad photo requests ("donut photo") over thousands of photos match many pictures; adding a time ("last spring") narrows them a lot.
+- The installers are not code-signed yet.
 
-## 라이선스
+## Lessons from the field
 
-Apache License 2.0을 따릅니다. 설치 중 내려받는 모델은 각 배포처의 라이선스를 따릅니다.
+Most of what changed in 0.2.x came from people installing findr on their own machines and reporting what broke: 20 issues and 18 pull requests in the first two days. Some examples:
 
-본 제품은 한글과컴퓨터의 한글 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다. 보안 문제는 [SECURITY.md](SECURITY.md)에 적힌 방법으로 알려 주세요. 변경 내역은 [CHANGELOG.md](CHANGELOG.md)에 있습니다.
+- Korean names on macOS are stored decomposed (NFD). Name search missed most Korean-named files until everything was compared in NFC.
+- On a 57,000-file Mac, a once-a-minute count over the whole index stalled search for 25 s. This was invisible on smaller test PCs.
+- macOS's own text recognition was 37 times faster than the library we shipped, and more accurate on Korean.
+- New file readers did nothing for PCs that were already indexed until the indexer learned to re-read files it had stored as empty.
+
+[docs/LESSONS.md](docs/LESSONS.md) collects these as sixteen rules, and the pull request template turns them into a short checklist.
+
+## Roadmap
+
+- Fast answers on CPU-only laptops with large indexes.
+- Reading the files people look for first: a small model that tells, from a file's name, place and first bytes, what kind of file it is and how likely someone is to search for it.
+- Learning more from use: the files people open and pick should shape both ranking and what gets read first.
+- Code-signed installers for Windows and macOS.
+- More languages beyond Korean and English.
+
+## Contributing
+
+Bug reports and pull requests are welcome. Measurements from real machines are the most useful thing you can send: the hardware, the number of files, and the time or result before and after.
+
+- Do not put real file, company or person names in issues, commits, code or tests. Describe them generically.
+- Every pull request runs the tests on Windows, macOS and Linux. Changes to ranking should compare top-1 results on a question set before and after.
+- Read [docs/LESSONS.md](docs/LESSONS.md) before a larger change; the PR template lists the checks.
+
+## License
+
+Apache License 2.0. Models downloaded during setup follow their publishers' licenses.
+
+본 제품은 한글과컴퓨터의 한글 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다. (HWP reading follows Hancom's published HWP file format documents.) Report security issues as described in [SECURITY.md](SECURITY.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+
+## Who runs findr
+
+findr is an open-source project run together by (주)퀀텀아이 ([quantumai.kr](https://quantumai.kr)), (사)한국인공지능연구소 ([ai-lab.kr](https://ai-lab.kr)) and H3Lab ([h3lab.kr](https://h3lab.kr)).
