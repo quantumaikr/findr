@@ -25,7 +25,7 @@
 - PC 전체를 색인하되 시스템, 프로그램, 캐시 폴더는 건너뜁니다. 바탕화면과 다운로드부터 처리하므로 몇 분 안에 검색을 시작할 수 있습니다.
 - GPU가 없는 PC에서는 가벼운 구성으로 자동 전환합니다.
 
-읽을 수 있는 형식은 PDF, HWP, HWPX, DOC, DOCX, XLSX, PPTX, Keynote, TXT, Markdown, 소스 코드, 사진(JPG, PNG, WEBP, 아이폰 HEIC 등)입니다. 스캔한 PDF와 스크린샷 속 글자도 읽습니다(글자 인식). 그 밖의 파일은 이름, 폴더, 날짜로 찾습니다.
+읽을 수 있는 형식은 PDF, HWP(배포용 문서 포함), HWPX, DOC, DOCX, XLSX, PPTX, Keynote, TXT, Markdown, 소스 코드, 사진(JPG, PNG, WEBP, 아이폰 HEIC 등)입니다. 스캔한 PDF와 스크린샷 속 글자도 읽습니다(글자 인식). 그 밖의 파일은 이름, 폴더, 날짜로 찾습니다.
 
 ## 성능
 
@@ -118,4 +118,6 @@ findr doctor                      설치와 색인 상태 확인
 
 ## 라이선스
 
-Apache License 2.0을 따릅니다. 설치 중 내려받는 모델은 각 배포처의 라이선스를 따릅니다. 보안 문제는 [SECURITY.md](SECURITY.md)에 적힌 방법으로 알려 주세요. 변경 내역은 [CHANGELOG.md](CHANGELOG.md)에 있습니다.
+Apache License 2.0을 따릅니다. 설치 중 내려받는 모델은 각 배포처의 라이선스를 따릅니다.
+
+본 제품은 한글과컴퓨터의 한글 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다. 보안 문제는 [SECURITY.md](SECURITY.md)에 적힌 방법으로 알려 주세요. 변경 내역은 [CHANGELOG.md](CHANGELOG.md)에 있습니다.
