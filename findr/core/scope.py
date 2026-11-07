@@ -31,6 +31,16 @@ HOME_SKIP = {"appdata", "library", "applications", "public", "contacts", "favori
 SKIP_USERS = {"public", "default", "default user", "all users", "defaultappool", "wdagutilityaccount"}
 
 
+# an embedded browser's profile (Chromium / CEF / Electron) that an app keeps inside a user folder, e.g. CapCut in ~/Movies:
+# browser state, not the person's files. These files sit at the top of every such profile.
+APP_PROFILE = {"SingletonLock", "SingletonSocket", "SingletonCookie", "Local State"}
+
+
+def app_profile(files):
+    """True when a folder's file names mark it as an app's browser profile"""
+    return len(APP_PROFILE & set(files)) >= 2
+
+
 def skip_dir(rel, d):
     """rel: path of the parent relative to its drive root ('/' for the top); d: the folder name"""
     n = d.lower()
