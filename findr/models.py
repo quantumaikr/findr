@@ -77,31 +77,39 @@ def pull_llama_server(dev):
     """the official llama.cpp build for this system (GitHub releases); without it findr reads questions by rules"""
     if llama_server():
         return llama_server()
+    import tarfile
     sysname, arch = platform.system(), platform.machine().lower()
-    if sysname == "Windows":
-        keys = ["bin-win-cuda-12", "x64"] if dev == "cuda" else ["bin-win-cpu-x64"]
+    x64 = arch in ("x86_64", "amd64")
+    if sysname == "Windows":   # CUDA 12.4 builds run on older NVIDIA drivers too
+        key, rt = ("bin-win-cuda-12.4-x64.zip", "cudart-llama-bin-win-cuda-12.4-x64.zip") if dev == "cuda" else ("bin-win-cpu-x64.zip", None)
     elif sysname == "Darwin":
-        keys = ["bin-macos-arm64"] if arch in ("arm64", "aarch64") else ["bin-macos-x64"]
+        key, rt = ("bin-macos-arm64.tar.gz" if not x64 else "bin-macos-x64.tar.gz"), None
     else:
-        keys = ["bin-ubuntu-x64"] if arch in ("x86_64", "amd64") else ["bin-ubuntu-arm64"]
+        key, rt = (("bin-ubuntu-cuda-12.8-x64.tar.gz", "bin-ubuntu-cuda-12.8-x64.tar.gz") if dev == "cuda" and x64 else
+                   ("bin-ubuntu-x64.tar.gz" if x64 else "bin-ubuntu-arm64.tar.gz", None))
+    tag = os.environ.get("FINDR_LLAMA_TAG", "b12182")   # a tested build; builds are published under b<number> tags
     try:
-        rel = json.load(urllib.request.urlopen("https://api.github.com/repos/ggml-org/llama.cpp/releases/latest", timeout=30))
+        rel = json.load(urllib.request.urlopen(f"https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/{tag}", timeout=30))
     except Exception as e:
         print(f"  llama.cpp 정보를 못 받았습니다 ({type(e).__name__}): 질문은 규칙으로 읽습니다.")
         return None
     assets = rel.get("assets", [])
-    pick = [a for a in assets if a["name"].endswith(".zip") and all(k in a["name"] for k in keys) and not a["name"].startswith("cudart")]
-    if dev == "cuda" and sysname == "Windows":
-        pick += [a for a in assets if a["name"].startswith("cudart") and "win-cuda-12" in a["name"]][:1]   # the CUDA runtime it needs
+    pick = [a for a in assets if a["name"].startswith("llama-") and a["name"].endswith(key)]
+    if rt:   # the CUDA runtime the build needs
+        pick += [a for a in assets if a["name"].startswith("cudart-") and a["name"].endswith(rt)][:1]
     if not pick:
         print("  이 시스템용 llama.cpp 빌드를 찾지 못했습니다: 질문은 규칙으로 읽습니다."); return None
     dst = paths.BIN / "llama"; dst.mkdir(parents=True, exist_ok=True)
     for a in pick[:2]:
         z = paths.BIN / a["name"]
-        print(f"  llama.cpp {rel.get('tag_name', '')} 받는 중: {a['name']}", flush=True)
+        print(f"  llama.cpp {tag} 받는 중: {a['name']}", flush=True)
         urllib.request.urlretrieve(a["browser_download_url"], z)
-        with zipfile.ZipFile(z) as f:
-            f.extractall(dst)
+        if z.name.endswith(".zip"):
+            with zipfile.ZipFile(z) as f:
+                f.extractall(dst)
+        else:
+            with tarfile.open(z) as f:
+                f.extractall(dst, filter="data")
         z.unlink()
     for p in dst.rglob("llama-server*"):
         try:
