@@ -959,6 +959,7 @@ class Finder:
         rows = self.con.execute(f"""SELECT c.id, c.text, f.path, f.name, f.ext, f.size, f.mtime, f.tier, f.id FROM chunks c
                                     JOIN files f ON f.id=c.file WHERE c.id IN ({qm})""", list(score)).fetchall()
         best = {}
+        name_ws = distinct_words([w.lower() for w in words if len(w) >= 2])   # gen + generate: one idea, one boost
         for cid, ctext, path, name, ext, size, mtime, tr, fid in rows:
             if fids is not None and fid not in fids:
                 continue
@@ -976,7 +977,7 @@ class Finder:
             sc *= 0.6 if BAKNAME.search(name) and not OLDWORD.search(q) else 1.0
             sc *= 1.6 if p.get("pkgs") and any(f"site-packages/{g}/" in path.lower() for g in p["pkgs"]) else 1.0
             nl = name.lower()   # a name that carries the question's words (manual_rev5.md for "매뉴얼 개정판")
-            hits = sum(1 for w in words if len(w) >= 2 and w.lower() in nl)
+            hits = sum(1 for w in name_ws if w in nl)
             sc *= 1 + 0.4 * min(hits, 3)
             if path not in best or sc > best[path][0]:
                 best[path] = (sc, ctext, name, ext, size, mtime, tr, fid)
@@ -1691,6 +1692,9 @@ def serve(f, port):
                     return self.reply(200, b'{"results": [], "note": ""}', "application/json; charset=utf-8")
                 if mode == "auto":   # route by what the question asks: business conditions -> understanding-first, else reranker
                     mode = "ng" if ((ROUTE_NG.search(q_) or prev_) and _has_facts(f)) else "xce"   # understanding-first needs work facts in the index
+                no_facts = mode == "ng" and not _has_facts(f)   # '이해 우선' on an index without work facts: no such table -> 500
+                if no_facts:
+                    mode = "xce"   # the reranker answers, and route / the /refine cache say so
                 with SEARCH_LOCK:
                   global EVAL_NOW
                   try:
@@ -1700,10 +1704,7 @@ def serve(f, port):
                   except ValueError:
                     EVAL_NOW = None
                   try:
-                    if mode == "ng" and not _has_facts(f):   # '이해 우선' on an index without work facts: no such table -> 500
-                        res = f.search(q_, mode="xce", k=k)
-                        res["info"] = "이 PC의 색인에는 업무 정보(사람·기관·금액 등)가 없어 정밀 검색으로 찾았습니다."
-                    elif mode == "ng":   # understanding-first: plan -> execute over facts and links
+                    if mode == "ng":   # understanding-first: plan -> execute over facts and links
                         if getattr(f, "ng", None) is None:
                             from ng import NG
                             f.ng = NG(f)
@@ -1713,6 +1714,8 @@ def serve(f, port):
                   finally:
                     EVAL_NOW = None; EPI.TODAY = None
                 res["route"] = mode
+                if no_facts:
+                    res["info"] = "이 PC의 색인에는 업무 정보(사람·기관·금액 등)가 없어 정밀 검색으로 찾았습니다."
                 if personal() is not None and res.get("results"):
                     with SEARCH_LOCK:
                         res = personal().apply(f, q_, res)
