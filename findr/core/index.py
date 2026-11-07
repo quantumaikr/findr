@@ -158,6 +158,27 @@ def transcript(p: Path):
     return c.read_text(encoding="utf-8", errors="ignore") if c.exists() else None
 
 
+# What the readers can read changes between versions. An unchanged file (same size, mtime and tier) is never read again,
+# so files these readers newly handle are queued once when the reader version goes up.
+#   2: .xls/.xlsb/.ods without LibreOffice (#29), distribution(배포용) .hwp (#28)
+READERS = 2
+REREAD_EXT = {2: (".xls", ".xlsb", ".ods", ".hwp")}
+
+
+def reread_for_new_readers(con):
+    """files whose stored text is empty and whose kind a newer reader handles go back to 'pending' (read in the content wave)"""
+    have = int((con.execute("SELECT value FROM meta WHERE key='readers'").fetchone() or ["1"])[0])
+    if have >= READERS:
+        return 0
+    exts = sorted({e for v, es in REREAD_EXT.items() if v > have for e in es})
+    n = con.execute(f"""UPDATE files SET pending=1 WHERE tier=1 AND ext IN ({','.join('?' * len(exts))})
+                        AND NOT EXISTS (SELECT 1 FROM chunks c WHERE c.file=files.id AND length(c.text) > 0)""", exts).rowcount
+    con.execute("INSERT OR REPLACE INTO meta VALUES('readers', ?)", (str(READERS),)); con.commit()
+    if n:
+        print(f"FINDR_REREAD {n} files a newer reader can read ({', '.join(exts)})", flush=True)
+    return n
+
+
 def convert_old(p: Path):
     """hwp/doc/ppt/xls -> text with a local LibreOffice; cached by path, size and mtime (re-runs cost nothing)"""
     import hashlib
@@ -167,9 +188,16 @@ def convert_old(p: Path):
     key = hashlib.sha1(f"{p}|{st.st_size}|{st.st_mtime}".encode()).hexdigest()
     cache = Path(os.environ.get("FINDR_DATA") or (Path.home() / ".findr")) / "conv" / (key + ".txt")
     done = cache.with_suffix(".ok")   # LibreOffice ran and the file really holds no text
-    if cache.exists() and (cache.stat().st_size or done.exists() or not shutil.which("soffice")):   # a failed (empty) result is retried
+    fail = cache.with_suffix(".fail")   # LibreOffice ran and could not convert it: not tried again with the same LibreOffice
+    so = shutil.which("soffice")
+    try:
+        so_id = f"{so}|{Path(so).resolve().stat().st_mtime}" if so else ""
+    except OSError:
+        so_id = so or ""
+    if cache.exists() and (cache.stat().st_size or done.exists() or not so
+                           or (fail.exists() and fail.read_text(errors="ignore") == so_id)):   # a failed (empty) result is retried
         return cache.read_text(encoding="utf-8", errors="ignore")
-    if not shutil.which("soffice"):
+    if not so:
         return ""   # nothing to convert with: no cache entry, so installing LibreOffice later reads the file
     cache.parent.mkdir(parents=True, exist_ok=True)
     ext = p.suffix.lower(); txt = ""; converted = False
@@ -188,6 +216,8 @@ def convert_old(p: Path):
     cache.write_text(txt, encoding="utf-8")
     if converted and not txt.strip():
         done.touch()   # really empty: not converted again on every run
+    elif not converted:
+        fail.write_text(so_id, encoding="utf-8")   # up to 120 s each time otherwise; a new LibreOffice gets another try
     return txt
 
 
@@ -261,6 +291,7 @@ def main():
         con.execute("INSERT OR REPLACE INTO meta VALUES('nfc', '1')"); con.execute("DELETE FROM meta WHERE key='nfc_upto'"); con.commit()
         if moved:
             print(f"FINDR_NFC {moved} files with decomposed (NFD) names moved to NFC", flush=True)
+    reread_for_new_readers(con)
     if a.model in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and not con.execute("SELECT 1 FROM chunks WHERE emb IS NOT NULL LIMIT 1").fetchone():
         con.execute("INSERT OR REPLACE INTO meta VALUES('encoder', ?)", (a.model,))   # known from the start: search works while indexing (#9)
     key = (lambda x: nfc(x).casefold()) if os.name == "nt" else nfc   # Windows folder names ignore case

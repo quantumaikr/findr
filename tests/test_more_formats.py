@@ -54,3 +54,69 @@ def test_failed_conversion_is_not_cached(tmp_path, monkeypatch):
     p = tmp_path / "old.ppt"; p.write_bytes(b"\xd0\xcf\x11\xe0" + b"\0" * 600)
     assert index.convert_old(p) == ""
     assert not list((tmp_path / "data").rglob("*.txt"))
+
+
+def test_rtf_large_file_is_linear(tmp_path):
+    import time
+    p = tmp_path / "big.rtf"
+    p.write_text("{\\rtf1\\ansi " + "".join(f"word{i} \\par " for i in range(120_000)) + "}")   # ~1.5 MB
+    t = time.time(); out = moretext.rtf_text(p)
+    assert time.time() - t < 3 and "word119999" in out   # was quadratic: 1.2 MB took ~110 s
+
+
+def test_rtf_surrogate_pairs_and_group_scoped_fallbacks(tmp_path):
+    p = tmp_path / "s.rtf"
+    p.write_text("{\\rtf1\\ansi \\uc1\\u-10179?\\u-8704? ok {\\uc2{\\u49373}abc}}")
+    assert moretext.rtf_text(p) == "😀 ok 생abc"
+
+
+def _fake_soffice(tmp_path, monkeypatch, make_output):
+    import shutil, subprocess
+    exe = tmp_path / "soffice"; exe.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(shutil, "which", lambda name: str(exe) if name == "soffice" else None)
+    calls = []
+    real_run = subprocess.run
+
+    def run(cmd, **kw):
+        if cmd[0] == "soffice":
+            calls.append(cmd)
+            if make_output:
+                (Path(cmd[cmd.index("--outdir") + 1]) / "in.txt").write_text(make_output)
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+        return real_run(cmd, **kw)
+    monkeypatch.setattr(subprocess, "run", run)
+    return calls
+
+
+def test_old_empty_cache_is_retried_and_failure_is_remembered(tmp_path, monkeypatch):
+    monkeypatch.setenv("FINDR_DATA", str(tmp_path / "data"))
+    p = tmp_path / "old.doc"; p.write_bytes(b"\xd0\xcf\x11\xe0" + b"\0" * 600)
+    calls = _fake_soffice(tmp_path, monkeypatch, make_output=None)    # LibreOffice runs but produces nothing
+    assert index.convert_old(p) == "" and len(calls) == 1
+    assert index.convert_old(p) == "" and len(calls) == 1             # .fail: not 120 s again with the same LibreOffice
+    for f in (tmp_path / "data" / "conv").glob("*.fail"):
+        f.write_text("an older soffice")                               # LibreOffice updated: try once more
+    calls2 = _fake_soffice(tmp_path, monkeypatch, make_output="옛 문서 본문")
+    assert index.convert_old(p) == "옛 문서 본문" and len(calls2) == 1
+
+
+def test_really_empty_document_is_not_converted_again(tmp_path, monkeypatch):
+    monkeypatch.setenv("FINDR_DATA", str(tmp_path / "data"))
+    p = tmp_path / "blank.doc"; p.write_bytes(b"\xd0\xcf\x11\xe0" + b"\0" * 600)
+    calls = _fake_soffice(tmp_path, monkeypatch, make_output="  ")    # converted, but no text
+    index.convert_old(p); index.convert_old(p)
+    assert len(calls) == 1                                             # the .ok marker
+
+
+def test_new_readers_requeue_empty_files_once(tmp_path):
+    import sqlite3
+    con = sqlite3.connect(tmp_path / "i.db")
+    con.executescript("CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT, name TEXT, ext TEXT, tier INT, pending INT DEFAULT 0);"
+                      "CREATE TABLE chunks(id INTEGER PRIMARY KEY, file INT, n INT, text TEXT);"
+                      "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);")
+    for i, (ext, text) in enumerate([(".xls", ""), (".xls", "매출 합계"), (".hwp", ""), (".pdf", "")], 1):
+        con.execute("INSERT INTO files(id,path,name,ext,tier) VALUES(?,?,?,?,1)", (i, f"/d/{i}{ext}", f"{i}{ext}", ext))
+        con.execute("INSERT INTO chunks(file,n,text) VALUES(?,0,?)", (i, text))
+    assert index.reread_for_new_readers(con) == 2                     # the empty .xls and the empty .hwp
+    assert dict(con.execute("SELECT id, pending FROM files")) == {1: 1, 2: 0, 3: 1, 4: 0}
+    assert index.reread_for_new_readers(con) == 0                     # once per reader version

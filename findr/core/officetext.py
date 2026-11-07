@@ -57,6 +57,8 @@ def _hwp_para_text(data, out, limit, total=0):
         h = struct.unpack_from("<I", data, i)[0]; i += 4
         tag, size = h & 0x3FF, (h >> 20) & 0xFFF
         if size == 0xFFF:
+            if i + 4 > len(data):
+                break                    # a cut-off tail (a decrypted section ends in AES padding): keep what was read
             size = struct.unpack_from("<I", data, i)[0]; i += 4
         if tag == 67:                    # HWPTAG_PARA_TEXT
             rec = data[i:i + size]; j = 0; buf = []
@@ -103,23 +105,23 @@ def hwp_text(path, limit=2_000_000):
         secs = sorted((e for e in ole.listdir() if len(e) == 2 and e[0] == storage and e[1].startswith("Section")),
                       key=lambda e: int(e[1][7:] or 0))
         out, total = [], 0
-        try:
-            for e in secs:
+        for e in secs:
+            try:
                 data = ole.openstream(e).read()
                 if dist:
                     from hwpdist import decrypt_viewtext
                     data = decrypt_viewtext(data)
                     if data is None:
-                        raise ValueError("not a distribution section")
+                        continue
                 if compressed:
                     data = zlib.decompress(data, -15)
                 total = _hwp_para_text(data, out, limit, total)
-                if total >= limit:
-                    break
-        except Exception:
-            if not dist:
-                raise
-            out = []
+            except Exception:
+                if not dist:
+                    raise
+                continue   # one unreadable distribution section: the others still count
+            if total >= limit:
+                break
         if dist and not "".join(out).strip() and ole.exists("PrvText"):   # the preview the file keeps unencrypted
             out = [ole.openstream("PrvText").read().decode("utf-16-le", "ignore")]
         t = "".join(out)
