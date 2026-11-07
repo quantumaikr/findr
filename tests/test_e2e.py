@@ -83,7 +83,10 @@ def test_index_then_search(world):   # #6: progress is printed; the right file c
 
 def test_search_page(world):   # the app's page: sign-in, search, progress (#7: reranking runs without a device error)
     home, _ = world
-    p = subprocess.Popen([sys.executable, "-m", "findr", "serve", "--app", "--no-browser", "--no-photo", "--no-llm", "--port", "8596"],
+    import socket
+    with socket.socket() as so:   # a free port: a page left over from another run must not answer for this one
+        so.bind(("127.0.0.1", 0)); port = so.getsockname()[1]
+    p = subprocess.Popen([sys.executable, "-m", "findr", "serve", "--app", "--no-browser", "--no-photo", "--no-llm", "--port", str(port)],
                          env=env(home), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=str(ROOT))
     try:
         t = time.time(); ready = False
@@ -98,7 +101,7 @@ def test_search_page(world):   # the app's page: sign-in, search, progress (#7: 
         log = []
         threading.Thread(target=lambda: [log.append(x) for x in p.stdout], daemon=True).start()
         key = (home / ".password").read_text().strip()
-        base = "http://127.0.0.1:8596"
+        base = f"http://127.0.0.1:{port}"
         direct = urllib.request.ProxyHandler({})   # never through a proxy: the page is on this PC
         t = time.time(); up = False
         while time.time() - t < 120 and not up:   # the page answers (not only the 'ready' line)
