@@ -72,12 +72,12 @@ def test_version_first_uses_every_version_in_the_folder(tmp_path):
 
 def test_latest_version_question():
     res = [r("index.html", "x/개정사항_정리", "2026-10-15", 0.9),
-           r("H3Lab_사업계획서_개정사항_정리.pdf", "docs/사업계획", "2026-10-15 11:03", 0.5),   # 'H3Lab' only
-           r("1_H3Lab_기술사업계획서.docx", "docs/사업계획", "2026-10-14 23:16", 0.3),
-           r("1_H3Lab_기술사업계획서_v4.docx", "docs/사업계획", "2026-10-15 01:50", 0.2)]
-    q = "H3Lab 기술사업계획서 최종본"
+           r("A사_계획서_개정사항_정리.pdf", "docs/사업계획", "2026-10-15 11:03", 0.5),   # 'A사' only
+           r("1_A사_사업계획서.docx", "docs/사업계획", "2026-10-14 23:16", 0.3),
+           r("1_A사_사업계획서_v4.docx", "docs/사업계획", "2026-10-15 01:50", 0.2)]
+    q = "A사 사업계획서 최종본"
     assert search.LATESTQ.search(q) and not search.PREVQ.search(q)
-    assert search.version_pick(q, res, latest=True)[0]["name"] == "1_H3Lab_기술사업계획서_v4.docx"
+    assert search.version_pick(q, res, latest=True)[0]["name"] == "1_A사_사업계획서_v4.docx"
 
 
 def test_second_pass_only_when_worth_it(tmp_path, monkeypatch):
@@ -98,7 +98,7 @@ def test_second_pass_only_when_worth_it(tmp_path, monkeypatch):
 def test_korean_words_english_name():
     """#19: '로컬 AI 터널링 설계 문서' means Local_AI_Tunneling_Blueprint.pdf, not a deck whose text says 로컬 … 설계"""
     res = [{"name": "Cleaned-00. Local_AI_Video_Automation_Engineering.pdf"}, {"name": "18. Vercel_Railway_zrok_Integration.pdf"},
-           {"name": "로컬 설계 메모.txt"}, {"name": "notes.md"}, {"name": "20. Local_AI_Tunneling_Blueprint.pdf"}]
+           {"name": "로컬 설계 메모.txt"}, {"name": "notes.md"}, {"name": "Local_AI_Tunneling_Blueprint.pdf"}]
     assert search.xling_name_first("로컬 AI 터널링 설계 문서", res) == 4
     assert search.xling_name_first("로컬 설계 메모", res) == 0   # same-script name: left to the usual rules
     assert search.xling_name_first("터널링 설계 문서", [res[4], res[0]]) == 0   # already first
