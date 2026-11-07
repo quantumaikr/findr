@@ -325,6 +325,9 @@ def main():
             if not a.with_libs and APP_MARK & set(dns):
                 dns[:] = []; continue   # an installed application bundle (ships its own Python): not the user's files
             dns[:] = [d for d in dns if d not in (SKIP_DIR if a.with_libs else SKIP_DIR | LIB_DIRS)]
+            if os.name == "nt":   # os.walk skips symlinks but follows junctions ('Documents/My Music' -> Music, a second scan)
+                from scope import is_link
+                dns[:] = [d for d in dns if not is_link(os.path.join(dp, d))]
             if os.environ.get("FINDR_SCOPE") == "user":   # whole-PC mode: no system, program, cache or library folders
                 from scope import skip_dir, app_profile
                 if app_profile(fns):

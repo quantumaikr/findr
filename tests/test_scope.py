@@ -51,6 +51,42 @@ def test_windows_hidden_system_folder_skipped(tmp_path, monkeypatch):
     assert "보이는폴더" in r and "숨은폴더" not in r
 
 
+def _junction(link, target):
+    import subprocess
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, check=True)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junctions")
+def test_windows_junctions_are_not_roots(tmp_path, monkeypatch):
+    """the legacy 'Application Data' / 'Local Settings' junctions lead into AppData: hidden and system themselves, but
+    stat() follows them to a plain folder, and is_symlink() is False for a junction"""
+    import ctypes
+    home, top = make(tmp_path, ["Desktop", "py_class", "AppData/Roaming", "AppData/Local"], ["자료", "elsewhere"])
+    _junction(home / "Application Data", home / "AppData" / "Roaming")
+    _junction(home / "Local Settings", home / "AppData" / "Local")
+    for j in ("Application Data", "Local Settings"):
+        assert ctypes.windll.kernel32.SetFileAttributesW(str(home / j), 0x2 | 0x4)
+    _junction(home / "바로가기", top / "elsewhere")   # a plain (not hidden) junction: still not a folder of its own
+    _junction(top / "링크", home / "Desktop")
+    assert scope.is_link(home / "Local Settings") and scope.is_link(home / "바로가기") and not scope.is_link(home / "py_class")
+    r = roots(monkeypatch, home, top)
+    assert "py_class" in r and "자료" in r
+    for skip in ["Application Data", "Local Settings", "바로가기", "링크"]:
+        assert skip not in r, f"{skip} is a junction and should be left out"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junctions")
+def test_index_walk_skips_junctions(tmp_path):
+    """'Documents/My Music' -> Music: the indexer would walk Music a second time through it"""
+    docs, music = tmp_path / "Documents", tmp_path / "Music"
+    docs.mkdir(); music.mkdir()
+    (docs / "보고서.txt").write_text("분기 보고서", encoding="utf-8")
+    (music / "노래 가사.txt").write_text("가사", encoding="utf-8")
+    _junction(docs / "My Music", music)
+    names, out = _scan(tmp_path, [docs])
+    assert "보고서.txt" in names and "노래 가사.txt" not in names, out
+
+
 def test_real_roots_run(monkeypatch):
     """on this runner's real home and drives: no crash, and only existing folders"""
     rs = scope.user_roots()
