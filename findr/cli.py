@@ -134,6 +134,12 @@ def _upgrade_why_not(db):
         return f"메모리 {_ram_gb():.0f}GB (8GB 이상에서만)"
     if shutil.disk_usage(paths.HOME).free < 3 * 2 ** 30:
         return "디스크 여유 3GB 미만"
+    if models.gpu()[0] == "mps" and not models.big_ok():   # the Apple GPU self-check already chose the small model here (#27)
+        try:
+            rate = json.loads((paths.HOME / "device_check.json").read_text()).get("pieces_per_s")
+        except (OSError, ValueError):
+            rate = None
+        return f"이 기기에서 큰 모델이 느림 (초당 {rate}조각)" if rate is not None else "이 기기에서 큰 모델이 느림"
     return ""
 
 
