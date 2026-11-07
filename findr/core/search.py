@@ -605,7 +605,7 @@ class Finder:
         import unicodedata as _ud   # names compared composed (NFC); the app registers this too, other entry points may not
         self.con.create_function("nfc", 1, lambda s: _ud.normalize("NFC", s) if s else s, deterministic=True)
         words = [w for w in re.findall(r"[0-9A-Za-z가-힣_]{2,}", q) if w not in _QSTOP]
-        if words:   # the question names the document (H3Lab 기술사업계획서): files whose names hold every word, even if not retrieved
+        if words:   # the question names the document (A사 사업계획서): files whose names hold every word, even if not retrieved
             have = {x.get("fid") for x in res}
             sql = "SELECT id FROM files WHERE tier IN (1,3) AND " + " AND ".join(["nfc(name) LIKE ?"] * len(words)) + " LIMIT 50"
             named = [fid for (fid,) in self.con.execute(sql, [f"%{w}%" for w in words]) if fid not in have]
@@ -841,7 +841,7 @@ class Finder:
                 # version questions last: a page that quotes the question ('…최종본이 아닙니다') must not undo the version choice
                 if PREVQ.search(q):   # "최종본 말고 그 직전 판": the version right before the latest
                     r["results"] = self.version_first(q, r["results"])
-                elif LATESTQ.search(q):   # "H3Lab 기술사업계획서 최종본": the newest version of the named document
+                elif LATESTQ.search(q):   # "A사 사업계획서 최종본": the newest version of the named document
                     r["results"] = self.version_first(q, r["results"], latest=True)
                 elif OLDQ.search(q):
                     r["results"] = older_sibling_first(r["results"])
@@ -1084,7 +1084,7 @@ def version_family(q, res, top=30):
     words = [w.lower() for w in re.findall(r"[0-9A-Za-z가-힣_]{2,}", q) if w not in _QSTOP]
     fams = _families(res, top)
     named = [k for k in fams if any(w in k[1] for w in words)]
-    if named:   # most question words in the name (H3Lab + 기술사업계획서 over H3Lab alone), then a family named exactly by
+    if named:   # most question words in the name (A사 + 사업계획서 over A사 alone), then a family named exactly by
         # a word (doc1) before one that only contains it (make_doc1_v3.py), then rank
         return min(named, key=lambda k: (-sum(w in k[1] for w in words), k[1] not in words, fams[k][0]))
     return next((k for k, v in fams.items() if 0 in v and len(v) >= 2), None)
