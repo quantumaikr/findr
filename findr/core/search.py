@@ -349,6 +349,7 @@ def chat_json(prompt, max_tokens):
 class Finder:
     def __init__(self, db, model="bge-m3"):
         self.con = sqlite3.connect(Path(db).expanduser(), check_same_thread=False)
+        self.con.execute("CREATE TABLE IF NOT EXISTS cards(file INTEGER PRIMARY KEY, outline TEXT, summary TEXT, done INT DEFAULT 0)")
         rows = self.con.execute("SELECT c.id, c.emb FROM chunks c WHERE c.emb IS NOT NULL").fetchall()
         self.ids = np.array([r[0] for r in rows], dtype=np.int64)   # a fresh index may have no vectors yet (words only)
         self.M = np.stack([np.frombuffer(r[1], np.float16) for r in rows]).astype(np.float32) if rows else np.zeros((0, 1024), np.float32)

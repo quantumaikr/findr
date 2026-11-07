@@ -87,7 +87,7 @@ def extract(p: Path, limit):
         if ext in AUD:
             return (transcript(p) or "")[:limit]
         if ext == ".pdf":
-            return subprocess.run(["pdftotext", "-layout", str(p), "-"], capture_output=True, timeout=120).stdout.decode("utf-8", "ignore")[:limit]
+            return pdf_text(p, limit)
         if ext in (".docx", ".xlsx", ".pptx", ".hwpx"):
             import zipfile
             z = zipfile.ZipFile(p); parts = []
@@ -179,7 +179,8 @@ def main():
       CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY, path TEXT UNIQUE, name TEXT, ext TEXT, size INT, mtime REAL, tier INT);
       CREATE TABLE IF NOT EXISTS chunks(id INTEGER PRIMARY KEY, file INT, n INT, text TEXT, emb BLOB);
       CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(name, path, text, content='', contentless_delete=1, tokenize='trigram');
-      CREATE INDEX IF NOT EXISTS ch_file ON chunks(file);""")
+      CREATE INDEX IF NOT EXISTS ch_file ON chunks(file);
+      CREATE TABLE IF NOT EXISTS cards(file INTEGER PRIMARY KEY, outline TEXT, summary TEXT, done INT DEFAULT 0);""")
     if "pending" not in [r[1] for r in con.execute("PRAGMA table_info(files)")]:
         con.execute("ALTER TABLE files ADD COLUMN pending INT DEFAULT 0")
     seen, t0, new = set(), time.time(), 0
@@ -319,6 +320,23 @@ def embed_photos(con, url, bs=16):
                         [(i, base64.b64decode(v), taken_at(p)) for (i, p), v in zip(b, vecs) if v])
         con.commit(); done += sum(1 for v in vecs if v)
     print(f"FINDR_PHOTO {done}/{len(rows)} photos {time.time() - t0:.0f}s")
+
+
+def pdf_text(p, limit):
+    """pdftotext when it is installed (Linux; best layout), else pypdf (Windows, macOS: nothing extra to install)"""
+    import shutil
+    if shutil.which("pdftotext"):
+        return subprocess.run(["pdftotext", "-layout", str(p), "-"], capture_output=True, timeout=120).stdout.decode("utf-8", "ignore")[:limit]
+    try:
+        from pypdf import PdfReader
+        out, n = [], 0
+        for pg in PdfReader(str(p)).pages:
+            t = pg.extract_text() or ""; out.append(t); n += len(t)
+            if n >= limit:
+                break
+        return "\n".join(out)[:limit]
+    except Exception:
+        return ""
 
 
 def drop(con, fid):
