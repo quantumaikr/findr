@@ -1,0 +1,177 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>findr 탐색기</title>
+<style>
+:root{--bg:#f6f5f1;--panel:#fff;--fg:#1c1b19;--mut:#6d6a63;--faint:#9a968e;--line:#e6e2da;--acc:#2f5d8a;--acc2:#e8eff7;--ai:#7a4fb5;--ai2:#f1ebf8;--good:#2e7d4f;--shadow:0 1px 2px rgba(0,0,0,.04),0 4px 16px rgba(0,0,0,.04)}
+@media (prefers-color-scheme:dark){:root{--bg:#141413;--panel:#1d1c1a;--fg:#ece9e3;--mut:#a7a39b;--faint:#7b776f;--line:#2f2d2a;--acc:#8db4dc;--acc2:#1f2b38;--ai:#c2a3ea;--ai2:#2a2236;--good:#7cc59a;--shadow:none}}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--fg);font:14.5px/1.55 -apple-system,"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif}
+button{font:inherit;color:inherit;cursor:pointer}
+.app{display:grid;grid-template-columns:260px 1fr;min-height:100vh}
+aside{border-right:1px solid var(--line);padding:18px 14px;position:sticky;top:0;height:100vh;overflow:auto}
+.brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:17px}.dot{width:10px;height:10px;border-radius:50%;background:var(--ai);box-shadow:0 0 0 4px var(--ai2)}
+.sub{font-size:12px;color:var(--faint);margin:2px 0 14px 18px}
+.sec{font-size:11.5px;color:var(--faint);letter-spacing:.04em;margin:16px 0 6px}
+.nav{display:flex;justify-content:space-between;align-items:center;padding:6px 9px;border-radius:8px;cursor:pointer;font-size:13.5px;gap:8px}
+.nav:hover{background:var(--panel)}.nav.on{background:var(--acc2);color:var(--acc);font-weight:600}.nav .n{color:var(--faint);font-size:12px}
+.nav .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+main{padding:22px 28px 60px;max-width:1100px;width:100%}
+.banner{display:flex;gap:10px;align-items:center;background:var(--ai2);color:var(--ai);border-radius:10px;padding:9px 14px;font-size:13px;margin-bottom:18px}
+h1{font-size:24px;margin:0 0 4px;letter-spacing:-.01em}.meta{color:var(--mut);font-size:13px;margin-bottom:16px}
+.tl{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px;box-shadow:var(--shadow)}
+.tl .row{display:grid;grid-template-columns:180px 1fr 50px;align-items:center;gap:12px;padding:6px 4px;border-radius:8px;cursor:pointer}
+.tl .row:hover{background:var(--bg)}.tl .nm{font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tl .cnt{text-align:right;color:var(--faint);font-size:12px}
+.lane{position:relative;height:22px}.lane .bar{position:absolute;top:9px;height:4px;border-radius:2px;background:var(--acc2)}
+.lane .tick{position:absolute;top:5px;width:3px;height:12px;border-radius:2px;background:var(--acc);opacity:.75}
+.lane .tick.ai{background:var(--ai)}
+.axis{display:grid;grid-template-columns:180px 1fr 50px;gap:12px;font-size:11px;color:var(--faint);padding:0 4px 6px}
+.axis .ax{position:relative;height:14px}.axis .ax span{position:absolute;transform:translateX(-50%)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px;margin-top:16px}
+.pc{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px;cursor:pointer;transition:border-color .15s}
+.pc:hover{border-color:var(--acc)}.pc b{display:block;font-size:14.5px}.pc small{color:var(--mut)}
+.list{display:flex;flex-direction:column;gap:6px}
+.f{display:grid;grid-template-columns:40px 1fr auto;gap:12px;align-items:center;padding:9px 12px;background:var(--panel);border:1px solid var(--line);border-radius:10px;animation:in .25s both}
+@keyframes in{from{opacity:0;transform:translateY(4px)}}
+.badge{width:40px;height:40px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff}
+.fn{font-weight:600;word-break:break-all}.fp{font-size:12px;color:var(--mut);word-break:break-all}
+.side{font-size:12px;color:var(--faint);text-align:right;white-space:nowrap}
+.aitag{display:inline-block;font-size:11px;color:var(--ai);background:var(--ai2);border-radius:999px;padding:1px 8px;margin-left:6px;font-weight:600}
+.vtag{display:inline-block;font-size:11px;color:var(--acc);background:var(--acc2);border-radius:999px;padding:1px 8px;margin-left:6px;cursor:pointer;font-weight:600;border:0}
+.older{margin:-2px 0 4px 52px;display:none;flex-direction:column;gap:4px}.older.on{display:flex}
+.older .f{padding:6px 10px;opacity:.85}
+.chain{display:flex;align-items:center;flex-wrap:wrap;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:8px}
+.chain .v{border:1px solid var(--line);border-radius:8px;padding:4px 9px;font-size:12.5px}.chain .v.last{border-color:var(--acc);color:var(--acc);font-weight:600}
+.chain .ar{color:var(--faint)}.chain small{color:var(--faint);display:block;font-size:11px}
+.day{font-size:12px;color:var(--faint);margin:14px 0 6px}
+.note{color:var(--mut);font-size:13px;margin:6px 0 12px}
+.src{margin-top:18px;display:flex;gap:4px;flex-wrap:wrap}.src button{border:1px solid var(--line);background:transparent;border-radius:7px;padding:3px 9px;font-size:12px;color:var(--mut)}
+.src button.on{border-color:var(--acc);color:var(--acc)}
+@media (max-width:820px){.app{grid-template-columns:1fr}aside{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line)}main{padding:16px}.tl .row,.axis{grid-template-columns:110px 1fr 36px}}
+.resume{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;margin:6px 0 22px}
+.rc{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px;box-shadow:var(--shadow);cursor:pointer;transition:border-color .15s}
+.rc:hover{border-color:var(--acc)}.rc h3{margin:0 0 2px;font-size:16px}.rc .when{font-size:12.5px;color:var(--mut);margin-bottom:8px}
+.rc .lf{display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:4px 0;border-top:1px dashed var(--line)}.rc .lf span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rc .lf .t{color:var(--faint);white-space:nowrap}
+.h2{font-size:13px;color:var(--faint);letter-spacing:.04em;margin:4px 0 8px}
+.prow{display:grid;grid-template-columns:1fr 130px 90px;gap:12px;align-items:center;padding:9px 12px;border-radius:10px;cursor:pointer}
+.prow:hover{background:var(--panel)}.prow b{font-size:14px}.prow small{color:var(--faint);display:block;font-size:12px}
+.spark{display:flex;align-items:flex-end;gap:2px;height:22px}.spark i{display:block;width:8px;border-radius:2px;background:var(--acc);opacity:.8;min-height:2px}
+.spark i.z{background:var(--line);opacity:1}
+.oldtag{display:inline-block;font-size:11px;color:#b5651d;background:#fbf1e6;border-radius:999px;padding:1px 8px;margin-left:6px;font-weight:600}
+.aititle{display:block;font-size:12.5px;color:var(--ai);font-weight:500;margin-top:1px}
+.usertag{display:inline-block;font-size:11px;color:var(--good);border:1px solid var(--good);border-radius:999px;padding:0 7px;margin-left:6px}
+.mv{border:1px solid var(--line);background:transparent;border-radius:7px;padding:2px 8px;font-size:12px;color:var(--mut);margin-top:4px}
+@media (hover:hover){.f .mv{opacity:0;transition:opacity .15s}.f:hover .mv{opacity:1}}
+.mv:hover{border-color:var(--acc);color:var(--acc)}.f[draggable=true]{cursor:grab}
+.nav.drop{outline:2px dashed var(--acc);background:var(--acc2)}
+.ren{border:0;background:none;color:var(--faint);font-size:15px;margin-left:6px}.ren:hover{color:var(--acc)}
+.sum{background:var(--panel);border:1px solid var(--ai);border-radius:14px;padding:14px 16px;margin:0 0 16px;box-shadow:0 0 0 4px var(--ai2)}
+.sum h4{margin:0 0 8px;font-size:13px;color:var(--ai);display:flex;justify-content:space-between;align-items:center}
+.sum li{margin:4px 0}.sum .src{font-size:11.5px;color:var(--faint);margin-left:4px}.sum .foot{font-size:11.5px;color:var(--faint);margin-top:8px}
+.sbtn{border:1px solid var(--ai);background:var(--ai2);color:var(--ai);border-radius:8px;padding:4px 10px;font-size:12.5px;font-weight:600;margin-left:10px;vertical-align:middle}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:9px;font-size:13px;opacity:0;transition:opacity .25s;pointer-events:none}
+select.mvsel{font:inherit;font-size:12px;margin-top:4px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--fg);padding:2px 4px}
+</style></head><body>
+<div class="app">
+<aside>
+  <div class="brand"><span class="dot"></span>내 작업<a href="/" style="margin-left:auto;font-size:12px;font-weight:500;color:var(--acc);text-decoration:none">🔍 검색</a></div><div class="sub">AI가 의미로 다시 묶은 보기</div>
+  <div class="sec">보기</div><div id="views"></div>
+  <div class="sec">프로젝트</div><div id="projs"></div>
+  <div class="sec">자료</div><div class="src" id="srcs"></div>
+</aside>
+<main>
+  <form id="xs" style="margin-bottom:14px"><input name="q" autocomplete="off" placeholder="🔍 찾을 파일을 물어보세요 (검색 화면으로 이동)" style="width:100%;font:inherit;font-size:16px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--fg)"></form>
+  <div class="banner">✦ 실제 파일은 한 개도 옮기거나 바꾸지 않습니다. 이 화면은 내용·시기·버전을 이해해 다시 묶어 보여 주는 가상 구조입니다.</div>
+  <div id="main"></div>
+</main></div><div class="toast" id="toast"></div>
+<script>
+const $=s=>document.querySelector(s);let V=null,view='home',sel=null,selDir=null,allP=false;const CAP=15;
+function toast(t){const e=$('#toast');e.textContent=t;e.style.opacity=1;clearTimeout(e._t);e._t=setTimeout(()=>e.style.opacity=0,1600)}
+async function post(body){const r=await fetch('/correct',{method:'POST',headers:{'Content-Type':'application/json','X-Findr':'1'},body:JSON.stringify(Object.assign({src:V.src},body))});return r.ok}
+const ago=t=>{const s=V.now-t;if(s<3600)return '방금';if(s<86400)return Math.round(s/3600)+'시간 전';if(s<86400*2)return '어제';if(s<86400*30)return Math.round(s/86400)+'일 전';return ymd(t)};
+const esc=s=>(s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const KC={py:'#3572a5',sh:'#4b6b2f',js:'#b39b00',ts:'#2f74c0',tsx:'#2f74c0',md:'#555',txt:'#777',csv:'#1e7145',tsv:'#1e7145',json:'#6c757d',yaml:'#8e44ad',yml:'#8e44ad',sql:'#c0392b',pdf:'#c0392b',docx:'#2b5797',hwp:'#2e86de',xlsx:'#1e7145',tex:'#16a085',r:'#2c6fbb',log:'#95a5a6',html:'#d35400'};
+const badge=e=>(e=(e||'').replace(/^\./,''),'<div class="badge"')+' style="background:'+(KC[e]||'#7f8c8d')+'">'+esc((e||'FILE').toUpperCase().slice(0,4))+'</div>';
+const D=t=>new Date(t*1000), ymd=t=>{const d=D(t);return d.getFullYear()+'.'+(d.getMonth()+1)+'.'+d.getDate()};
+const md=t=>{const d=D(t);return (d.getMonth()+1)+'월 '+d.getDate()+'일'};
+const dir=p=>{const s=p.split('/');return s.slice(-3,-1).join('/')};
+async function load(src){const r=await fetch('/explore.json'+(src?'?src='+encodeURIComponent(src):''));V=await r.json();
+ if(selDir){const i=V.projects.findIndex(p=>p.dir===selDir);if(i>=0)sel=i;else if(view==='p')view='home'}render()}
+function allFiles(){return V.projects.flatMap(p=>p.files).concat(V.unsorted)}
+function famOf(fid){return V.families.find(g=>g.some(x=>x.fid===fid))}
+function render(){
+ const w=V.week.length, nf=V.families.length, cl=V.cleanup.throwaway.length+V.cleanup.duplicates.length;
+ const vs=[['home','홈',''],['flow','전체 흐름',V.projects.length],['week','이번 주',w],['fam','버전 묶음',nf],['clean','정리 제안',cl]];
+ if(V.unsorted.length)vs.push(['uns','정리 전',V.unsorted.length]);
+ $('#views').innerHTML=vs.map(v=>'<div class="nav'+(view===v[0]?' on':'')+'" data-v="'+v[0]+'"><span class="t">'+v[1]+'</span><span class="n">'+v[2]+'</span></div>').join('');
+ $('#projs').innerHTML=V.projects.slice(0,allP?1e9:CAP).map((p,i)=>'<div class="nav'+(view==='p'&&sel===i?' on':'')+'" data-p="'+i+'" data-dir="'+esc(p.dir)+'"><span class="t">'+esc(p.name)+'</span><span class="n">'+p.n+'</span></div>').join('')+(V.projects.length>CAP?'<div class="nav" data-allp="1"><span class="t" style="color:var(--acc)">'+(allP?'접기':'모두 보기 ('+V.projects.length+')')+'</span></div>':'');
+ $('#srcs').innerHTML=(V.srcs||[]).map(s=>'<button class="'+(s===V.src?'on':'')+'" data-src="'+esc(s)+'">'+esc(s)+'</button>').join('');
+ ({home,flow,week,fam:famv,clean,uns,p:proj}[view])();
+}
+function spark(a){const m=Math.max(1,...a);return '<div class="spark" title="최근 12주 활동">'+a.map(n=>'<i class="'+(n?'':'z')+'" style="height:'+(n?Math.max(4,Math.round(n/m*22)):2)+'px"></i>').join('')+'</div>'}
+function home(){
+ const ai=V.projects.reduce((a,p)=>a+p.files.filter(f=>f.ai).length,0);
+ $('#main').innerHTML='<h1>이어서 하기</h1><div class="meta">최근에 손댄 작업과 그 작업의 최신 파일입니다.</div><div class="resume">'+
+ V.resume.map(r=>{const i=V.projects.findIndex(p=>p.dir===r.dir);return '<div class="rc" data-p="'+i+'"><h3>'+esc(r.name)+'</h3><div class="when">'+ago(r.last)+(r.changed?' · 최근 이틀 동안 '+r.changed+'개 수정':'')+'</div>'+
+  r.files.map(f=>'<div class="lf"><span>'+esc(f.name)+(f.title?' <span style="color:var(--ai)">✦ '+esc(f.title)+'</span>':'')+'</span><span class="t">'+ago(f.mtime)+'</span></div>').join('')+'</div>'}).join('')+'</div>'+
+ '<div class="h2">프로젝트 '+V.projects.length+'개 · 파일 '+V.n_files+'개'+(ai?' · 흩어진 파일 '+ai+'개를 AI가 제자리에':'')+'</div>'+
+ V.projects.slice(0,allP?1e9:CAP).map((p,i)=>'<div class="prow" data-p="'+i+'"><div><b>'+esc(p.name)+'</b><small>'+p.n+'개 · 마지막 '+ago(p.last)+'</small></div>'+spark(p.spark)+'<small style="text-align:right;color:var(--faint)">'+ymd(p.first)+'~</small></div>').join('')+(V.projects.length>CAP&&!allP?'<div class="prow" data-allp="1"><b style="color:var(--acc)">프로젝트 '+(V.projects.length-CAP)+'개 더 보기</b></div>':'')}
+function flow(){
+ const all=V.projects.flatMap(p=>p.files.map(f=>f.mtime)), t0=Math.min(...all), t1=Math.max(...all), span=Math.max(1,t1-t0);
+ const x=t=>((t-t0)/span*100).toFixed(2)+'%';
+ const months=[];const d=D(t0);d.setDate(1);d.setMonth(d.getMonth()+1);while(d.getTime()/1000<t1){months.push(d.getTime()/1000);d.setMonth(d.getMonth()+(span>86400*400?3:1))}
+ const ai=V.projects.reduce((a,p)=>a+p.files.filter(f=>f.ai).length,0);
+ $('#main').innerHTML='<h1>전체 흐름</h1><div class="meta">파일 '+V.n_files+'개 → 프로젝트 '+V.projects.length+'개 · 바탕화면·다운로드에 흩어진 '+ai+'개를 내용으로 제자리에 · 버전 묶음 '+V.families.length+'개</div>'+
+ '<div class="tl"><div class="axis"><span></span><div class="ax">'+months.map(m=>'<span style="left:'+x(m)+'">'+(D(m).getMonth()===0?D(m).getFullYear()+'.':'')+(D(m).getMonth()+1)+'월</span>').join('')+'</div><span></span></div>'+
+ V.projects.map((p,i)=>'<div class="row" data-p="'+i+'"><div class="nm">'+esc(p.name)+'</div><div class="lane"><div class="bar" style="left:'+x(p.first)+';width:calc('+x(p.last)+' - '+x(p.first)+' + 3px)"></div>'+
+  p.files.map(f=>'<div class="tick'+(f.ai?' ai':'')+'" style="left:'+x(f.mtime)+'" title="'+esc(f.name)+'"></div>').join('')+'</div><div class="cnt">'+p.n+'</div></div>').join('')+'</div>'+
+ '<div class="note" style="margin-top:8px"><span style="color:var(--ai)">■</span> 보라색 = 원래 바탕화면·다운로드에 있던 파일을 AI가 이 프로젝트로 정리한 것</div>'+
+ '<div class="cards">'+V.projects.map((p,i)=>'<div class="pc" data-p="'+i+'"><b>'+esc(p.name)+'</b><small>'+p.n+'개 · '+ymd(p.first)+' – '+ymd(p.last)+'</small></div>').join('')+'</div>';
+}
+function frow(f,opt){opt=opt||{};const g=opt.nofam?null:famOf(f.fid);const older=g&&g[g.length-1].fid===f.fid?g.slice(0,-1):null;
+ return '<div class="f" draggable="true" data-fid="'+f.fid+'">'+badge(f.ext)+'<div><div class="fn">'+esc(f.name)+(f.ai?'<span class="aitag" title="AI가 내용을 보고 정리">AI 정리 · 원래 '+esc(dir(f.path))+'</span>':'')+
+ (f.user?'<span class="usertag">내가 옮김</span>':'')+(f.title?'<span class="aititle" title="AI가 내용으로 붙인 제목 (실제 이름은 그대로)">✦ '+esc(f.title)+'</span>':'')+(f.newer?'<span class="oldtag">옛 판 · 최신은 '+esc(f.newer.name)+' ('+ymd(f.newer.mtime)+')</span>':'')+
+ (older&&older.length?'<button class="vtag" data-older="'+f.fid+'">이전 판 '+older.length+'개 ▾</button>':'')+'</div><div class="fp">'+esc(f.path)+'</div>'+(opt.mv===false?'':'<button class="mv" data-mv="'+f.fid+'">다른 프로젝트로</button>')+'</div><div class="side">'+ymd(f.mtime)+'</div></div>'+
+ (older&&older.length?'<div class="older" id="o'+f.fid+'">'+older.slice().reverse().map(o=>frow(o,{nofam:1,mv:false})).join('')+'</div>':'')}
+function proj(){const p=V.projects[sel];
+ // an older version is folded under its latest version when that latest version is in the same project
+ const fs=p.files.filter(f=>{const g=famOf(f.fid);if(!g)return true;const last=g[g.length-1];return last.fid===f.fid||!p.files.some(y=>y.fid===last.fid)});
+ const ai=p.files.filter(f=>f.ai).length, nv=p.files.length-fs.length;
+ $('#main').innerHTML='<h1>'+esc(p.name)+'<button class="ren" data-ren="'+esc(p.dir)+'" title="이름 바꾸기 (가상 이름만)">✎</button><button class="sbtn" data-sum="'+esc(p.dir)+'">✦ 한 장 요약</button></h1><div id="sumbox"></div><div class="meta">'+p.n+'개 · '+ymd(p.first)+' – '+ymd(p.last)+(ai?' · AI가 모은 파일 '+ai+'개':'')+(nv?' · 이전 판 '+nv+'개 접음':'')+'</div><div class="list">'+fs.map(f=>frow(f)).join('')+'</div>'}
+function week(){const by={};const W=V.week.slice(0,300);W.forEach(f=>{(by[md(f.mtime)]=by[md(f.mtime)]||[]).push(f)});
+ $('#main').innerHTML='<h1>이번 주 작업</h1><div class="meta">최근 7일 동안 바뀐 파일 '+V.week.length+'개'+(V.week.length>300?' · 최근 300개만 표시':'')+'</div>'+Object.entries(by).map(([d,fs])=>'<div class="day">'+d+' · '+fs.length+'개</div><div class="list">'+fs.slice(0,40).map(f=>frow(f,{nofam:1})).join('')+(fs.length>40?'<div class="note">이날 '+(fs.length-40)+'개 더 있음</div>':'')+'</div>').join('')}
+function famv(){$('#main').innerHTML='<h1>버전 묶음</h1><div class="note">같은 문서의 여러 판을 시간 순서로 이었습니다. 이름 규칙과 내용으로 찾고, 확실하지 않으면 묶지 않습니다.</div>'+
+ V.families.map(g=>'<div class="chain">'+g.map((f,i)=>(i?'<span class="ar">→</span>':'')+'<span class="v'+(i===g.length-1?' last':'')+'">'+esc(f.name)+'<small>'+ymd(f.mtime)+(i===g.length-1?' · 최신':'')+'</small></span>').join('')+'</div>').join('')}
+function clean(){const c=V.cleanup;$('#main').innerHTML='<h1>정리 제안</h1><div class="note">제안만 합니다. 실제 이동·삭제는 하지 않습니다.</div>'+
+ (c.duplicates.length?'<div class="day">내용이 똑같은 사본 '+c.duplicates.length+'묶음</div>'+c.duplicates.map(g=>'<div class="list">'+g.map(f=>frow(f,{nofam:1})).join('')+'</div>').join(''):'')+
+ '<div class="day">이름이 의미 없는 파일 '+c.throwaway.length+'개 — 제목만 바꿔도 찾기 쉬워집니다</div><div class="list">'+c.throwaway.map(f=>frow(f,{nofam:1})).join('')+'</div>'}
+function uns(){if(V.unsorted.length>400)V.unsorted=V.unsorted.slice(0,400);$('#main').innerHTML='<h1>정리 전 (바탕화면·다운로드)</h1><div class="note">바탕화면·다운로드 등에 있는 파일입니다. AI가 확실하지 않으면 억지로 넣지 않습니다. 직접 옮기면 기억해 둡니다.</div><div class="list">'+V.unsorted.map(f=>frow(f,{nofam:1})).join('')+'</div>'}
+async function moveTo(fid,dir,name){if(await post({op:'move',fid:fid,to:dir})){toast('옮겼습니다 → '+name+' (실제 파일은 그대로)');load(V.src)}}
+document.addEventListener('dragstart',e=>{const f=e.target.closest('.f[data-fid]');if(f)e.dataTransfer.setData('text/plain',f.dataset.fid)});
+document.addEventListener('dragover',e=>{const n=e.target.closest('#projs .nav');if(n){e.preventDefault();n.classList.add('drop')}});
+document.addEventListener('dragleave',e=>{const n=e.target.closest('#projs .nav');if(n)n.classList.remove('drop')});
+document.addEventListener('drop',e=>{const n=e.target.closest('#projs .nav');if(!n)return;e.preventDefault();n.classList.remove('drop');
+ const fid=e.dataTransfer.getData('text/plain');if(fid)moveTo(+fid,n.dataset.dir,n.querySelector('.t').textContent)});
+document.addEventListener('change',e=>{const s=e.target.closest('select.mvsel');if(s&&s.value){const p=V.projects[+s.value];moveTo(+s.dataset.fid,p.dir,p.name)}});
+async function showSum(dir){const box=$('#sumbox');box.innerHTML='<div class="sum"><h4>✦ 이 PC 안에서 요약하는 중…</h4></div>';
+ const r=await fetch('/summary.json?'+new URLSearchParams(V.src&&V.src!=='live'?{src:V.src,dir}:{dir}));if(!r.ok){box.innerHTML='';toast('요약을 만들지 못했습니다');return}
+ const s=await r.json();const nm=Object.fromEntries(s.files.map(f=>[f.fid,f.name]));
+ box.innerHTML='<div class="sum"><h4><span>✦ 한 장 요약 · 이 PC 안에서 생성</span><button class="mv" data-copy-sum="1">복사</button></h4><ul style="margin:0;padding-left:18px">'+
+  s.lines.map(l=>'<li>'+esc(l.text)+'<span class="src">· '+l.src.map(i=>esc(nm[i]||'')).join(', ')+'</span></li>').join('')+'</ul>'+
+  '<div class="foot">숫자는 근거 파일 원문과 대조했습니다'+(s.dropped?' · 확인되지 않은 '+s.dropped+'줄은 뺐습니다':'')+'</div></div>'}
+document.addEventListener('click',async e=>{
+ const sb=e.target.closest('[data-sum]');if(sb){showSum(sb.dataset.sum);return}
+ if(e.target.closest('[data-copy-sum]')){const t=[...document.querySelectorAll('.sum li')].map(li=>'- '+li.childNodes[0].textContent).join('\n');try{navigator.clipboard.writeText(V.projects[sel].name+'\n'+t).then(()=>toast('복사했습니다'))}catch(_){};return}
+ if(e.target.closest('[data-allp]')){allP=!allP;render();return}
+ const mv=e.target.closest('[data-mv]');if(mv){const f=allFiles().find(x=>x.fid===+mv.dataset.mv)||{};const nr=(f.near||[]).map(d=>V.projects.findIndex(p=>p.dir===d)).filter(i=>i>=0);
+  const opt=i=>'<option value="'+i+'">'+esc(V.projects[i].name)+'</option>';
+  mv.outerHTML='<select class="mvsel" data-fid="'+mv.dataset.mv+'"><option value="">어디로 옮길까요?</option>'+(nr.length?'<optgroup label="✦ 내용이 가까운 프로젝트">'+nr.map(opt).join('')+'</optgroup><optgroup label="전체">':'')+
+  V.projects.map((p,i)=>nr.includes(i)?'':opt(i)).join('')+(nr.length?'</optgroup>':'')+'</select>';return}
+ const rn=e.target.closest('[data-ren]');if(rn){const nm=prompt('프로젝트 이름 (화면에서만 바뀝니다)',V.projects[sel].name);if(nm&&nm.trim()&&await post({op:'rename',dir:rn.dataset.ren,name:nm.trim()})){toast('이름을 바꿨습니다');load(V.src)}return}
+ const v=e.target.closest('[data-v]');if(v){view=v.dataset.v;render();return}
+ const p=e.target.closest('[data-p]');if(p){view='p';sel=+p.dataset.p;selDir=V.projects[sel].dir;render();window.scrollTo(0,0);return}
+ const o=e.target.closest('[data-older]');if(o){document.getElementById('o'+o.dataset.older).classList.toggle('on');return}
+ const s=e.target.closest('[data-src]');if(s){view='home';selDir=null;load(s.dataset.src)}
+});
+document.getElementById('xs').addEventListener('submit',e=>{e.preventDefault();const v=e.target.q.value.trim();if(v)location.href='/?q='+encodeURIComponent(v)});
+load();
+</script></body></html>

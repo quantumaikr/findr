@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+findr.cmd
+findr.sh
+*.db
+*.db-wal
+*.db-shm
+.password

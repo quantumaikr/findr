@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "findr-ai"
+version = "0.2.0"
+description = "기억나는 대로 물으면, 내 PC가 찾아 줍니다 - 내 PC 안에서만 동작하는 자연어 파일·사진 검색"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [{ name = "quantumaikr" }]
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "torch>=2.4",                 # the installer picks the CUDA / CPU / Apple build
+  # EmbeddingGemma-2 needs a transformers build newer than the last release (5.22.2): pinned to the tested commit
+  "transformers @ git+https://github.com/huggingface/transformers.git@6df64031b9fa0ecebe50161df8ad42ed8d36595c",
+  "sentence-transformers>=5.0",
+  "huggingface_hub>=0.30",
+  "pypdf>=4.0",
+  "olefile>=0.46",
+  "pillow>=10.0",
+  "accelerate>=1.0",
+]
+
+[project.scripts]
+findr = "findr.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/quantumaikr/findr"
+Models = "https://huggingface.co/quantumaikr/findr-models"
+
+[tool.setuptools]
+packages = ["findr", "findr.core"]
+
+[tool.setuptools.package-data]
+"findr.core" = ["*.html"]
