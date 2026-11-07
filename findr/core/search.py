@@ -1272,7 +1272,7 @@ def ce_scores(q, res, d=None, nosumm=None):
     # the rest keep their first-stage order below the scored ones
     n = len(docs)
     if m.device.type == "cpu" and CE_RATE.get(d):
-        n = max(5, min(n, int(float(os.environ.get("CE_BUDGET") or 3) / CE_RATE[d])))
+        n = min(n, max(5, int(float(os.environ.get("CE_BUDGET") or 3) / CE_RATE[d])))   # never more than there are (a small index has fewer than 5)
     t_ = time.time()
     with torch.no_grad():
         b = tok([q] * n, docs[:n], padding=True, truncation=True, max_length=CE_MAXLEN, return_tensors="pt").to(m.device)
@@ -1734,6 +1734,14 @@ def serve(f, port):
         def do_POST(self):
             if not self.authed():
                 return
+            if self.headers.get("X-Findr") == "1" and urlparse(self.path).path == "/pause":
+                try:
+                    on = bool(json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 256)) or b"{}").get("on"))
+                except Exception:
+                    return self.reply(400, b'{"ok": false}', "application/json")
+                f_ = Path(os.environ.get("FINDR_DATA") or Path.home() / ".findr") / "pause"
+                f_.write_text("1") if on else f_.unlink(missing_ok=True)
+                return self.reply(200, json.dumps({"ok": True, "paused": on}).encode(), "application/json")
             if self.headers.get("X-Findr") != "1" or urlparse(self.path).path != "/correct":
                 return self.reply(403, b"{}", "application/json")
             n = int(self.headers.get("Content-Length") or 0)
