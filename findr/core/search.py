@@ -396,11 +396,11 @@ class Finder:
         self._seen_at = now
         n = self.con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL").fetchone()[0]
         top = self.con.execute("SELECT max(id) FROM chunks").fetchone()[0] or 0
-        if n == len(self.ids) and top == getattr(self, "_top", top):
-            self._top = top
-            return
         from enc_eg2 import encoder_of, make_encoder
         e_ = encoder_of(self.con)
+        if n == len(self.ids) and top == getattr(self, "_top", top) and e_ == self.encoder:   # (an idle-time upgrade switches the encoder, counts unchanged)
+            self._top = top
+            return
         if e_ in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and e_ != self.encoder:   # the index now records another encoder (#9)
             self.encoder = e_; self.enc = make_encoder(e_, DEVICE, max_len=128)
         rows = self.con.execute("SELECT c.id, c.emb FROM chunks c WHERE c.emb IS NOT NULL").fetchall()
@@ -597,6 +597,8 @@ class Finder:
         """version_pick over the whole family, not only the versions that happened to be among the candidates
         (v2..v7 in one folder, but only v3 and v4 retrieved: '바로 전 판' must be v6)"""
         n0 = len(res)
+        import unicodedata as _ud   # names compared composed (NFC); the app registers this too, other entry points may not
+        self.con.create_function("nfc", 1, lambda s: _ud.normalize("NFC", s) if s else s, deterministic=True)
         words = [w for w in re.findall(r"[0-9A-Za-z가-힣_]{2,}", q) if w not in _QSTOP]
         if words:   # the question names the document (H3Lab 기술사업계획서): files whose names hold every word, even if not retrieved
             have = {x.get("fid") for x in res}
@@ -828,6 +830,9 @@ class Finder:
                     extra = [f_ for f_ in lit if f_ not in {x["fid"] for x in have}][:max(0, k - len(have))]
                     rest_ = [x for x in r["results"] if x["fid"] not in lit]
                     r["results"] = (have + self.files_out(extra) + rest_)[:k]; r["literal"] = len(lit)
+                j = xling_name_first(q, r["results"])   # Korean words, English name: Local_AI_Tunneling_Blueprint.pdf (#19)
+                if j:
+                    r["results"] = [r["results"][j]] + r["results"][:j] + r["results"][j + 1:]; r["xling"] = 1
                 # version questions last: a page that quotes the question ('…최종본이 아닙니다') must not undo the version choice
                 if PREVQ.search(q):   # "최종본 말고 그 직전 판": the version right before the latest
                     r["results"] = self.version_first(q, r["results"])
@@ -1397,6 +1402,90 @@ def indexer_alive(p):
     return True
 
 
+# everyday Korean words and the English people name files with (Korean question, English file name: #19).
+# Loanwords and common work words only; a name has to carry EVERY idea of the question through this list.
+XLING = {
+    "로컬": "local", "터널링": "tunnel", "터널": "tunnel", "설계": "design blueprint architecture", "설계서": "design spec blueprint",
+    "아키텍처": "architecture", "구조": "architecture structure", "배포": "deploy release", "자동화": "automation automate", "자동": "auto",
+    "영상": "video", "동영상": "video", "사진": "photo image", "이미지": "image", "음성": "voice audio", "오디오": "audio",
+    "보고서": "report", "리포트": "report", "계획서": "plan", "계획": "plan", "사업계획서": "business plan", "제안서": "proposal",
+    "견적서": "quote quotation estimate", "견적": "quote estimate", "계약서": "contract agreement", "계약": "contract", "회의록": "minutes meeting",
+    "회의": "meeting", "발표": "presentation slides deck", "발표자료": "presentation slides deck", "슬라이드": "slides", "이력서": "resume cv",
+    "논문": "paper thesis", "요약": "summary", "매뉴얼": "manual", "설명서": "manual guide", "가이드": "guide", "안내": "guide",
+    "데이터": "data", "분석": "analysis", "모델": "model", "학습": "training train", "서버": "server", "클라우드": "cloud",
+    "보안": "security", "인증": "auth", "네트워크": "network", "데이터베이스": "database", "인프라": "infra", "마케팅": "marketing",
+    "예산": "budget", "매출": "sales revenue", "재무": "finance financial", "투자": "invest", "송장": "invoice", "청구서": "invoice bill",
+    "영수증": "receipt", "일정": "schedule", "로드맵": "roadmap", "템플릿": "template", "양식": "form template", "번역": "translation",
+    "테스트": "test", "실험": "experiment", "결과": "result", "설정": "config setting", "초안": "draft", "최종": "final",
+    "검토": "review", "피드백": "feedback", "사양": "spec", "명세서": "spec", "요구사항": "requirement", "디자인": "design",
+    "프로토타입": "prototype", "데모": "demo", "튜토리얼": "tutorial", "강의": "lecture course", "교안": "lecture slides",
+    "워크숍": "workshop", "세미나": "seminar", "통합": "integration", "연동": "integration", "엔지니어링": "engineering",
+    "파이프라인": "pipeline", "에이전트": "agent", "챗봇": "chatbot", "검색": "search", "추천": "recommend", "대시보드": "dashboard",
+    "앱": "app", "웹": "web", "모바일": "mobile", "결제": "payment", "고객": "customer client", "회사소개서": "company profile",
+    "브로셔": "brochure", "포트폴리오": "portfolio", "백서": "whitepaper", "가격": "price pricing", "주문": "order",
+    "특허": "patent", "연구": "research", "개발": "dev development", "운영": "operation ops", "전략": "strategy", "쇼츠": "shorts",
+    "유튜브": "youtube", "썸네일": "thumbnail", "자막": "subtitle caption", "대본": "script", "스크립트": "script",
+    "인터뷰": "interview", "설문": "survey", "통계": "statistic stats", "정책": "policy", "체크리스트": "checklist",
+    "생성기": "generator", "생성": "generat", "엔진": "engine", "시스템": "system", "플랫폼": "platform", "솔루션": "solution",
+    "블루프린트": "blueprint", "자료": "", "문서": "", "파일": "", "관련": "", "내": "", "그": "", "거": "", "것": "",
+}
+_XL_JOSA = re.compile(r"(으로|에서|에게|이랑|하고|까지|부터|이나|은|는|이|가|을|를|의|에|로|와|과|도|만|랑)$")
+
+
+def xling_name_first(q, res, top=10):
+    """index (in res[:top], > 0) of the file whose name covers every idea of a Korean question through XLING,
+    when at least one idea needed a translation and #1's name does not cover them; else 0"""
+    words = re.findall(r"[가-힣]{2,}|[A-Za-z][A-Za-z0-9]+", q)
+    if not words or not any(re.match(r"[가-힣]", w) for w in words):
+        return 0
+    ideas = []   # each idea: the spellings that count for it in a name
+    for w in words:
+        if re.match(r"[A-Za-z]", w):
+            ideas.append([w.lower()]); continue
+        stem = w if w in XLING else _XL_JOSA.sub("", w)
+        if XLING.get(stem) == "" or XLING.get(w) == "":
+            continue   # 자료, 문서, 파일 …: not an idea of the content
+        ideas.append([stem] + (XLING.get(stem) or "").split())
+    if len(ideas) < 2:
+        return 0
+
+    def cover(x):
+        import unicodedata as _ud
+        nm = _ud.normalize("NFC", x.get("name") or "").lower()
+        hit = [next((sp for sp in idea if (sp in nm if len(sp) > 3 or re.match(r"[가-힣]", sp)
+                                           else re.search(rf"(?<![a-z]){re.escape(sp)}(?![a-z])", nm))), None) for idea in ideas]
+        return all(hit), any(h and re.match(r"[a-z]", h) and h != idea[0] for h, idea in zip(hit, ideas))
+
+    if not res or cover(res[0])[0]:
+        return 0
+    for j, x in enumerate(res[1:top], 1):
+        full, translated = cover(x)
+        if full and translated:
+            return j
+    return 0
+
+
+def refine_skip(res):
+    """why the page's side-by-side second pass is not worth it now ('' = run it). About 1 s on an NVIDIA GPU, so it always runs
+    there; on an Apple GPU or a CPU it takes ~10 s (#20): only when the top two are close, and not while indexing runs.
+    FINDR_REFINE=always|off overrides (off: no checker model on this PC)."""
+    m = os.environ.get("FINDR_REFINE", "auto")
+    if m == "off":
+        return "off"
+    if m == "always" or DEVICE == "cuda":
+        return ""
+    try:
+        p = json.loads((Path(os.environ.get("FINDR_DATA") or Path.home() / ".findr") / "progress.json").read_text(encoding="utf-8"))
+        if p.get("stage") not in (None, "done") and time.time() - p.get("t", 0) < 900 and indexer_alive(p):
+            return "indexing"
+    except (OSError, ValueError):
+        pass
+    ps = [x.get("prob") for x in res["results"][:2]]
+    if None not in ps and ps[0] >= 0.6 and ps[0] - ps[1] >= 0.3:
+        return "clear"
+    return ""
+
+
 def add_probs(res):
     """calibrated chance that each shown candidate is the wanted file (stage 1, fit on tuning sets), plus short reasons.
     The person makes the final call, so 'not here' is never final: candidates stay visible with their odds."""
@@ -1558,6 +1647,9 @@ def serve(f, port):
                 res = _LAST.get((q_, mode))
                 if not res or len(res.get("results") or []) < 2:
                     return self.reply(200, b'{"changed": false}', "application/json; charset=utf-8")
+                skip = refine_skip(res)
+                if skip:   # the order is already clear, or indexing needs the memory: the page just drops its note
+                    return self.reply(200, json.dumps({"changed": False, "skipped": skip}).encode(), "application/json; charset=utf-8")
                 import explore as XP
                 with SEARCH_LOCK:
                     prompt, n = XP.v2_prompt(f, q_, res, today_now())

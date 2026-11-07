@@ -41,6 +41,8 @@ def _encoder():
 
 def cmd_setup(a):
     dev, gb, want = models.plan(photo=False if a.no_photo else (True if a.photo else None), lite=a.lite)
+    lite = paths.HOME / "lite"   # the person chose the small model: no idle-time upgrade either
+    lite.write_text("1") if a.lite else lite.unlink(missing_ok=True)
     print(f"findr {__version__} 설치 | 장치: {dev}{f' ({gb:.0f}GB)' if gb else ''} | 데이터 폴더: {paths.HOME}")
     print("  받을 모델:", ", ".join(want))
     try:
@@ -102,6 +104,59 @@ def cmd_index(a):
                             "--db", str(a.db), "--model", enc], env=env, cwd=str(core))
 
 
+UPGRADE_TO = "embeddinggemma-2"
+UPGRADE_MAX_HOURS = 240   # longer than this in idle time on this PC: not worth the download and the electricity
+
+
+def _ram_gb():
+    return models.ram_gb()
+
+
+def _upgrade_why_not(db):
+    """'' when this index should move to the larger meaning model in idle time, else why not"""
+    import shutil
+    import sqlite3
+    off = paths.HOME / "upgrade_off"
+    if off.exists():
+        return off.read_text(encoding="utf-8").strip() or "꺼짐"
+    if (paths.HOME / "lite").exists():
+        return "작은 모델을 직접 고름 (setup --lite)"
+    if not Path(db).exists():
+        return "색인 없음"
+    c = sqlite3.connect(str(db), timeout=60)
+    r = c.execute("SELECT value FROM meta WHERE key='encoder'").fetchone()
+    if not r or r[0] != "e5-small":
+        return "이미 큰 모델" if r and r[0] == UPGRADE_TO else "해당 없음"
+    if _ram_gb() and _ram_gb() < 7.5:
+        return f"메모리 {_ram_gb():.0f}GB (8GB 이상에서만)"
+    if shutil.disk_usage(paths.HOME).free < 3 * 2 ** 30:
+        return "디스크 여유 3GB 미만"
+    return ""
+
+
+def cmd_upgrade(a):
+    """idle time on a PC that started on the small meaning model: compute the larger model's vectors bit by bit
+    (at most --minutes per run), then switch at once. Search keeps working with the small model until the switch."""
+    why = _upgrade_why_not(a.db)
+    if why:
+        print(f"큰 모델로 바꾸기: 하지 않음 ({why})"); return 1
+    if not models.have(UPGRADE_TO):
+        print("  더 정확한 의미 모델 받는 중 (한 번, 약 1.2GB) ...", flush=True)
+        models.pull([UPGRADE_TO])
+    env = {**os.environ}
+    r = subprocess.call([sys.executable, str(paths.CORE / "index.py"), "--root", str(paths.HOME), "--db", str(a.db),
+                         "--upgrade", UPGRADE_TO, "--minutes", str(a.minutes)], env=env, cwd=str(paths.CORE))
+    st = paths.HOME / "upgrade.json"
+    if r == 2 and st.exists():   # paused: give up when the rest would take far too long on this PC
+        h = json.loads(st.read_text(encoding="utf-8")).get("hours_left") or 0
+        if h > UPGRADE_MAX_HOURS:
+            (paths.HOME / "upgrade_off").write_text(f"이 PC에서 {h:.0f}시간 걸림: 작은 모델 유지", encoding="utf-8")
+            import sqlite3
+            c = sqlite3.connect(str(a.db), timeout=60); c.execute("UPDATE chunks SET emb2=NULL"); c.commit(); c.execute("VACUUM")
+            print(f"큰 모델로 바꾸기: 그만둠 (남은 시간 {h:.0f}시간 > {UPGRADE_MAX_HOURS}시간)")
+    return r
+
+
 def cmd_roots(a):
     """the folders a whole-PC index would cover, in the order people look in them (for the app's folder list)"""
     import scope
@@ -142,9 +197,11 @@ def cmd_serve(a):
         _start("qu", [ls, "-m", str(qu[0]), "--port", str(PORTS["qu"]), "--host", "127.0.0.1", "-ngl", "99", "-np", "4", "-c", "4096",
                       "--temp", "0", "--cache-ram", "512"], "qu_server.log"); side.append("질문 이해")
     ck = sorted((paths.MODELS / "checker").glob("*.gguf"))
-    if ls and ck and dev != "cpu" and not a.no_llm:
+    if ls and ck and models.checker_ok(dev, gb) and not a.no_llm:
         _start("checker", [ls, "-m", str(ck[0]), "--jinja", "-ngl", "99", "-c", "16384", "-np", "4", "--port", str(PORTS["checker"]),
                            "--host", "127.0.0.1", "--no-webui"], "checker.log"); side.append("나란히 비교")
+    else:   # no checker on this PC (or downloaded earlier on a 16 GB Mac): the page skips its second pass
+        os.environ.setdefault("FINDR_REFINE", "off")
     photo_url = ""
     if models.have("kanana-2-v-decide-3b-2611") and dev == "cuda" and not a.no_photo:
         _start("photo", [sys.executable, str(paths.CORE / "photo_srv.py"), "--port", str(PORTS["photo"])], "photo_server.log")
@@ -250,6 +307,8 @@ def main(argv=None):
     s = sub.add_parser("roots", help="PC 전체 색인 때 볼 폴더 목록 (JSON)"); s.set_defaults(fn=cmd_roots)
     s = sub.add_parser("ask", help="터미널에서 찾기"); s.add_argument("query", nargs="+"); s.add_argument("-k", type=int, default=5); s.set_defaults(fn=cmd_ask)
     s = sub.add_parser("doctor", help="설치 상태 점검"); s.set_defaults(fn=cmd_doctor)
+    s = sub.add_parser("upgrade", help="쉬는 시간에 더 정확한 의미 모델로 조금씩 바꾸기 (GPU 없는 PC)")
+    s.add_argument("--minutes", type=float, default=50, help="이번에 쓸 최대 시간 (다음 번에 이어서)"); s.set_defaults(fn=cmd_upgrade)
     a = ap.parse_args(argv)
     a.db = Path(a.db).expanduser()
     return a.fn(a)

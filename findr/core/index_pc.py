@@ -18,8 +18,9 @@ def excluded():
 
 
 def under(p, folders):
-    s = unicodedata.normalize("NFC", str(p))
-    return any(s == x or s.startswith(x + os.sep) for x in folders)
+    k = (lambda x: x.casefold()) if os.name == "nt" else (lambda x: x)   # Windows folder names ignore case
+    s = k(unicodedata.normalize("NFC", str(p)))
+    return any(s == k(x) or s.startswith(k(x) + os.sep) for x in folders)
 
 
 ap = argparse.ArgumentParser(); ap.add_argument("--db", required=True); ap.add_argument("--dry-run", action="store_true")

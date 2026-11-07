@@ -78,3 +78,28 @@ def test_latest_version_question():
     q = "H3Lab 기술사업계획서 최종본"
     assert search.LATESTQ.search(q) and not search.PREVQ.search(q)
     assert search.version_pick(q, res, latest=True)[0]["name"] == "1_H3Lab_기술사업계획서_v4.docx"
+
+
+def test_second_pass_only_when_worth_it(tmp_path, monkeypatch):
+    """#20: on an Apple GPU or CPU the side-by-side pass (~10 s) runs only for a close call, and not while indexing"""
+    import json, time
+    monkeypatch.setenv("FINDR_DATA", str(tmp_path)); monkeypatch.delenv("FINDR_REFINE", raising=False)
+    clear = {"results": [{"prob": 0.9}, {"prob": 0.1}]}; close = {"results": [{"prob": 0.5}, {"prob": 0.4}]}
+    monkeypatch.setattr(search, "DEVICE", "cuda")
+    assert search.refine_skip(clear) == ""   # about 1 s on NVIDIA: always
+    monkeypatch.setattr(search, "DEVICE", "mps")
+    assert search.refine_skip(clear) == "clear" and search.refine_skip(close) == ""
+    (tmp_path / "progress.json").write_text(json.dumps({"stage": "meaning", "t": time.time(), "pid": os.getpid()}))
+    assert search.refine_skip(close) == "indexing"
+    monkeypatch.setenv("FINDR_REFINE", "off")
+    assert search.refine_skip(close) == "off"
+
+
+def test_korean_words_english_name():
+    """#19: '로컬 AI 터널링 설계 문서' means Local_AI_Tunneling_Blueprint.pdf, not a deck whose text says 로컬 … 설계"""
+    res = [{"name": "Cleaned-00. Local_AI_Video_Automation_Engineering.pdf"}, {"name": "18. Vercel_Railway_zrok_Integration.pdf"},
+           {"name": "로컬 설계 메모.txt"}, {"name": "notes.md"}, {"name": "20. Local_AI_Tunneling_Blueprint.pdf"}]
+    assert search.xling_name_first("로컬 AI 터널링 설계 문서", res) == 4
+    assert search.xling_name_first("로컬 설계 메모", res) == 0   # same-script name: left to the usual rules
+    assert search.xling_name_first("터널링 설계 문서", [res[4], res[0]]) == 0   # already first
+    assert search.xling_name_first("사진", res) == 0   # one idea is not enough to override the ranker

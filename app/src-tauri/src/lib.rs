@@ -77,12 +77,136 @@ fn on_battery() -> bool {
     }
 }
 
+/// seconds since the person last touched the keyboard or mouse; None where it cannot be read
+fn idle_seconds() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        #[repr(C)]
+        struct LastInput {
+            size: u32,
+            time: u32,
+        }
+        #[link(name = "user32")]
+        extern "system" {
+            fn GetLastInputInfo(p: *mut LastInput) -> i32;
+        }
+        extern "system" {
+            fn GetTickCount() -> u32;
+        }
+        let mut li = LastInput { size: 8, time: 0 };
+        if unsafe { GetLastInputInfo(&mut li) } == 0 {
+            return None;
+        }
+        Some((unsafe { GetTickCount() }.wrapping_sub(li.time) / 1000) as u64)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let o = Command::new("ioreg").args(["-c", "IOHIDSystem", "-d", "4"]).output().ok()?;
+        let s = String::from_utf8_lossy(&o.stdout);
+        let l = s.lines().find(|l| l.contains("\"HIDIdleTime\""))?;
+        l.rsplit('=').next()?.trim().parse::<u64>().ok().map(|ns| ns / 1_000_000_000)
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let o = Command::new("xprintidle").output().ok()?;
+        String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok().map(|ms| ms / 1000)
+    }
+}
+
+// the idle-time upgrade's process: stopped at once when the person starts an indexing run
+static UPGRADING: Mutex<Option<Child>> = Mutex::new(None);
+
+fn stop_upgrade() {
+    if let Some(mut c) = UPGRADING.lock().unwrap().take() {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+}
+
+/// a PC that started on the small meaning model moves to the larger one while nobody uses it (plugged in, 5 minutes
+/// without input), 10 minutes at a time; search keeps working with the small model until the switch
+fn start_upgrader() {
+    thread::spawn(|| {
+        let mut last_run = std::time::Instant::now();
+        thread::sleep(std::time::Duration::from_secs(900));
+        loop {
+            let h = home();
+            let idle = match idle_seconds() {
+                Some(s) => s >= 300,
+                None => last_run.elapsed().as_secs() >= 3000, // cannot tell: at most one short run an hour
+            };
+            if h.join(".deep-done").exists() && !h.join(".upgrade-done").exists() && !h.join("upgrade_off").exists() && idle && !on_battery() {
+                take_index_turn();
+                let half = std::thread::available_parallelism().map(|n| (n.get() / 2).max(1)).unwrap_or(2);
+                let mut c = low_priority(python());
+                c.env("FINDR_THREADS", half.to_string()).env("OMP_NUM_THREADS", half.to_string());
+                c.args(["-m", "findr", "upgrade", "--minutes", "10"]);
+                let log = std::fs::OpenOptions::new().create(true).append(true).open(h.join("logs").join("upgrade.log"));
+                let code = match log.map(|f| c.stdout(f).stderr(Stdio::null()).stdin(Stdio::null()).spawn()) {
+                    Ok(Ok(child)) => {
+                        *UPGRADING.lock().unwrap() = Some(child);
+                        loop {
+                            thread::sleep(std::time::Duration::from_secs(2));
+                            let mut g = UPGRADING.lock().unwrap();
+                            match g.as_mut().map(|c| c.try_wait()) {
+                                Some(Ok(Some(st))) => {
+                                    g.take();
+                                    break st.code();
+                                }
+                                Some(Ok(None)) => continue,
+                                _ => {
+                                    g.take();
+                                    break None; // stopped for an indexing run
+                                }
+                            }
+                        }
+                    }
+                    _ => None,
+                };
+                give_index_turn();
+                last_run = std::time::Instant::now();
+                if code == Some(0) || code == Some(1) {
+                    let _ = std::fs::write(h.join(".upgrade-done"), VERSION); // switched, or nothing to do on this PC
+                }
+            }
+            thread::sleep(std::time::Duration::from_secs(600));
+        }
+    });
+}
+
+/// the idle-time upgrade for the settings screen: {"on", "done", "reason", "progress"}
+#[tauri::command]
+fn upgrade_state() -> String {
+    let h = home();
+    let p: serde_json::Value = std::fs::read_to_string(h.join("upgrade.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(serde_json::Value::Null);
+    serde_json::json!({
+        "on": !h.join("upgrade_off").exists(),
+        "done": h.join(".upgrade-done").exists(),
+        "reason": std::fs::read_to_string(h.join("upgrade_off")).unwrap_or_default(),
+        "progress": p,
+    }).to_string()
+}
+
+#[tauri::command]
+fn set_upgrade(on: bool) -> Result<(), String> {
+    let h = home();
+    if on {
+        let _ = std::fs::remove_file(h.join("upgrade_off"));
+        let _ = std::fs::remove_file(h.join(".upgrade-done")); // look again (another index, more memory)
+        Ok(())
+    } else {
+        stop_upgrade();
+        std::fs::write(h.join("upgrade_off"), "꺼짐").map_err(|e| e.to_string())
+    }
+}
+
 /// after the search page is up: changed files now and every hour, and once the later pieces of long documents
 fn start_refresher() {
     use std::sync::atomic::Ordering;
     if REFRESHER.swap(true, Ordering::SeqCst) {
         return;
     }
+    start_upgrader();
     thread::spawn(|| loop {
         let folders = load_folders();
         if !folders.is_empty() && home().join("index.db").exists() && !on_battery() {
@@ -423,6 +547,7 @@ fn load_folders() -> Vec<String> {
 fn start_index(app: AppHandle, folders: Vec<String>, deep: Option<bool>) {
     thread::spawn(move || {
         let _ = app.emit("index", Line { step: "index".into(), line: "앞선 색인 작업이 끝나기를 기다리는 중".into() });
+        stop_upgrade(); // the person's own run comes first (the upgrade keeps what it computed)
         take_index_turn();
         let mut c = command(python());
         c.args(["-m", "findr", "index"]).args(&folders);
@@ -565,7 +690,8 @@ pub fn run() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
-            app_state, setup_runtime, list_roots, start_index, start_engine, stop_engine, open_path, open_data_dir, save_folders, load_folders
+            app_state, setup_runtime, list_roots, start_index, start_engine, stop_engine, open_path, open_data_dir, save_folders, load_folders,
+            upgrade_state, set_upgrade
         ])
         .build(tauri::generate_context!())
         .expect("findr 창을 여는 중 오류가 났습니다")

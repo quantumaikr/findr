@@ -82,3 +82,30 @@ def test_scan_skips_app_profile_and_special_files(tmp_path):
     names = {n for (n,) in sqlite3.connect(db).execute("SELECT name FROM files")}
     assert "여행 영상 편집.txt" in names
     assert not names & {"SingletonLock", "SingletonCookie", "LocalPrefs.json", "en.bdic", "s"}
+
+
+def _scan(tmp_path, roots, **env):
+    import sqlite3, subprocess
+    db = tmp_path / "i.db"
+    e = {**os.environ, "FINDR_SCOPE": "user", "FINDR_OCR": "0", **env}
+    r = subprocess.run([sys.executable, str(scope.Path(scope.__file__).with_name("index.py")), "--root", *map(str, roots),
+                        "--db", str(db), "--no-embed"], env=e, capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr[-500:]
+    return {n for (n,) in sqlite3.connect(db).execute("SELECT name FROM files")}, r.stdout
+
+
+def test_exclude_and_dropped_root(tmp_path):
+    """exclude.txt folders leave the index (any case on Windows); a folder no longer searched leaves it too (#17)"""
+    docs, dev, old = tmp_path / "Documents", tmp_path / "Dev", tmp_path / "miniforge3"
+    for d, names in ((docs, ["견적서.txt", "회의록.txt", "계약서.txt"]), (dev / "proj", ["main.txt"]), (old, ["conda.txt"])):
+        d.mkdir(parents=True)
+        for n in names:
+            (d / n).write_text("내용 " + n, encoding="utf-8")
+    names, _ = _scan(tmp_path, [docs, dev, old])
+    assert {"견적서.txt", "main.txt", "conda.txt"} <= names
+    ex = str(dev / "proj").upper() if os.name == "nt" else str(dev / "proj")
+    names, out = _scan(tmp_path, [docs, dev], FINDR_EXCLUDE=ex)   # miniforge3 is no longer a root; Dev/proj is excluded
+    assert "main.txt" not in names and "conda.txt" not in names, out
+    assert {"견적서.txt", "회의록.txt", "계약서.txt"} <= names
+    names, out = _scan(tmp_path, [old])   # most of the index outside the roots (a missing drive?): nothing removed
+    assert "견적서.txt" in names and "FINDR_OUTSIDE kept" in out

@@ -224,6 +224,7 @@ async function settings(s: AppState) {
       <p class="muted" style="margin:14px 0 6px">findr가 열려 있는 동안 바뀐 파일은 한 시간마다, 긴 문서의 뒷부분은 처음 한 번 낮은 우선순위로 알아서 반영합니다.
         지금 바로 하고 싶을 때만 아래를 누르세요.</p>
       <div class="actions" style="margin-top:0"><button id="deep">깊은 내용까지 계산</button></div></div>
+    <div id="upg"></div>
     <h2>사진</h2>
     <div class="card"><label class="switch"><input type="checkbox" id="photo" ${photoOn() ? 'checked' : ''} ${s.gpu !== 'nvidia' ? 'disabled' : ''}>
       <span>사진을 찍힌 내용으로 찾기</span></label>
@@ -240,6 +241,31 @@ async function settings(s: AppState) {
     try { localStorage.setItem('findr.photo', (ev.target as HTMLInputElement).checked ? 'on' : 'off') } catch { /* private storage off */ }
   }
   document.getElementById('back')!.onclick = () => { location.hash = 'search'; if (location.hash === '#search') route() }
+  upgradeCard()
+}
+
+// PCs without a GPU start on the small meaning model; the larger one is computed while nobody uses the PC
+async function upgradeCard() {
+  const box = document.getElementById('upg')
+  if (!box) return
+  let u: { on: boolean, done: boolean, reason: string, progress: { done?: number, total?: number, hours_left?: number, switched?: boolean } | null }
+  try { u = JSON.parse(await invoke<string>('upgrade_state')) } catch { return }
+  const p = u.progress
+  if (u.done && !(p && p.switched)) return   // a PC that already uses the larger model (or cannot): nothing to show
+  const pct = p && p.total ? Math.floor(100 * (p.done || 0) / p.total) : 0
+  const status = p && p.switched ? '더 정확한 의미 모델로 바꾸었습니다.'
+    : !u.on ? (u.reason && u.reason !== '꺼짐' ? `하지 않음: ${esc(u.reason)}` : '꺼져 있습니다. 지금 모델로 계속 찾습니다.')
+    : p && p.total ? `${pct}% 계산함${p.hours_left ? ` · 쉬는 시간 약 ${Math.ceil(p.hours_left)}시간 남음` : ''}`
+    : 'PC를 5분 이상 쓰지 않고 전원이 연결되어 있을 때 시작합니다.'
+  box.innerHTML = `<h2>검색 정확도</h2>
+    <div class="card"><label class="switch"><input type="checkbox" id="upgon" ${u.on ? 'checked' : ''} ${p && p.switched ? 'disabled' : ''}>
+      <span>쉬는 시간에 더 정확한 의미 모델로 바꾸기</span></label>
+      <p class="muted" style="margin:8px 0 0">처음에는 빠른 작은 모델로 색인했습니다. PC를 쓰지 않는 동안 10분씩 조금씩 계산하고, 다 끝나면 한 번에 바뀝니다.
+        그동안 검색은 지금처럼 됩니다. 모델을 한 번 받습니다(약 1.2GB).</p>
+      <p style="margin:8px 0 0">${status}</p></div>`
+  document.getElementById('upgon')!.onchange = async ev => {
+    await invoke('set_upgrade', { on: (ev.target as HTMLInputElement).checked }); upgradeCard()
+  }
 }
 
 route()

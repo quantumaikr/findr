@@ -191,6 +191,8 @@ def main():
     # 2026-11-05: newest and most useful first. The scan registers every file by name at once; content is read in waves.
     ap.add_argument("--max-age-days", type=float, default=0, help="this wave reads content only of files changed within N days (0 = all)")
     ap.add_argument("--limit", type=int, default=0, help="read content of at most N pending files in this run (0 = no limit)")
+    ap.add_argument("--upgrade", default="", help="move the meaning vectors to this encoder in idle time (no scan), then switch")
+    ap.add_argument("--minutes", type=float, default=50, help="--upgrade: stop after N minutes (the next idle run continues)")
     a = ap.parse_args()
     roots = [Path(r) for r in a.root]; Path(a.db).expanduser().parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(Path(a.db).expanduser(), timeout=60)
@@ -203,12 +205,16 @@ def main():
       CREATE TABLE IF NOT EXISTS cards(file INTEGER PRIMARY KEY, outline TEXT, summary TEXT, done INT DEFAULT 0);""")
     if "pending" not in [r[1] for r in con.execute("PRAGMA table_info(files)")]:
         con.execute("ALTER TABLE files ADD COLUMN pending INT DEFAULT 0")
+    if "emb2" not in [r[1] for r in con.execute("PRAGMA table_info(chunks)")]:   # the larger model's vectors, filled in idle time
+        con.execute("ALTER TABLE chunks ADD COLUMN emb2 BLOB")
     con.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
     if not con.execute("SELECT 1 FROM meta WHERE key='nfc'").fetchone():   # an index made before NFC: moved once (#12)
-        moved = 0
+        moved, t0 = 0, time.time()
         for fid, name, path in con.execute("SELECT id, name, path FROM files").fetchall():
             if nfc(name) == name and nfc(path) == path:
                 continue
+            if moved and moved % 2000 == 0:   # saved in parts and reported: a large index does not look hung
+                con.commit(); print(f"  FINDR_NFC {moved} files so far ({time.time() - t0:.0f}s)", flush=True)
             con.execute("UPDATE files SET name=? WHERE id=?", (nfc(name), fid))
             for cid, text in con.execute("SELECT id, text FROM chunks WHERE file=?", (fid,)).fetchall():
                 con.execute("DELETE FROM fts WHERE rowid=?", (cid,))
@@ -220,14 +226,27 @@ def main():
             print(f"FINDR_NFC {moved} files with decomposed (NFD) names moved to NFC", flush=True)
     if a.model in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and not con.execute("SELECT 1 FROM chunks WHERE emb IS NOT NULL LIMIT 1").fetchone():
         con.execute("INSERT OR REPLACE INTO meta VALUES('encoder', ?)", (a.model,))   # known from the start: search works while indexing (#9)
-    excl = {nfc(Path(x).as_posix()).rstrip("/") for x in os.environ.get("FINDR_EXCLUDE", "").split(os.pathsep) if x}
+    key = (lambda x: nfc(x).casefold()) if os.name == "nt" else nfc   # Windows folder names ignore case
+    excl = {key(Path(x).as_posix()).rstrip("/") for x in os.environ.get("FINDR_EXCLUDE", "").split(os.pathsep) if x}
     if excl:   # folders this PC chose not to search (exclude.txt): files already indexed under them leave the index
-        ids = [i for i, raw in con.execute("SELECT id, path FROM files") if (s := nfc(raw)) in excl or any(s.startswith(x + "/") for x in excl)]
+        ids = [i for i, raw in con.execute("SELECT id, path FROM files") if (s := key(raw)) in excl or any(s.startswith(x + "/") for x in excl)]
         for fid in ids:
             drop(con, fid)
         if ids:
             print(f"FINDR_EXCLUDE removed {len(ids)} files", flush=True)
+    if os.environ.get("FINDR_SCOPE") == "user" and not a.upgrade:
+        pres = [key(r.as_posix()).rstrip("/") + "/" for r in roots]
+        rows = con.execute("SELECT id, path FROM files").fetchall()
+        out = [i for i, raw in rows if not any(key(raw).startswith(x) for x in pres)]
+        if out and len(out) <= len(rows) // 2:   # more than half would be a missing drive or a bad root list: kept
+            for fid in out:
+                drop(con, fid)
+            print(f"FINDR_OUTSIDE removed {len(out)} files under folders no longer searched", flush=True)
+        elif out:
+            print(f"FINDR_OUTSIDE kept {len(out)} files outside the current folders (too many to be a scope change)", flush=True)
     con.commit()
+    if a.upgrade:
+        return upgrade(con, a.upgrade, a.minutes)
     progress("names", 0, len(roots))
     for k, root in enumerate(roots):   # stage 1: names and folders of every chosen folder first (seconds)
         print("FINDR_ROOT " + json.dumps({"i": k, "n": len(roots), "path": str(root)}, ensure_ascii=False), flush=True)
@@ -245,7 +264,7 @@ def main():
                 rel = "/" if Path(dp) == root else ""
                 dns[:] = [d for d in dns if not skip_dir(rel, d)]
             if excl:
-                dns[:] = [d for d in dns if nfc((Path(dp) / d).as_posix()) not in excl]
+                dns[:] = [d for d in dns if key((Path(dp) / d).as_posix()) not in excl]
             for fn in fns:
                 if not a.with_libs and JUNK.search(fn):
                     continue
@@ -790,7 +809,7 @@ def embed(con, model):
         b = uniq[i:i + 256]
         with torch.no_grad():
             v = emb512(enc, [k for k, _ in b]).cpu().numpy().astype(np.float16)
-        con.executemany("UPDATE chunks SET emb=? WHERE id=?", [(x.tobytes(), cid) for x, (_, cids) in zip(v, b) for cid in cids])
+        con.executemany("UPDATE chunks SET emb=?, emb2=NULL WHERE id=?", [(x.tobytes(), cid) for x, (_, cids) in zip(v, b) for cid in cids])   # changed text: its side vector is stale
         done_ = i + len(b)
         if done_ % 2560 < 256 or time.time() - last > 30 or done_ == len(uniq):   # saved and reported often: progress is visible
             con.commit(); last = time.time()
@@ -802,6 +821,65 @@ def embed(con, model):
                 print("FINDR_SLOW 이 PC에서는 큰 모델이 느립니다. 작은 모델로 바꾸면 훨씬 빨라집니다:  findr setup --lite", flush=True)
     con.commit(); print(f"FINDR_EMBED {len(rows)} chunks {time.time() - t0:.0f}s (computed {len(uniq)}, identical skipped {len(rows) - len(uniq)}"
                         + (f", later pieces left for a deep run {later})" if later else ")"))
+
+
+def upgrade(con, target, minutes=50, bs=None):
+    """compute `target` vectors next to the current ones (column emb2), at most `minutes` per run; when all are there,
+    switch in one transaction (emb <- emb2, meta encoder <- target). Returns 0 switched / 2 more runs needed / 1 nothing to do."""
+    from enc_eg2 import encoder_of, make_encoder
+    import torch
+    cur = encoder_of(con)
+    if cur == target:
+        print(f"FINDR_UPGRADE done already ({target})", flush=True); return 1
+    if "emb2" not in [r[1] for r in con.execute("PRAGMA table_info(chunks)")]:
+        con.execute("ALTER TABLE chunks ADD COLUMN emb2 BLOB")
+    mark = con.execute("SELECT value FROM meta WHERE key='upgrade'").fetchone()
+    if not mark or mark[0] != target:   # a new target (or none yet): side vectors of another encoder are not reused
+        con.execute("UPDATE chunks SET emb2=NULL"); con.execute("INSERT OR REPLACE INTO meta VALUES('upgrade', ?)", (target,))
+    con.commit()
+    if os.environ.get("FINDR_THREADS"):
+        torch.set_num_threads(max(1, int(os.environ["FINDR_THREADS"])))
+    enc = make_encoder(target)
+    if bs:
+        enc.bs = bs
+    elif getattr(enc, "dev", "cpu") == "cpu":
+        enc.bs = int(os.environ.get("FINDR_BATCH") or 8)   # small batches on the CPU: memory stays low, each run stops on time
+    t0 = time.time(); stop = t0 + minutes * 60; did = 0
+    total = con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL").fetchone()[0]
+    while True:
+        rows = con.execute("""SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
+                              WHERE c.emb IS NOT NULL AND c.emb2 IS NULL ORDER BY (c.n > 1), f.mtime DESC, c.n LIMIT 64""").fetchall()
+        if not rows:
+            break
+        if time.time() > stop:
+            left = con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL AND emb2 IS NULL").fetchone()[0]
+            rate = did / max(time.time() - t0, 1e-6)
+            print(f"FINDR_UPGRADE paused {total - left}/{total} | {rate:.1f} pieces/s | about {left / max(rate, 1e-6) / 3600:.1f} h of idle time left", flush=True)
+            progress_upgrade(target, total - left, total, rate=round(rate, 2), hours_left=round(left / max(rate, 1e-6) / 3600, 1)); return 2
+        with torch.no_grad():
+            v = emb512(enc, [f"{label(Path(p))}\n{t}"[:1200] for _, t, p in rows]).cpu().numpy().astype(np.float16)
+        con.executemany("UPDATE chunks SET emb2=? WHERE id=?", [(x.tobytes(), cid) for x, (cid, _, _) in zip(v, rows)])
+        con.commit(); did += len(rows)
+        if did % 640 < 64:
+            progress_upgrade(target, total - con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL AND emb2 IS NULL").fetchone()[0], total)
+    with con:   # every vector has its counterpart: switch at once (search reloads when the recorded encoder changes)
+        con.execute("UPDATE chunks SET emb=emb2 WHERE emb IS NOT NULL")
+        con.execute("UPDATE chunks SET emb2=NULL")
+        con.execute("INSERT OR REPLACE INTO meta VALUES('encoder', ?)", (target,))
+        con.execute("DELETE FROM meta WHERE key='upgrade'")
+    progress_upgrade(target, total, total, switched=True)
+    print(f"FINDR_UPGRADE switched to {target}: {total} vectors in {time.time() - t0:.0f}s this run", flush=True)
+    return 0
+
+
+def progress_upgrade(target, done, total, **kw):
+    """the upgrade's own progress file (the indexing banner stays for indexing)"""
+    d = os.environ.get("FINDR_DATA")
+    if d:
+        try:
+            Path(d, "upgrade.json").write_text(json.dumps({"target": target, "done": done, "total": total, "t": time.time(), **kw}), encoding="utf-8")
+        except OSError:
+            pass
 
 
 def emb512(enc, texts):
@@ -820,4 +898,4 @@ def emb512(enc, texts):
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

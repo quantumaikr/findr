@@ -167,6 +167,7 @@ let tried=[];
 async function refine(qq,r){   // a small local model lays the top 10 side by side and moves its picks up
  if(!r.results||r.results.length<2)return; $('#notice').insertAdjacentHTML('beforeend','<div class="refine" id="rf">후보를 열어 보고 비교하는 중…</div>');
  try{const f=await (await fetch('/refine?'+new URLSearchParams({q:qq,mode:r.route||mode}))).json(); if(!last||last.q0!==qq)return;
+  if(f.skipped){const e=$('#rf');if(e)e.remove();return}   // not needed this time (clear order, or indexing on a slower PC)
   if(f.results){const no=new Set(last.results.filter(x=>x.no).map(x=>x.path)); f.results.forEach(x=>{if(no.has(x.path))x.no=true}); last.results=f.results; list()}
   const e=$('#rf'); if(e)e.textContent=f.changed?'열어 보고 순서를 다듬었습니다.':'열어 보고 확인했습니다.'}catch(e){const x=$('#rf');if(x)x.remove()}}
 function understanding(r){

@@ -35,6 +35,28 @@ def gpu():
     return "cpu", 0.0
 
 
+def ram_gb():
+    """this PC's memory in GB (0 when it cannot be read)"""
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class M(ctypes.Structure):
+                _fields_ = [("l", ctypes.c_ulong), ("load", ctypes.c_ulong), ("total", ctypes.c_ulonglong), ("avail", ctypes.c_ulonglong),
+                            ("pt", ctypes.c_ulonglong), ("pa", ctypes.c_ulonglong), ("vt", ctypes.c_ulonglong), ("va", ctypes.c_ulonglong), ("x", ctypes.c_ulonglong)]
+            m = M(); m.l = ctypes.sizeof(M); ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
+            return m.total / 2 ** 30
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2 ** 30
+    except Exception:
+        return 0.0
+
+
+def checker_ok(dev, gb):
+    """the side-by-side checker (1.7B, ~2 GB with its cache): NVIDIA with 6 GB+, or an Apple GPU with 24 GB+ of shared memory
+    (on 16 GB it pushed a Mac into swap next to search and indexing, #20)"""
+    return dev == "cuda" and gb >= 6 or dev == "mps" and ram_gb() >= 24
+
+
 def plan(photo=None, lite=False):
     """the folders this PC should have"""
     dev, gb = gpu()
@@ -42,7 +64,7 @@ def plan(photo=None, lite=False):
     big = dev == "mps" or (dev == "cuda" and gb >= 4)
     big = big and not lite
     want = ["rank", "gate", "qu"] + (["embeddinggemma-2"] if big else ["multilingual-e5-small"])
-    if big and (dev == "mps" or gb >= 6):
+    if big and checker_ok(dev, gb):
         want.append("checker")
     if photo is None:
         photo = dev == "cuda" and gb >= 10   # the photo model needs about 7.5 GB of GPU memory next to the rest
