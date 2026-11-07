@@ -49,9 +49,41 @@ def sniff_text(path, limit=2_000_000):
 _HWP_WIDE = {1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23}   # controls that span 8 WCHARs
 
 
+# 본 제품은 한글과컴퓨터의 한글 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다.
+def _hwp_para_text(data, out, limit, total=0):
+    """PARA_TEXT records of one section's record stream -> out; returns the running length"""
+    i = 0
+    while i + 4 <= len(data):
+        h = struct.unpack_from("<I", data, i)[0]; i += 4
+        tag, size = h & 0x3FF, (h >> 20) & 0xFFF
+        if size == 0xFFF:
+            size = struct.unpack_from("<I", data, i)[0]; i += 4
+        if tag == 67:                    # HWPTAG_PARA_TEXT
+            rec = data[i:i + size]; j = 0; buf = []
+            while j + 2 <= len(rec):
+                c = struct.unpack_from("<H", rec, j)[0]
+                if c < 32:
+                    if c in _HWP_WIDE:
+                        if c == 9:
+                            buf.append("\t")
+                        j += 16; continue
+                    if c in (10, 13):
+                        buf.append("\n")
+                    j += 2; continue
+                buf.append(chr(c)); j += 2
+            s = "".join(buf).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")   # join surrogate pairs (emoji etc.)
+            out.append(s); total += len(s)
+            if total >= limit:
+                break
+        i += size
+    return total
+
+
 def hwp_text(path, limit=2_000_000):
     """HWP 5 (한글) text without LibreOffice: zlib-compressed BodyText sections, PARA_TEXT records (tables included).
-    Returns None for password-protected or distribution(배포용) documents and anything not HWP 5 -> caller falls back."""
+    Distribution(배포용) documents: the ViewText sections are decrypted as the published format describes (hwpdist.py);
+    if that fails, the unencrypted preview text (PrvText). Returns None for password-protected documents and anything
+    not HWP 5 -> caller falls back."""
     try:
         import olefile
         import zlib
@@ -64,40 +96,32 @@ def hwp_text(path, limit=2_000_000):
         if not fh.startswith(b"HWP Document File"):
             return None
         props = struct.unpack_from("<I", fh, 36)[0]
-        if props & 0x2 or props & 0x4:          # password / distribution document
+        if props & 0x2:                          # password: the text is not ours to read
             return None
-        compressed = bool(props & 0x1)
-        secs = sorted((e for e in ole.listdir() if len(e) == 2 and e[0] == "BodyText" and e[1].startswith("Section")),
+        compressed, dist = bool(props & 0x1), bool(props & 0x4)
+        storage = "ViewText" if dist else "BodyText"
+        secs = sorted((e for e in ole.listdir() if len(e) == 2 and e[0] == storage and e[1].startswith("Section")),
                       key=lambda e: int(e[1][7:] or 0))
         out, total = [], 0
-        for e in secs:
-            data = ole.openstream(e).read()
-            if compressed:
-                data = zlib.decompress(data, -15)
-            i = 0
-            while i + 4 <= len(data):
-                h = struct.unpack_from("<I", data, i)[0]; i += 4
-                tag, size = h & 0x3FF, (h >> 20) & 0xFFF
-                if size == 0xFFF:
-                    size = struct.unpack_from("<I", data, i)[0]; i += 4
-                if tag == 67:                    # HWPTAG_PARA_TEXT
-                    rec = data[i:i + size]; j = 0; buf = []
-                    while j + 2 <= len(rec):
-                        c = struct.unpack_from("<H", rec, j)[0]
-                        if c < 32:
-                            if c in _HWP_WIDE:
-                                if c == 9:
-                                    buf.append("\t")
-                                j += 16; continue
-                            if c in (10, 13):
-                                buf.append("\n")
-                            j += 2; continue
-                        buf.append(chr(c)); j += 2
-                    s = "".join(buf).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")   # join surrogate pairs (emoji etc.)
-                    out.append(s); total += len(s)
-                    if total >= limit:
-                        break
-                i += size
+        try:
+            for e in secs:
+                data = ole.openstream(e).read()
+                if dist:
+                    from hwpdist import decrypt_viewtext
+                    data = decrypt_viewtext(data)
+                    if data is None:
+                        raise ValueError("not a distribution section")
+                if compressed:
+                    data = zlib.decompress(data, -15)
+                total = _hwp_para_text(data, out, limit, total)
+                if total >= limit:
+                    break
+        except Exception:
+            if not dist:
+                raise
+            out = []
+        if dist and not "".join(out).strip() and ole.exists("PrvText"):   # the preview the file keeps unencrypted
+            out = [ole.openstream("PrvText").read().decode("utf-16-le", "ignore")]
         t = "".join(out)
     except Exception:
         return None

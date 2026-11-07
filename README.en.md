@@ -120,4 +120,6 @@ File contents, questions and search history are never sent off the PC. Everythin
 
 ## License
 
-Apache License 2.0. Models downloaded during setup follow their publishers' licenses. Report security issues as described in [SECURITY.md](SECURITY.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+Apache License 2.0. Models downloaded during setup follow their publishers' licenses.
+
+본 제품은 한글과컴퓨터의 한글 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다. (HWP reading follows Hancom's published HWP file format documents.) Report security issues as described in [SECURITY.md](SECURITY.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
