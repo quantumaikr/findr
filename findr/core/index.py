@@ -24,7 +24,8 @@ import numpy as np
 TEXT = {".md", ".txt", ".py", ".pyi", ".js", ".ts", ".jsx", ".tsx", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".ini",
         ".cfg", ".csv", ".tsv", ".log", ".html", ".htm", ".css", ".sh", ".ps1", ".bat", ".cmd", ".c", ".h", ".cpp", ".hpp",
         ".cu", ".cuh", ".java", ".go", ".rs", ".sql", ".xml", ".rst", ".ipynb", ".jinja", ".tex", ".r", ".m", ".lua", ""}
-DOC = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".hwp", ".doc", ".ppt", ".xls", ".key"}
+DOC = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".hwp", ".doc", ".ppt", ".xls", ".key",
+       ".xlsb", ".ods", ".rtf", ".eml", ".pages", ".numbers"}   # moretext.py (sheets, RTF, e-mail), keynote_text (iWork)
 AUD = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".wma", ".ogg"}   # transcribed locally by stt_cache.py (faster-whisper)
 OLD = {".hwp", ".doc", ".ppt", ".xls"}   # old binary formats: converted locally by LibreOffice (+ H2Orestart for hwp), cached
 SECRET = re.compile(r"^(\.env(\..*)?|\.netrc|\.pgpass|\.git-credentials|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|credentials(\.json|\.ya?ml|\.txt)?"
@@ -87,13 +88,27 @@ def tier(p: Path):
 
 try:   # old office formats: content sniffing + Word 97 piece table before LibreOffice (orders of magnitude faster)
     from .officetext import sniff_text, doc_text, hwp_text
+    from .moretext import sheet_text, rtf_text, eml_text
 except ImportError:
     from officetext import sniff_text, doc_text, hwp_text
+    from moretext import sheet_text, rtf_text, eml_text
 
 
 def extract(p: Path, limit):
     ext = real_ext(p)
     try:
+        if ext in (".xls", ".xlsb", ".ods"):   # sheets: python-calamine first, LibreOffice only when that fails
+            t = sheet_text(p, limit)
+            if t and t.strip():
+                return t
+            if ext != ".xls":
+                return ""
+        if ext == ".rtf":
+            return rtf_text(p, limit) or ""
+        if ext == ".eml":
+            return eml_text(p, limit) or ""
+        if ext in (".pages", ".numbers"):   # iWork shares Keynote's container: snappy-framed protobuf in Index/*.iwa
+            return keynote_text(p, limit)
         if ext in OLD:
             t = sniff_text(p, limit)   # web-exported HTML/MHT/text saved under an office extension
             if t is None and ext == ".doc":
@@ -142,22 +157,28 @@ def convert_old(p: Path):
     st = p.stat()
     key = hashlib.sha1(f"{p}|{st.st_size}|{st.st_mtime}".encode()).hexdigest()
     cache = Path(os.environ.get("FINDR_DATA") or (Path.home() / ".findr")) / "conv" / (key + ".txt")
-    if cache.exists():
+    done = cache.with_suffix(".ok")   # LibreOffice ran and the file really holds no text
+    if cache.exists() and (cache.stat().st_size or done.exists() or not shutil.which("soffice")):   # a failed (empty) result is retried
         return cache.read_text(encoding="utf-8", errors="ignore")
+    if not shutil.which("soffice"):
+        return ""   # nothing to convert with: no cache entry, so installing LibreOffice later reads the file
     cache.parent.mkdir(parents=True, exist_ok=True)
-    ext = p.suffix.lower(); txt = ""
+    ext = p.suffix.lower(); txt = ""; converted = False
     with tempfile.TemporaryDirectory() as td:
         src = Path(td) / ("in" + ext); shutil.copyfile(p, src)
         target = "pdf" if ext in (".ppt", ".xls") else "txt:Text"
         try:
             subprocess.run(["soffice", "--headless", "--convert-to", target, "--outdir", td, str(src)], capture_output=True, timeout=120)
-            if target == "pdf" and (Path(td) / "in.pdf").exists():
+            converted = (Path(td) / ("in.pdf" if target == "pdf" else "in.txt")).exists()
+            if target == "pdf" and converted:
                 txt = subprocess.run(["pdftotext", "-layout", str(Path(td) / "in.pdf"), "-"], capture_output=True, timeout=120).stdout.decode("utf-8", "ignore")
-            elif (Path(td) / "in.txt").exists():
+            elif converted:
                 txt = (Path(td) / "in.txt").read_text(encoding="utf-8", errors="ignore")
         except Exception as e:
             print("  convert fail", p.name, type(e).__name__, file=sys.stderr)
     cache.write_text(txt, encoding="utf-8")
+    if converted and not txt.strip():
+        done.touch()   # really empty: not converted again on every run
     return txt
 
 
@@ -824,6 +845,13 @@ def _pb_strings(buf):
     return out
 
 
+# iWork documents carry the locale's calendar and currency names and a style sheet: not what people search for
+_IWORK_NOISE = re.compile(r"^(?:[일월화수목금토]요일|오전|오후|AM|PM|(?:Sun|Mon|Tues|Wednes|Thurs|Fri|Satur)day|"
+                          r"(?:January|February|March|April|May|June|July|August|September|October|November|December)|"
+                          r"\d{1,2}월|[A-Z]{2}[$¥€£₩]|사용자 설정 포맷.*|Office Theme.*)$")
+_IWORK_SKIP = ("Stylesheet", "ViewState", "Metadata", "CalculationEngine", "AnnotationAuthorStorage")
+
+
 def keynote_text(p, limit):
     """Apple Keynote: '09 and older keep XML (index.apxl); 6+ keep snappy-framed protobuf (Index/*.iwa, sometimes in Index.zip)"""
     import gzip, io, zipfile
@@ -838,14 +866,19 @@ def keynote_text(p, limit):
         if "Index.zip" in names:
             z = zipfile.ZipFile(io.BytesIO(z.read("Index.zip"))); names = z.namelist()
         seen, out, size = set(), [], 0; end = time.time() + FILE_SECONDS
-        for nm in sorted(names, key=lambda x: (not x.startswith("Index/Slide"), x)):   # slides first
+        iwork = Path(str(p)).suffix.lower() in (".pages", ".numbers")
+        for nm in sorted(names, key=lambda x: (not x.startswith(("Index/Slide", "Index/Tables/")), x)):   # slides / tables first
             if time.time() > end:
                 break
             if not (nm.startswith("Index/") and nm.endswith(".iwa")) or z.getinfo(nm).file_size > 50_000_000:
                 continue
+            if iwork and any(k in nm for k in _IWORK_SKIP):
+                continue
             for t in _pb_strings(_iwa(z.read(nm))):
                 t = t.strip()
                 if len(_WORDY.findall(t)) < 2 or _STYLEID.search(t):   # style ids, symbols: not what people search for
+                    continue
+                if iwork and _IWORK_NOISE.match(t):
                     continue
                 if t and t not in seen:
                     seen.add(t); out.append(t); size += len(t)
