@@ -84,6 +84,12 @@ def _check_reranker():
     if models.gpu()[0] != "cpu":
         return ""
     ox = paths.MODELS / "rank" / "model_int8.onnx"
+    if not ox.exists():   # set up before the int8 model existed: an update fetches just that file
+        try:
+            models.pull_rank_int8()
+        except Exception as e:
+            print(f"  가벼운 재정렬 모델을 받지 못했습니다 ({type(e).__name__}): 전체 모델로 계속합니다", flush=True)
+            return "fp32"
     try:
         import onnxruntime as ort
         ort.InferenceSession(str(ox), providers=["CPUExecutionProvider"])

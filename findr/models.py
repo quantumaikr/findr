@@ -116,6 +116,13 @@ def pull(folders, token=None):
         snapshot_download(OWN, local_dir=paths.MODELS, allow_patterns=pats, ignore_patterns=None if cpu else ["*.onnx"], token=token)
 
 
+def pull_rank_int8(token=None):
+    """the int8 reranker for a CPU-only PC that was set up before it existed (an update finds the rank folder already there)"""
+    from huggingface_hub import hf_hub_download
+    print("  가벼운 재정렬 모델 받는 중 (543MB, 한 번) ...", flush=True)
+    hf_hub_download(OWN, "rank/model_int8.onnx", local_dir=paths.MODELS, token=token)
+
+
 def pull_rank_fp32(token=None):
     """the full-precision reranker weights, when the int8 model cannot run on this PC"""
     from huggingface_hub import snapshot_download
