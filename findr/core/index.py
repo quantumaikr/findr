@@ -220,6 +220,13 @@ def main():
             print(f"FINDR_NFC {moved} files with decomposed (NFD) names moved to NFC", flush=True)
     if a.model in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and not con.execute("SELECT 1 FROM chunks WHERE emb IS NOT NULL LIMIT 1").fetchone():
         con.execute("INSERT OR REPLACE INTO meta VALUES('encoder', ?)", (a.model,))   # known from the start: search works while indexing (#9)
+    excl = {nfc(Path(x).as_posix()).rstrip("/") for x in os.environ.get("FINDR_EXCLUDE", "").split(os.pathsep) if x}
+    if excl:   # folders this PC chose not to search (exclude.txt): files already indexed under them leave the index
+        ids = [i for i, raw in con.execute("SELECT id, path FROM files") if (s := nfc(raw)) in excl or any(s.startswith(x + "/") for x in excl)]
+        for fid in ids:
+            drop(con, fid)
+        if ids:
+            print(f"FINDR_EXCLUDE removed {len(ids)} files", flush=True)
     con.commit()
     progress("names", 0, len(roots))
     for k, root in enumerate(roots):   # stage 1: names and folders of every chosen folder first (seconds)
@@ -237,6 +244,8 @@ def main():
                     dns[:] = []; continue   # an app's embedded-browser profile (CapCut's CEF folder in ~/Movies)
                 rel = "/" if Path(dp) == root else ""
                 dns[:] = [d for d in dns if not skip_dir(rel, d)]
+            if excl:
+                dns[:] = [d for d in dns if nfc((Path(dp) / d).as_posix()) not in excl]
             for fn in fns:
                 if not a.with_libs and JUNK.search(fn):
                     continue

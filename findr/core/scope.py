@@ -27,7 +27,8 @@ USER_DIRS = [  # (order, label, names) — order: what people look for first
 ]
 # children of a home folder that are not the person's own work (Windows, macOS, Linux)
 HOME_SKIP = {"appdata", "library", "applications", "public", "contacts", "favorites", "links", "saved games", "searches", "3d objects",
-             "intelgraphicsprofiles", "microsoftedgebackups", "ansel", "snap", "go", "miniconda3", "anaconda3", "scoop", "sync", "templates"}
+             "intelgraphicsprofiles", "microsoftedgebackups", "ansel", "snap", "go", "miniconda3", "anaconda3", "miniforge3", "mambaforge",
+             "micromamba", "scoop", "sync", "templates"}
 SKIP_USERS = {"public", "default", "default user", "all users", "defaultappool", "wdagutilityaccount"}
 
 
