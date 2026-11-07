@@ -59,6 +59,26 @@ def aes128_ecb_decrypt(key, data):
     return bytes(out)
 
 
+def aes128_ecb_encrypt(key, data):
+    """the forward cipher, for tests that build a distribution section with a known key (findr itself only decrypts)"""
+    rk = _round_keys(key); out = bytearray()
+    for off in range(0, len(data) - len(data) % 16, 16):
+        s = [b ^ k for b, k in zip(data[off:off + 16], rk[0])]
+        for rnd in range(1, 11):
+            s = [_SBOX[b] for b in s]
+            s = [s[(i + 4 * (i % 4)) % 16] for i in range(16)]       # shift rows
+            if rnd < 10:
+                n = []
+                for c in range(4):                                     # mix columns
+                    a0, a1, a2, a3 = s[4 * c:4 * c + 4]
+                    n += [_xt(a0) ^ _xt(a1) ^ a1 ^ a2 ^ a3, a0 ^ _xt(a1) ^ _xt(a2) ^ a2 ^ a3,
+                          a0 ^ a1 ^ _xt(a2) ^ _xt(a3) ^ a3, _xt(a0) ^ a0 ^ a1 ^ a2 ^ _xt(a3)]
+                s = n
+            s = [b ^ k for b, k in zip(s, rk[rnd])]
+        out += bytes(s)
+    return bytes(out)
+
+
 # ---- 배포용 문서 데이터 -> key ----
 HWPTAG_DISTRIBUTE_DOC_DATA = 16 + 12
 

@@ -48,18 +48,22 @@ def rtf_text(path, limit=2_000_000):
         cp = "cp1252"
     out, pend = [], bytearray()            # pend: \'hh bytes waiting to be decoded together (a Korean letter is two)
     stack, skip, uc, drop = [], False, 1, 0   # drop: fallback characters to swallow after \uN
+    size = [0]                             # running length: summing out on every token made big files quadratic
+
+    def put(t):
+        out.append(t); size[0] += len(t)
 
     def flush():
         if pend:
-            out.append(pend.decode(cp, "replace")); pend.clear()
+            put(pend.decode(cp, "replace")); pend.clear()
 
     for word, num, hexb, sym, brace, text in (m.groups() for m in _RTF_TOKEN.finditer(raw)):
         if brace == b"{":
-            flush(); stack.append((skip, uc)); continue
+            flush(); stack.append((skip, uc, drop)); continue
         if brace == b"}":
             flush()
             if stack:
-                skip, uc = stack.pop()
+                skip, uc, drop = stack.pop()   # fallbacks left unswallowed inside a group do not eat the next group's text
             continue
         if hexb is not None:
             if drop:
@@ -76,31 +80,33 @@ def rtf_text(path, limit=2_000_000):
             elif w == "uc" and num is not None:
                 uc = int(num)
             elif w == "u" and num is not None:
-                n = int(num); out.append(chr(n + 65536 if n < 0 else n)); drop = uc
+                n = int(num); put(chr(n + 65536 if n < 0 else n)); drop = uc
             elif w in ("par", "line", "row", "sect", "page"):
-                out.append("\n")
+                put("\n")
             elif w in ("tab", "cell"):
-                out.append("\t")
+                put("\t")
             continue
         if sym is not None:
             flush()
             if sym == b"*":
                 skip = True            # {\* ...}: an optional destination this reader does not know
             elif not skip and sym in (b"\\", b"{", b"}"):
-                out.append(sym.decode())
+                put(sym.decode())
             elif not skip and sym == b"~":
-                out.append(" ")
+                put(" ")
             continue
         if text is not None and not skip:
             flush()
             t = text.decode(cp, "replace")
             if drop:
                 k = min(drop, len(t)); t = t[k:]; drop -= k
-            out.append(t)
-        if sum(map(len, out)) > limit * 2:
+            put(t)
+        if size[0] > limit * 2:
             break
     flush()
-    t = re.sub(r"[ \t]+\n", "\n", "".join(out))
+    # \uN gives UTF-16 units: join surrogate pairs (emoji, rare Hanja) instead of keeping lone halves
+    t = "".join(out).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+    t = re.sub(r"[ \t]+\n", "\n", t)
     return re.sub(r"\n{3,}", "\n\n", t).strip()[:limit]
 
 
