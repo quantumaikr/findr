@@ -103,3 +103,16 @@ def test_korean_words_english_name():
     assert search.xling_name_first("로컬 설계 메모", res) == 0   # same-script name: left to the usual rules
     assert search.xling_name_first("터널링 설계 문서", [res[4], res[0]]) == 0   # already first
     assert search.xling_name_first("사진", res) == 0   # one idea is not enough to override the ranker
+
+
+def test_expansions_of_one_word_count_once():
+    # 생성기 -> GLOSS "gen generate": an image named Gemini_Generated_Image must not hold "two" question words
+    assert search.distinct_words(["배포하는", "생성기", "gen", "generate"]) == ["배포하는", "생성기", "generate"]
+    assert search.distinct_words(["report", "report", "eval"]) == ["report", "eval"]
+
+
+def test_no_facts_table_means_no_understanding_first(tmp_path):
+    import sqlite3
+    f = search.Finder.__new__(search.Finder)
+    f.con = sqlite3.connect(tmp_path / "i.db")
+    assert search._has_facts(f) is False   # the page's '이해 우선' then falls back instead of failing on 'no such table: facts'

@@ -217,6 +217,13 @@ def _cpu_ranker(m):
     return m
 
 
+def distinct_words(ws):
+    """one idea counts once: a word inside another word of the list is dropped. GLOSS turns 생성 into "gen generate", and a
+    name rule counting 'two question words' then took every 'Gemini_Generated_Image.png' (gen + generate) as a match"""
+    ws = list(dict.fromkeys(ws))
+    return [w for w in ws if not any(w != v and w in v for v in ws)]
+
+
 def _has_facts(f):
     """the understanding-first route reads work facts; an index built without them uses the reranker route"""
     if getattr(f, "_facts_ok", None) is None:
@@ -938,6 +945,7 @@ class Finder:
         # names: files whose name holds two or more of the words come in as candidates by their first chunk
         named = []
         nw = [w.lower() for w in words if len(w) >= 3][:12]
+        nw = distinct_words(nw)
         if nw:
             self.load_scan()
             named = [cid for cid, nm, tr in self.name_rows if tr != 2 and sum(1 for w in nw if w in nm) >= 2][:200]
@@ -1692,7 +1700,10 @@ def serve(f, port):
                   except ValueError:
                     EVAL_NOW = None
                   try:
-                    if mode == "ng":   # understanding-first: plan -> execute over facts and links
+                    if mode == "ng" and not _has_facts(f):   # '이해 우선' on an index without work facts: no such table -> 500
+                        res = f.search(q_, mode="xce", k=k)
+                        res["info"] = "이 PC의 색인에는 업무 정보(사람·기관·금액 등)가 없어 정밀 검색으로 찾았습니다."
+                    elif mode == "ng":   # understanding-first: plan -> execute over facts and links
                         if getattr(f, "ng", None) is None:
                             from ng import NG
                             f.ng = NG(f)
