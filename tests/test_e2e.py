@@ -93,14 +93,23 @@ def test_search_page(world):   # the app's page: sign-in, search, progress (#7: 
                 break
         assert ready, "engine did not start"
         import threading   # keep reading the engine's output (as the app does): a full pipe would stall it (macOS pipes are small)
-        threading.Thread(target=lambda: [None for _ in p.stdout], daemon=True).start()
+        log = []
+        threading.Thread(target=lambda: [log.append(x) for x in p.stdout], daemon=True).start()
         key = (home / ".password").read_text().strip()
         base = "http://127.0.0.1:8596"
+        direct = urllib.request.ProxyHandler({})   # never through a proxy: the page is on this PC
+        t = time.time(); up = False
+        while time.time() - t < 120 and not up:   # the page answers (not only the 'ready' line)
+            try:
+                up = urllib.request.build_opener(direct).open(base + "/healthz", timeout=10).status == 200
+            except Exception:
+                time.sleep(2)
+        assert up, "page did not answer:\n" + "".join(log[-40:])
         try:
-            urllib.request.urlopen(base + "/", timeout=30); assert False, "page open without sign-in"
+            urllib.request.build_opener(direct).open(base + "/", timeout=30); assert False, "page open without sign-in"
         except urllib.error.HTTPError as e:
             assert e.code == 401
-        op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor())
+        op = urllib.request.build_opener(direct, urllib.request.HTTPCookieProcessor())
         assert op.open(f"{base}/auth?t={key}", timeout=30).status == 200
         r = json.loads(op.open(base + "/api?" + urllib.parse.urlencode({"q": "스마트센서 견적서"}), timeout=300).read())
         assert r["results"] and "견적서_스마트센서" in r["results"][0]["name"], r.get("results", [])[:2]
