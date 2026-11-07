@@ -374,6 +374,23 @@ class Finder:
         self.pkgs -= {"lora", "gemma", "comfyui", "prompt", "test", "tests", "data", "model", "models", "utils", "docs", "json", "html"}
         print(f"FINDR_READY chunks {len(self.ids)} packages {len(self.pkgs)}", flush=True)
 
+    def refresh(self, every=60):
+        """an index that grew while the page was open (background indexing): pick up new vectors without a restart"""
+        now = time.time()
+        if now - getattr(self, "_seen_at", 0) < every:
+            return
+        self._seen_at = now
+        n = self.con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL").fetchone()[0]
+        top = self.con.execute("SELECT max(id) FROM chunks").fetchone()[0] or 0
+        if n == len(self.ids) and top == getattr(self, "_top", top):
+            self._top = top
+            return
+        rows = self.con.execute("SELECT c.id, c.emb FROM chunks c WHERE c.emb IS NOT NULL").fetchall()
+        self.ids = np.array([r[0] for r in rows], dtype=np.int64)
+        self.M = np.stack([np.frombuffer(r[1], np.float16) for r in rows]).astype(np.float32) if rows else np.zeros((0, 1024), np.float32)
+        self.Mg = None; self.name_rows = None; self._top = top
+        print(f"FINDR_RELOAD vectors {len(self.ids)}", flush=True)
+
     def load_scan(self):
         if getattr(self, "name_rows", None) is not None:
             return
@@ -388,9 +405,9 @@ class Finder:
         if DEVICE == "cpu":
             return self.M @ qv
         if getattr(self, "Mg", None) is None:
-            self.Mg = torch.from_numpy(self.M).to("cuda", torch.float16)
+            self.Mg = torch.from_numpy(self.M).to(DEVICE, torch.float16)
         with torch.no_grad():
-            return (self.Mg @ torch.from_numpy(qv).to("cuda", torch.float16)).float().cpu().numpy()
+            return (self.Mg @ torch.from_numpy(qv).to(DEVICE, torch.float16)).float().cpu().numpy()
 
     def qvec(self, t):
         import torch
@@ -622,6 +639,7 @@ class Finder:
         return set(loose), dict(cond, relaxed=True)
 
     def search(self, q, k=10, mode="base"):
+        self.refresh()
         t0 = time.time(); p = parse(q); text = p["text"]
         pfut = None
         if PHOTO_URL and mode in ("xce", "fxce", "exce", "base") and self.load_photos():

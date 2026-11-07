@@ -184,8 +184,8 @@ async function settings(s: AppState) {
     <h2>색인</h2>
     <div class="card"><p>새로 생기거나 바뀐 파일만 다시 읽습니다.</p>
       <div class="actions" style="margin-top:6px"><button class="primary" id="re">바뀐 파일 반영</button><button id="fold">폴더 바꾸기</button></div>
-      <p class="muted" style="margin:14px 0 6px">처음 색인은 긴 문서의 앞부분만 의미로 찾게 해서 빨리 끝냅니다. 뒷부분도 단어로는 찾을 수 있습니다.
-        뒷부분까지 의미로 찾으려면 아래를 누르세요. 시간이 오래 걸리니 PC를 쓰지 않을 때 권합니다.</p>
+      <p class="muted" style="margin:14px 0 6px">findr가 열려 있는 동안 바뀐 파일은 한 시간마다, 긴 문서의 뒷부분은 처음 한 번 낮은 우선순위로 알아서 반영합니다.
+        지금 바로 하고 싶을 때만 아래를 누르세요.</p>
       <div class="actions" style="margin-top:0"><button id="deep">깊은 내용까지 계산</button></div></div>
     <h2>사진</h2>
     <div class="card"><label class="switch"><input type="checkbox" id="photo" ${photoOn() ? 'checked' : ''} ${s.gpu !== 'nvidia' ? 'disabled' : ''}>

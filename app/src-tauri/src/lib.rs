@@ -17,6 +17,72 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 struct Engine(Mutex<Option<Child>>);
 
+// one indexing run at a time: the background refresh and a run started from the app's screens
+static INDEXING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static REFRESHER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn take_index_turn() {
+    use std::sync::atomic::Ordering;
+    while INDEXING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        thread::sleep(std::time::Duration::from_secs(2));
+    }
+}
+
+fn give_index_turn() {
+    INDEXING.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// the engine at low priority, so background indexing never slows the person's own work
+fn low_priority(prog: impl AsRef<std::ffi::OsStr>) -> Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut c = command(prog);
+        c.creation_flags(0x0800_0000 | 0x0000_4000); // no window, below normal priority
+        c
+    }
+    #[cfg(not(windows))]
+    {
+        let mut c = command("nice");
+        c.args(["-n", "10"]).arg(prog.as_ref());
+        c
+    }
+}
+
+/// after the search page is up: changed files now and every hour, and once the later pieces of long documents
+fn start_refresher() {
+    use std::sync::atomic::Ordering;
+    if REFRESHER.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    thread::spawn(|| loop {
+        let folders = load_folders();
+        if !folders.is_empty() && home().join("index.db").exists() {
+            for deep in [false, true] {
+                if deep && home().join(".deep-done").exists() {
+                    continue;
+                }
+                take_index_turn();
+                let log = std::fs::File::create(home().join("logs").join(if deep { "deep.log" } else { "refresh.log" }));
+                let mut c = low_priority(python());
+                c.args(["-m", "findr", "index"]).args(&folders);
+                if deep {
+                    c.arg("--deep");
+                }
+                let ok = match log {
+                    Ok(f) => c.stdout(f).stderr(Stdio::null()).stdin(Stdio::null()).status().map(|s| s.success()).unwrap_or(false),
+                    Err(_) => false,
+                };
+                give_index_turn();
+                if deep && ok {
+                    let _ = std::fs::write(home().join(".deep-done"), VERSION);
+                }
+            }
+        }
+        thread::sleep(std::time::Duration::from_secs(3600));
+    });
+}
+
 // the search page's port (FINDR_APP_PORT for side-by-side testing)
 fn port() -> u16 {
     std::env::var("FINDR_APP_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8096)
@@ -286,12 +352,18 @@ fn load_folders() -> Vec<String> {
 #[tauri::command]
 fn start_index(app: AppHandle, folders: Vec<String>, deep: Option<bool>) {
     thread::spawn(move || {
+        let _ = app.emit("index", Line { step: "index".into(), line: "앞선 색인 작업이 끝나기를 기다리는 중".into() });
+        take_index_turn();
         let mut c = command(python());
         c.args(["-m", "findr", "index"]).args(&folders);
         if deep.unwrap_or(false) {
             c.arg("--deep"); // the later pieces of long documents too
         }
         let ok = stream(&app, "index", "index", c);
+        give_index_turn();
+        if deep.unwrap_or(false) && ok {
+            let _ = std::fs::write(home().join(".deep-done"), VERSION);
+        }
         let _ = app.emit("index-done", Done { ok, message: if ok { "색인을 마쳤습니다.".into() } else { "색인 중 오류가 있었습니다.".into() } });
     });
 }
@@ -325,6 +397,7 @@ fn start_engine(engine: State<Engine>, photo: bool) -> Result<String, String> {
         stop(&engine);
         return Err("검색 엔진이 시작되지 않았습니다. 데이터 폴더의 logs/engine.log를 확인해 주세요.".into());
     }
+    start_refresher();
     let key = std::fs::read_to_string(home().join(".password")).map_err(|e| e.to_string())?;
     Ok(format!("http://127.0.0.1:{}/auth?t={}", port(), key.trim()))
 }
