@@ -27,7 +27,7 @@ findr is built Korean-first (Korean phrasing, HWP documents, local office conven
 - Indexes the whole PC but skips system, program and cache folders. Desktop and Downloads come first, so search is usable within minutes.
 - Switches to a lighter setup automatically on PCs without a GPU.
 
-Readable formats: PDF, HWP, HWPX, DOC, DOCX, XLSX, PPTX, TXT, Markdown, source code and photos (JPG, PNG, WEBP and others). Other files are found by name, folder and date.
+Readable formats: PDF, HWP, HWPX, DOC, DOCX, XLSX, PPTX, Keynote, TXT, Markdown, source code and photos (JPG, PNG, WEBP, iPhone HEIC and others). Other files are found by name, folder and date.
 
 ## Performance
 
@@ -42,6 +42,28 @@ Measured during development on questions that were never used for tuning. Result
 | First index, 2,100 documents, GPU PC | names searchable after ~1 min, contents after ~2.5 min |
 
 ## Installation
+
+### Desktop app (recommended)
+
+Download the file for your system from the [releases page](https://github.com/quantumaikr/findr/releases/latest).
+
+| System | File |
+|---|---|
+| Windows 10, 11 | `findr_<version>_x64-setup.exe` |
+| macOS (Apple silicon) | `findr_<version>_aarch64.dmg` |
+| Ubuntu, Debian | `findr_<version>_amd64.deb` (`sudo apt install ./<file>.deb`) |
+| Fedora and similar | `findr-<version>-1.x86_64.rpm` |
+| Other Linux | `findr_<version>_amd64.AppImage` (make it executable, then run) |
+
+On the first run the app downloads the components and models that suit the PC (5–20 minutes, 3–13 GB), then asks which folders to index.
+
+This preview is not code-signed yet, so the first launch may show a warning:
+
+- Windows: on "Windows protected your PC", choose "More info" → "Run anyway".
+- macOS: for "unidentified developer", right-click the app and choose "Open". If macOS says the app "is damaged and can't be opened", move it to Applications and run `xattr -cr /Applications/findr.app` once in Terminal (it clears the downloaded-from-internet flag).
+- Linux AppImage: `chmod +x findr_*.AppImage`, then run it. Requires Ubuntu 22.04 or later.
+
+### Command line
 
 You need git and about 10 GB of free disk space. The installer sets up its own Python, so there is no need to install one first. The internet is used only to download models on the first run.
 

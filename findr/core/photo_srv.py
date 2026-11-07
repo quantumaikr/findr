@@ -10,6 +10,11 @@ import numpy as np
 import torch
 from transformers import AutoModel
 
+try:   # iPhone photos (HEIC/HEIF): the model opens images with PIL
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    pass
 INSTR = "이 사진을 찾으려는 사람이 할 말은?"   # fixed instruction: the same for every photo
 ap = argparse.ArgumentParser(); ap.add_argument("--port", type=int, default=8099)
 import os

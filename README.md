@@ -25,7 +25,7 @@
 - PC 전체를 색인하되 시스템, 프로그램, 캐시 폴더는 건너뜁니다. 바탕화면과 다운로드부터 처리하므로 몇 분 안에 검색을 시작할 수 있습니다.
 - GPU가 없는 PC에서는 가벼운 구성으로 자동 전환합니다.
 
-읽을 수 있는 형식은 PDF, HWP, HWPX, DOC, DOCX, XLSX, PPTX, TXT, Markdown, 소스 코드, 사진(JPG, PNG, WEBP 등)입니다. 그 밖의 파일은 이름, 폴더, 날짜로 찾습니다.
+읽을 수 있는 형식은 PDF, HWP, HWPX, DOC, DOCX, XLSX, PPTX, Keynote, TXT, Markdown, 소스 코드, 사진(JPG, PNG, WEBP, 아이폰 HEIC 등)입니다. 그 밖의 파일은 이름, 폴더, 날짜로 찾습니다.
 
 ## 성능
 
@@ -40,6 +40,28 @@
 | 첫 색인, 문서 2,100개, GPU PC | 이름 검색까지 약 1분, 내용 검색까지 약 2분 30초 |
 
 ## 설치
+
+### 데스크톱 앱 (권장)
+
+[릴리스 페이지](https://github.com/quantumaikr/findr/releases/latest)에서 운영체제에 맞는 파일을 받아 설치합니다.
+
+| 운영체제 | 파일 |
+|---|---|
+| Windows 10·11 | `findr_<버전>_x64-setup.exe` |
+| macOS (Apple 칩) | `findr_<버전>_aarch64.dmg` |
+| Ubuntu·Debian | `findr_<버전>_amd64.deb` (`sudo apt install ./파일이름.deb`) |
+| Fedora 등 | `findr-<버전>-1.x86_64.rpm` |
+| 그 밖의 Linux | `findr_<버전>_amd64.AppImage` (실행 권한을 주고 실행) |
+
+처음 실행하면 이 PC에 맞는 구성 요소와 모델을 받습니다(5~20분, 3~13GB). 그다음 색인할 폴더를 고르면 됩니다.
+
+아직 코드 서명이 없는 시험판이라 처음 열 때 경고가 나올 수 있습니다.
+
+- Windows: "Windows의 PC 보호" 화면에서 "추가 정보" → "실행".
+- macOS: "확인되지 않은 개발자" 경고는 앱을 오른쪽 클릭해 "열기". "손상되었기 때문에 열 수 없습니다"라고 나오면 앱을 응용 프로그램 폴더로 옮긴 뒤 터미널에서 `xattr -cr /Applications/findr.app`을 한 번 실행합니다(인터넷에서 받은 표시를 지우는 명령).
+- Linux AppImage: `chmod +x findr_*.AppImage` 후 실행. Ubuntu 22.04 이상이 필요합니다.
+
+### 명령줄
 
 git과 10GB 정도의 여유 공간이 필요합니다. 파이썬은 설치 스크립트가 별도로 준비하므로 미리 설치하지 않아도 됩니다. 인터넷은 처음 모델을 받을 때만 씁니다.
 

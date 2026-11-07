@@ -322,13 +322,23 @@ def remask(con):
     con.commit(); print(f"FINDR_MASK {hit} chunks masked")
 
 
-PHOTO_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".heic"}
+PHOTO_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".heic", ".heif"}
+
+
+def heif_on():
+    """iPhone photos (HEIC/HEIF) open like any other image once pillow-heif is installed"""
+    try:
+        from pillow_heif import register_heif_opener
+        register_heif_opener()
+    except ImportError:
+        pass
 
 
 def taken_at(path):
     """when the photo was taken (EXIF DateTimeOriginal / DateTime), or None: the file time stays the fallback"""
     try:
         from PIL import Image
+        heif_on()
         ex = Image.open(path).getexif()
         v = ex.get_ifd(0x8769).get(36867) or ex.get(306)
         return datetime.datetime.strptime(str(v).strip()[:19], "%Y:%m:%d %H:%M:%S").timestamp() if v else None
