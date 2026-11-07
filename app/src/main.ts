@@ -125,76 +125,109 @@ async function folders(s: AppState) {
 }
 
 // ---------- indexing ----------
+// People wait more easily when they see progress that is honest, can already do something useful, and stay in control.
 const TIPS = ['지난달 받은 견적서', '작년 여름 바다에서 찍은 사진', '최종본 말고 그 직전 판', '회의 전에 고친 발표 자료', '카톡으로 받은 계약서 스캔', '소각로 48톤이라고 적힌 매뉴얼']
-const STAGES: [string, string, string][] = [
-  ['names', '파일 목록', '이름과 폴더로 찾을 수 있게 됩니다'],
-  ['content', '내용 읽기', '문서 속 글자로 찾을 수 있게 됩니다'],
-  ['meaning', '의미 계산', '비슷한 뜻의 말로도 찾을 수 있게 됩니다'],
-  ['ocr', '스캔 글자 읽기', '스캔한 문서와 스크린샷 속 글자까지'],
+const CAN: [string, string, string][] = [   // stage, what the person can do once it is ready, what is happening meanwhile
+  ['names', '파일 이름으로 찾기', '파일 목록을 만드는 중'],
+  ['namevec', '비슷한 말로 이름 찾기', '이름의 뜻을 파악하는 중'],
+  ['content', '문서 속 글자로 찾기', '문서를 읽는 중'],
+  ['meaning', '기억나는 대로 물어보기', '내용의 뜻을 파악하는 중'],
+  ['ocr', '스캔·스크린샷 속 글자 찾기', '스캔 글자를 읽는 중'],
 ]
+type Progress = { stage?: string; done?: number; total?: number; minutes_left?: number | null; files?: number | null; paused?: boolean
+  stages?: Record<string, string>; t?: number }
+const ICON: Record<string, string> = { done: '✓', now: '●', later: '◷', wait: '○' }
+const STATE: Record<string, string> = { done: '준비됨', now: '진행 중', later: '쉬는 시간에', wait: '대기' }
+
 async function indexing(list: string[], deep = false) {
-  view.innerHTML = `<h1>색인하는 중</h1>
-    <p class="lead">파일 목록이 만들어지면 바로 검색 화면으로 넘어갑니다. 나머지는 검색하는 동안 뒤에서 이어서 합니다.</p>
-    <div class="card"><ul class="steps">${STAGES.map(([id, name, what]) => `
-      <li id="ix-${id}"><span class="state">대기</span><div><div class="step-name">${name}</div><div class="step-line">${what}</div></div></li>`).join('')}</ul></div>
-    <div class="card"><div class="row between"><span id="now">시작하는 중</span><span class="muted" id="count"></span></div>
-      <div class="bar"><div id="bar"></div></div></div>
-    <div class="card"><p class="muted" style="margin:0 0 6px">이렇게 물어보세요</p><p id="tip" style="margin:0;font-weight:550"></p></div>
-    <div class="actions"><button class="primary" id="go" disabled>지금 검색하기</button></div>
+  view.innerHTML = `<h1>내 파일을 살펴보는 중</h1>
+    <p class="lead">이 PC 안에서만 처리해요. 파일 목록이 만들어지면 바로 검색할 수 있어요.</p>
+    <div class="card hero" aria-live="polite">
+      <div class="big"><span id="nfiles">0</span><span class="unit">개 파일을 찾았어요</span></div>
+      <div class="muted where" id="where">폴더를 둘러보는 중</div>
+      <div class="bar" role="progressbar" aria-label="전체 진행" aria-valuemin="0" aria-valuemax="100"><div id="bar"></div></div>
+      <div class="row between muted"><span id="pct">0%</span><span id="eta"></span></div>
+    </div>
+    <h2>지금 할 수 있는 것</h2>
+    <div class="card"><ul class="ladder">${CAN.map(([id, can, doing]) => `
+      <li id="ix-${id}" class="wait"><span class="ic" aria-hidden="true">${ICON.wait}</span>
+        <div><div class="can">${can}</div><div class="doing" id="d-${id}">앞 단계가 끝나면 시작해요</div></div><span class="st">${STATE.wait}</span></li>`).join('')}</ul></div>
+    <div class="card tip"><span class="muted" id="tiplab">준비되면 이렇게 물어보세요</span><p id="tip"></p></div>
+    <div class="actions"><button class="primary" id="go" disabled>검색 시작하기</button><button id="pause">잠시 멈추기</button></div>
+    <p class="muted auto" id="auto"></p>
     <details><summary>자세한 기록</summary><pre id="log"></pre></details>`
   const log: string[] = []
-  let files = 0, stage = '', engine: Promise<string> | null = null, moved = false, named = false, ready = false
+  let found = 0, engine: Promise<string> | null = null, moved = false, ready = false, stay = false, countdown = 0, P: Progress = {}
+  const $ = (id: string) => document.getElementById(id)!
   const set = (id: string, t: string) => { const e = document.getElementById(id); if (e) e.textContent = t }
-  const mark = (id: string, cls: string, text: string) => {
-    const li = document.getElementById('ix-' + id); if (!li) return
-    const st = li.querySelector('.state')!; st.className = 'state ' + cls; st.textContent = text
-  }
   let ti = 0; const tip = () => set('tip', '“' + TIPS[ti++ % TIPS.length] + '”'); tip()
   const tipTimer = setInterval(tip, 6000)
-  const enter = (stg: string) => {
-    if (stg === stage) return
-    if (stage) mark(stage, 'ok', '완료')
-    stage = stg; if (STAGES.some(s => s[0] === stg)) mark(stg, 'run', '진행 중')
-  }
   const goSearch = async () => {   // the engine was started in advance: no second wait
-    if (moved) return; moved = true; clearInterval(tipTimer)
+    if (moved) return; moved = true; clearInterval(tipTimer); clearInterval(poll)
     try { const url = await (engine || invoke<string>('start_engine', { photo: photoOn() })); location.href = url }
     catch (e) { location.hash = 'search' }
   }
-  enter('names')
+  const render = () => {
+    const sg = P.stages || {}
+    let done = 0
+    for (const [id, , doing] of CAN) {
+      const v = sg[id] || 'wait', li = $('ix-' + id)
+      li.className = v; li.querySelector('.ic')!.textContent = ICON[v]
+      li.querySelector('.st')!.textContent = v === 'now' && P.paused ? '멈춤' : STATE[v]
+      let d = v === 'wait' ? '앞 단계가 끝나면 시작해요' : doing
+      if (v === 'now' && P.stage === id && P.total) d += ` · ${Number(P.done).toLocaleString()}/${Number(P.total).toLocaleString()}`
+      if (v === 'later') d = 'PC를 쓰지 않을 때 조금씩 읽어요'
+      if (v === 'done') d = '지금 할 수 있어요'
+      set('d-' + id, d)
+      if (v === 'done' || v === 'later') done += 1
+      else if (v === 'now' && P.stage === id && P.total) done += Math.min(1, (P.done || 0) / P.total)
+    }
+    const pct = Math.round(100 * done / CAN.length)
+    $('bar').style.width = pct + '%'; $('bar').parentElement!.setAttribute('aria-valuenow', String(pct))
+    set('pct', P.paused ? `${pct}% · 잠시 멈춤` : `${pct}%`)
+    set('eta', P.paused ? '1시간 뒤에는 저절로 이어서 해요' : P.minutes_left != null ? (P.minutes_left < 1 ? '이 단계는 곧 끝나요' : `이 단계 약 ${P.minutes_left}분`) : '')
+    if (P.files) found = Math.max(found, P.files)
+    set('nfiles', found.toLocaleString())
+    set('pause', P.paused ? '이어서 하기' : '잠시 멈추기')
+    if (sg.names === 'done' && !moved) {   // names are in: searching is useful now
+      ($('go') as HTMLButtonElement).disabled = false; set('tiplab', '지금 이렇게 물어보세요')
+      if (ready && !stay && !countdown) { countdown = 5; tickDown() }
+    }
+  }
+  const tickDown = () => {
+    if (stay || moved) return
+    $('auto').innerHTML = `${countdown}초 뒤 검색 화면으로 넘어가요. 살펴보기는 계속돼요. <button class="link" id="stay">여기 머물기</button>`
+    $('stay').onclick = () => { stay = true; $('auto').textContent = '여기서 지켜볼게요. 준비되면 언제든 ‘검색 시작하기’를 누르세요.' }
+    if (countdown-- <= 0) return goSearch()
+    setTimeout(tickDown, 1000)
+  }
+  const poll = setInterval(async () => {
+    try { const t = await invoke<string>('read_progress'); if (t) { P = JSON.parse(t); render() } } catch { /* not written yet */ }
+  }, 700)
   unlisten.push(await listen<Line>('index', e => {
     const l = e.payload.line
     log.push(l); if (log.length > 300) log.shift(); set('log', log.join('\n'))
     let m
     if (!engine && l.startsWith('FINDR_ROOT')) {   // the index exists from the first folder on: start the engine now, in parallel
       engine = invoke<string>('start_engine', { photo: photoOn() })
-      engine.then(() => { ready = true; if (named) setTimeout(goSearch, 800) }).catch(() => {})
+      engine.then(() => { ready = true; render() }).catch(() => {})
     }
-    if ((m = l.match(/^FINDR_ROOT (\{.*\})/))) { const r = JSON.parse(m[1]); set('now', `파일 목록 ${r.i + 1}/${r.n}: ${r.path}`)
-      ;(document.getElementById('bar') as HTMLElement).style.width = `${Math.round(100 * r.i / r.n)}%` }
-    else if ((m = l.match(/^FINDR_SCAN new\/changed (\d+)/))) { files += +m[1]; set('count', `찾은 파일 ${files.toLocaleString()}개`) }
-    else if ((m = l.match(/^FINDR_STAGE (\w+)/))) {
-      enter(m[1])
-      if (m[1] === 'content' && !named) {   // names are in: search as soon as the engine (started at the beginning) is ready
-        named = true; (document.getElementById('go') as HTMLButtonElement).disabled = false
-        if (ready) setTimeout(goSearch, 800); else set('tip', '검색 엔진을 켜는 중입니다. 곧 검색 화면으로 넘어갑니다.')
-      }
-      if (m[1] === 'done') { STAGES.forEach(s => mark(s[0], 'ok', '완료')) }
-    }
-    else if ((m = l.match(/^\s*read (\d+)\/(\d+)/))) { set('now', `내용 읽기 ${(+m[1]).toLocaleString()}/${(+m[2]).toLocaleString()}`)
-      ;(document.getElementById('bar') as HTMLElement).style.width = `${Math.round(100 * +m[1] / +m[2])}%` }
-    else if ((m = l.match(/^\s*embedded (\d+)\/(\d+).*about (\d+) min/))) { set('now', `의미 계산 ${(+m[1]).toLocaleString()}/${(+m[2]).toLocaleString()} · 약 ${m[3]}분 남음`)
-      ;(document.getElementById('bar') as HTMLElement).style.width = `${Math.round(100 * +m[1] / +m[2])}%` }
+    if ((m = l.match(/^FINDR_ROOT (\{.*\})/))) { const r = JSON.parse(m[1]); set('where', `둘러보는 중: ${r.path}`) }
+    else if ((m = l.match(/^FINDR_SCAN new\/changed (\d+)/))) { found += +m[1]; set('nfiles', found.toLocaleString()) }
+    else if ((m = l.match(/^\s+(\d+) files \d+s/))) { set('nfiles', (found + +m[1]).toLocaleString()) }
+    else if (l.startsWith('FINDR_STAGE content')) set('where', '파일 목록 완성. 이제 문서를 읽고 있어요')
   }))
   unlisten.push(await listen<Done>('index-done', e => {
-    if (!e.payload.ok) { set('now', e.payload.message); (document.getElementById('go') as HTMLButtonElement).disabled = false; return }
-    goSearch()
+    if (!e.payload.ok) { set('where', e.payload.message); ($('go') as HTMLButtonElement).disabled = false; return }
+    P.stages = Object.fromEntries(CAN.map(([id]) => [id, (P.stages || {})[id] === 'later' ? 'later' : 'done'])); P.minutes_left = null; render()
+    set('where', '모두 살펴봤어요'); if (!stay) goSearch()
   }))
-  document.getElementById('go')!.onclick = goSearch
+  $('go').onclick = goSearch
+  $('pause').onclick = async () => { const on = !P.paused; await invoke('set_pause', { on }); P.paused = on; render() }
   invoke('start_index', { folders: list, deep })
 }
 
-// ---------- search (the engine's page) ----------
+// ---------- search ----------
 async function search() {
   view.innerHTML = `<h1>검색을 준비하는 중</h1>
     <div class="card"><div class="row"><div class="spinner"></div><span>검색 엔진을 켜고 있습니다. 처음에는 1분 정도 걸립니다.</span></div></div>`

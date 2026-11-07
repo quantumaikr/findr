@@ -65,6 +65,20 @@ mark{background:var(--mark);color:inherit;border-radius:3px;padding:0 1px}
 #tcard .big{display:flex;gap:40px;margin-top:30px}#tcard .big div{font-size:15px;color:var(--mut)}#tcard .big b{display:block;font-size:40px;color:var(--acc)}
 #spd{position:fixed;top:84px;right:36px;background:var(--acc);color:#fff;padding:8px 16px;border-radius:999px;font-weight:700;font-size:17px;opacity:0;transform:scale(.8);transition:all .25s;z-index:8}
 #spd.on{opacity:1;transform:none}
+.ix{margin-left:auto;display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:2px 10px 2px 6px;font-size:11.5px;color:var(--fg);line-height:1.6}
+.ix:hover{border-color:var(--acc)}.ix .ring{width:13px;height:13px;border-radius:50%;background:conic-gradient(var(--acc) calc(var(--p,0)*1%),var(--line) 0);-webkit-mask:radial-gradient(circle,transparent 3.5px,#000 4px);mask:radial-gradient(circle,transparent 3.5px,#000 4px)}
+.ix.paused .ring{background:var(--warn)}.ix.ok .ring{background:var(--good);-webkit-mask:none;mask:none}
+.ixp{position:fixed;right:18px;bottom:38px;width:350px;max-width:calc(100vw - 24px);max-height:calc(100vh - 60px);overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 10px 36px rgba(0,0,0,.14);padding:16px 18px 14px;z-index:60}
+.ixh{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}.ixh h3{margin:0;font-size:15px;font-weight:650}
+.ixsub{color:var(--mut);font-size:12px}.ixx{border:0;background:none;color:var(--mut);font-size:14px;padding:2px 4px;border-radius:6px}
+.ixn{font-size:12.5px;color:var(--mut);margin:10px 0 6px}
+.ixp ol{list-style:none;margin:0;padding:0}.ixp li{display:grid;grid-template-columns:18px 1fr auto;gap:10px;align-items:start;padding:9px 0;border-top:1px solid var(--line)}
+.ixp .ic{font-size:12px;line-height:20px;text-align:center;color:var(--faint)}.ixp li.done .ic{color:var(--good)}.ixp li.now .ic{color:var(--acc);animation:ixb 1.4s ease-in-out infinite}
+.ixl{font-size:13.5px;font-weight:550}.ixp li.wait .ixl{color:var(--mut);font-weight:500}.ixv{font-size:11.5px;color:var(--faint);line-height:20px}.ixp li.done .ixv{color:var(--good)}.ixp li.now .ixv{color:var(--acc)}
+.ixs{font-size:11.5px;color:var(--mut);margin-top:2px}.ixb{height:4px;border-radius:2px;background:var(--line);margin-top:6px;overflow:hidden}.ixb i{display:block;height:100%;background:var(--acc);transition:width .5s ease}
+.ixa{display:flex;align-items:center;gap:10px;margin-top:12px}.ixpause{border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:5px 12px;font-size:12.5px}
+.ixnote{background:var(--acc2);border-radius:8px;padding:8px 12px;font-size:12.5px;margin:0 0 10px}.ixmore{border:0;background:none;color:var(--acc);font-size:12.5px;padding:0 0 0 4px;text-decoration:underline}
+@keyframes ixb{50%{opacity:.35}}@media (prefers-reduced-motion:reduce){.ixp li.now .ic{animation:none}.ixb i{transition:none}}
 </style></head><body>
 <div class="app">
 <aside>
@@ -190,15 +204,60 @@ function pipeline(r){
  return st.map((s,i)=>(i?'<span class="ar"></span>':'')+'<span class="st" style="animation-delay:'+(i*70)+'ms">'+esc(s[0])+' <b>'+esc(s[1])+'</b></span>').join('');
 }
 const APP=!!(window.__TAURI__&&window.__TAURI__.core);   // inside the desktop app: open files and folders directly
-// indexing still running: a thin line at the top says where it stands (search works meanwhile)
-(function(){const ST={nfc:'한글 이름 정리',names:'파일 목록',content:'내용 읽기',meaning:'의미 계산',ocr:'스캔 글자 읽기'};
- const bar=document.createElement('div');bar.style.cssText='position:fixed;top:0;left:0;right:0;z-index:50;font-size:12.5px;padding:5px 14px;background:var(--acc,#2f5d8a);color:#fff;display:none';
- document.body.appendChild(bar);
- async function tick(){try{const p=await (await fetch('/progress')).json();
-  if(!p.stage||p.stage==='done'||Date.now()/1000-p.t>900){bar.style.display='none';document.body.style.paddingTop='';document.body.style.removeProperty('--bar');setTimeout(tick,15000);return}
-  const n=p.total?` ${Number(p.done).toLocaleString()}/${Number(p.total).toLocaleString()}`:'';
-  bar.textContent=`색인 진행 중: ${ST[p.stage]||p.stage}${n}${p.minutes_left?` · 약 ${p.minutes_left}분 남음`:''} · 지금도 검색할 수 있고, 새로 읽은 내용은 곧 결과에 들어갑니다`;
-  bar.style.display='block';document.body.style.paddingTop=bar.offsetHeight+'px';document.body.style.setProperty('--bar',bar.offsetHeight+'px')}catch(e){} setTimeout(tick,5000)}   /* the bar pushes the page down instead of covering its top */
+// indexing: a small live chip in the status line; it opens a panel with what can be found now (search works meanwhile)
+(function(){
+ const ST=[['names','이름으로 찾기','파일 목록을 만드는 중'],['namevec','비슷한 말로 이름 찾기','이름의 뜻을 파악하는 중'],
+  ['content','문서 속 글자로 찾기','문서를 읽는 중'],['meaning','기억나는 대로 물어보기','내용의 뜻을 파악하는 중'],['ocr','스캔·스크린샷 속 글자','스캔 글자를 읽는 중']];
+ const esc_=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+ const st=document.getElementById('status'); if(!st)return;
+ const chip=document.createElement('button'); chip.className='ix'; chip.hidden=true; chip.setAttribute('aria-haspopup','dialog');
+ chip.innerHTML='<span class="ring" aria-hidden="true"></span><span class="ixt"></span>'; st.appendChild(chip);
+ const pan=document.createElement('div'); pan.className='ixp'; pan.hidden=true; pan.setAttribute('role','dialog'); pan.setAttribute('aria-label','파일 살펴보기 진행');
+ document.body.appendChild(pan);
+ let P={},active=false,wasActive=false,doneAt=0,timer=null;
+ window.__ix=()=>({active,P});
+ const mins=m=>m==null?'':m<1?'1분 안에 끝나요':`약 ${m}분 남았어요`;
+ function now(){const k=ST.find(s=>(P.stages||{})[s[0]]==='now');return k||ST.find(s=>s[0]===P.stage)}
+ function pct(){const sg=P.stages||{};let d=0;ST.forEach(s=>{if(sg[s[0]]==='done'||sg[s[0]]==='later')d+=1});
+  const c=now();if(c&&P.total)d+=Math.min(1,P.done/P.total);return Math.round(100*d/ST.length)}
+ function render(){
+  const p=pct(),c=now();chip.style.setProperty('--p',p);chip.classList.toggle('paused',!!P.paused);chip.classList.toggle('ok',!active);
+  chip.querySelector('.ixt').textContent=!active?'모두 준비됐어요':P.paused?'잠시 멈춤':`살펴보는 중 ${p}%`;
+  chip.setAttribute('aria-label',chip.querySelector('.ixt').textContent+' · 자세히 보기');
+  if(pan.hidden)return;
+  const sg=P.stages||{};
+  const rows=ST.map(([k,can,doing])=>{const v=sg[k]||'wait';
+   const ic={done:'✓',now:'●',later:'◷',wait:'○'}[v],lab={done:'준비됨',now:P.paused?'멈춤':'진행 중',later:'쉬는 시간에',wait:'대기'}[v];
+   let sub='';if(v==='now'&&P.total)sub=`<div class="ixs">${doing} · ${Number(P.done).toLocaleString()}/${Number(P.total).toLocaleString()}${P.minutes_left!=null?' · '+mins(P.minutes_left):''}</div><div class="ixb"><i style="width:${Math.round(100*P.done/P.total)}%"></i></div>`;
+   else if(v==='later')sub='<div class="ixs">PC를 쓰지 않을 때 조금씩 읽어요</div>';
+   return `<li class="${v}"><span class="ic" aria-hidden="true">${ic}</span><div><div class="ixl">${can}</div>${sub}</div><span class="ixv">${lab}</span></li>`}).join('');
+  const files=P.files?`파일 ${Number(P.files).toLocaleString()}개 · `:'';
+  pan.innerHTML=`<div class="ixh"><div><h3>${active?(P.paused?'잠시 멈췄어요':'내 파일을 살펴보는 중'):'모두 준비됐어요'}</h3>
+   <div class="ixsub">${files}이 PC 안에서만 처리해요</div></div><button class="ixx" aria-label="닫기">✕</button></div>
+   <p class="ixn">${active?'지금도 검색할 수 있어요. 새로 읽은 내용은 곧 결과에 들어가요.':'처음부터 끝까지 살펴봤어요. 바뀐 파일은 알아서 다시 읽어요.'}</p>
+   <ol>${rows}</ol>
+   ${active?`<div class="ixa"><button class="ixpause">${P.paused?'이어서 하기':'잠시 멈추기'}</button><span class="ixsub">${P.paused?'1시간 뒤에는 저절로 이어서 해요':'PC가 느려지면 멈춰 두세요'}</span></div>`:''}`;
+ }
+ async function tick(){clearTimeout(timer);
+  try{const q=await (await fetch('/progress')).json();
+   const fresh=q.stage&&q.stage!=='done'&&Date.now()/1000-q.t<900;
+   if(fresh){P=q;active=true;wasActive=true}else{if(active){doneAt=Date.now();P.stages=Object.fromEntries(ST.map(s=>[s[0],(P.stages||{})[s[0]]==='later'?'later':'done']))}active=false}
+   chip.hidden=!active&&!(wasActive&&Date.now()-doneAt<10000)&&pan.hidden; render()}catch(e){}
+  timer=setTimeout(tick,pan.hidden?5000:1500)}
+ function open_(){pan.hidden=false;render();tick();pan.querySelector('.ixx')?.focus()}
+ function close_(){pan.hidden=true;chip.focus();tick()}
+ chip.onclick=()=>pan.hidden?open_():close_();
+ pan.addEventListener('click',async e=>{if(e.target.closest('.ixx'))return close_();
+  if(e.target.closest('.ixpause')){e.target.disabled=true;
+   await fetch('/pause',{method:'POST',headers:{'X-Findr':'1','Content-Type':'application/json'},body:JSON.stringify({on:!P.paused})}).catch(()=>{});
+   P.paused=!P.paused;render();setTimeout(tick,800)}});
+ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!pan.hidden)close_()});
+ document.addEventListener('click',e=>{if(!pan.hidden&&!pan.contains(e.target)&&!chip.contains(e.target))close_()});
+ const _show=show; show=function(r){_show(r);   // while files are still being read, say why some were found by name only
+  if(!active||!r||!r.results)return;const sg=P.stages||{};
+  const msg=sg.content!=='done'?'아직 파일을 살펴보는 중이라, 일부는 이름으로만 찾았어요.':sg.meaning!=='done'?'아직 내용의 뜻을 파악하는 중이라, 비슷한 말로 찾기는 일부 파일만 돼요.':'';
+  if(msg)document.getElementById('notice')?.insertAdjacentHTML('afterbegin',`<div class="ixnote">${msg} <button class="ixmore">진행 보기</button></div>`)};
+ document.addEventListener('click',e=>{if(e.target.closest('.ixmore'))open_()});
  tick()})();
 function show(r){
  $('#under').innerHTML=understanding(r); $('#pipe').innerHTML=pipeline(r);

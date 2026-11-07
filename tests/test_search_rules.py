@@ -96,10 +96,10 @@ def test_second_pass_only_when_worth_it(tmp_path, monkeypatch):
 
 
 def test_korean_words_english_name():
-    """#19: '로컬 AI 터널링 설계 문서' means Local_AI_Tunneling_Blueprint.pdf, not a deck whose text says 로컬 … 설계"""
-    res = [{"name": "Cleaned-00. Local_AI_Video_Automation_Engineering.pdf"}, {"name": "18. Vercel_Railway_zrok_Integration.pdf"},
-           {"name": "로컬 설계 메모.txt"}, {"name": "notes.md"}, {"name": "Local_AI_Tunneling_Blueprint.pdf"}]
-    assert search.xling_name_first("로컬 AI 터널링 설계 문서", res) == 4
-    assert search.xling_name_first("로컬 설계 메모", res) == 0   # same-script name: left to the usual rules
-    assert search.xling_name_first("터널링 설계 문서", [res[4], res[0]]) == 0   # already first
+    """#19: '원격 접속 설계 문서' means Remote_Access_Design.pdf, not a deck whose text says 로컬 … 설계"""
+    res = [{"name": "Video_Automation_Notes.pdf"}, {"name": "Hosting_Options.pdf"},
+           {"name": "원격 설계 메모.txt"}, {"name": "notes.md"}, {"name": "Remote_Access_Design.pdf"}]
+    assert search.xling_name_first("원격 접속 설계 문서", res) == 4
+    assert search.xling_name_first("원격 설계 메모", res) == 0   # same-script name: left to the usual rules
+    assert search.xling_name_first("접속 설계 문서", [res[4], res[0]]) == 0   # already first
     assert search.xling_name_first("사진", res) == 0   # one idea is not enough to override the ranker

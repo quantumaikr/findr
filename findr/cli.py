@@ -262,6 +262,42 @@ def cmd_ask(a):
     return 0
 
 
+def _missing_deps():
+    """pyproject.toml's dependencies that this environment lacks (platform markers honoured)"""
+    import re as _re
+    from importlib import metadata
+    pp = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    if not pp.exists():
+        return []
+    try:
+        from packaging.requirements import Requirement
+    except ImportError:
+        return []
+    s = pp.read_text(encoding="utf-8")
+    block = _re.search(r"dependencies\s*=\s*\[(.*?)\n\]", s, _re.S)
+    out = []
+    for line in (block.group(1).splitlines() if block else []):
+        m = _re.match(r'\s*"([^"]+)"', line)
+        if not m:
+            continue
+        try:
+            req = Requirement(m.group(1).split(" @ ")[0] if " @ " in m.group(1) else m.group(1))
+        except Exception:
+            continue
+        if req.marker is not None and not req.marker.evaluate():
+            continue
+        try:
+            metadata.version(req.name)
+        except metadata.PackageNotFoundError:
+            out.append(req.name)
+    return out
+
+
+def _reinstall_cmd():
+    root = Path(__file__).resolve().parent.parent
+    return f'uv pip install --python "{sys.executable}" -e "{root}"   (uv가 없으면: "{sys.executable}" -m pip install -e "{root}")'
+
+
 def cmd_doctor(a):
     dev, gb, want = models.plan()
     print(f"findr {__version__} | 파이썬 {sys.version.split()[0]} | 장치 {dev}{f' {gb:.0f}GB' if gb else ''} | 데이터 {paths.HOME}")
@@ -275,12 +311,22 @@ def cmd_doctor(a):
     for w in want:
         print(f"  {'✓' if models.have(w) else '✗'} 모델 {w}")
     print(f"  {'✓' if models.llama_server() else '✗'} llama-server (없으면 질문을 규칙으로 읽음)")
+    miss = _missing_deps()
+    if miss:   # #31: an update by `git pull` does not install what was added since
+        print(f"  ✗ 빠진 구성 요소 {len(miss)}개: {', '.join(miss)}")
+        print(f"    → 설치:  {_reinstall_cmd()}")
+    else:
+        print("  ✓ 구성 요소 모두 설치됨")
     try:
         import index
         e = index.ocr_engine()
+        if e == "none":
+            raise ImportError("easyocr")
         print(f"  ✓ 글자 인식: {dict(vision='macOS 기본', windows='Windows 기본 (한국어)', easyocr='EasyOCR').get(e, e)}")
         if e == "easyocr" and os.name == "nt":
             print("    → 더 빠르게: Windows 한국어 글자 인식 설치 (관리자 PowerShell)  Add-WindowsCapability -Online -Name \"Language.OCR~~~ko-KR~0.0.1.0\"")
+    except ImportError:
+        print(f"  ✗ 글자 인식 없음 (스캔·스크린샷은 이름으로만 찾음) → 설치:  {_reinstall_cmd()}")
     except Exception as e:
         print(f"  ✗ 글자 인식 확인 실패: {type(e).__name__}")
     if Path(a.db).exists():

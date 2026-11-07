@@ -835,7 +835,7 @@ class Finder:
                     extra = [f_ for f_ in lit if f_ not in {x["fid"] for x in have}][:max(0, k - len(have))]
                     rest_ = [x for x in r["results"] if x["fid"] not in lit]
                     r["results"] = (have + self.files_out(extra) + rest_)[:k]; r["literal"] = len(lit)
-                j = xling_name_first(q, r["results"])   # Korean words, English name: Local_AI_Tunneling_Blueprint.pdf (#19)
+                j = xling_name_first(q, r["results"])   # Korean words, English name: Remote_Access_Design.pdf (#19)
                 if j:
                     r["results"] = [r["results"][j]] + r["results"][:j] + r["results"][j + 1:]; r["xling"] = 1
                 # version questions last: a page that quotes the question ('…최종본이 아닙니다') must not undo the version choice
@@ -1272,7 +1272,7 @@ def ce_scores(q, res, d=None, nosumm=None):
     # the rest keep their first-stage order below the scored ones
     n = len(docs)
     if m.device.type == "cpu" and CE_RATE.get(d):
-        n = max(5, min(n, int(float(os.environ.get("CE_BUDGET") or 3) / CE_RATE[d])))
+        n = min(n, max(5, int(float(os.environ.get("CE_BUDGET") or 3) / CE_RATE[d])))   # never more than there are (a small index has fewer than 5)
     t_ = time.time()
     with torch.no_grad():
         b = tok([q] * n, docs[:n], padding=True, truncation=True, max_length=CE_MAXLEN, return_tensors="pt").to(m.device)
@@ -1410,7 +1410,7 @@ def indexer_alive(p):
 # everyday Korean words and the English people name files with (Korean question, English file name: #19).
 # Loanwords and common work words only; a name has to carry EVERY idea of the question through this list.
 XLING = {
-    "로컬": "local", "터널링": "tunnel", "터널": "tunnel", "설계": "design blueprint architecture", "설계서": "design spec blueprint",
+    "로컬": "local", "원격": "remote", "접속": "access connect", "터널링": "tunnel", "터널": "tunnel", "설계": "design blueprint architecture", "설계서": "design spec blueprint",
     "아키텍처": "architecture", "구조": "architecture structure", "배포": "deploy release", "자동화": "automation automate", "자동": "auto",
     "영상": "video", "동영상": "video", "사진": "photo image", "이미지": "image", "음성": "voice audio", "오디오": "audio",
     "보고서": "report", "리포트": "report", "계획서": "plan", "계획": "plan", "사업계획서": "business plan", "제안서": "proposal",
@@ -1734,6 +1734,14 @@ def serve(f, port):
         def do_POST(self):
             if not self.authed():
                 return
+            if self.headers.get("X-Findr") == "1" and urlparse(self.path).path == "/pause":
+                try:
+                    on = bool(json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 256)) or b"{}").get("on"))
+                except Exception:
+                    return self.reply(400, b'{"ok": false}', "application/json")
+                f_ = Path(os.environ.get("FINDR_DATA") or Path.home() / ".findr") / "pause"
+                f_.write_text("1") if on else f_.unlink(missing_ok=True)
+                return self.reply(200, json.dumps({"ok": True, "paused": on}).encode(), "application/json")
             if self.headers.get("X-Findr") != "1" or urlparse(self.path).path != "/correct":
                 return self.reply(403, b"{}", "application/json")
             n = int(self.headers.get("Content-Length") or 0)

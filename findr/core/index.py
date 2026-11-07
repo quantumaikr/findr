@@ -45,6 +45,15 @@ JUNK = re.compile(r"^(vocab\.json|merges\.txt|tokenizer(_config)?\.json|special_
 # backups keep the user's history ("bos 넣기 전 학습 스크립트"): read them as the kind of file they back up
 BAK = re.compile(r"(\.(bak\w*|old|orig|backup|swp|tmp)|~)$", re.I)
 MAXREAD = 2_000_000   # bytes of text read per tier-1 file
+GIST = int(os.environ.get("FINDR_GIST") or 12_000)
+RICH = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".key", ".doc", ".hwp", ".ppt", ".xls"}   # read through a parser: output length tells
+
+
+def _size(s):
+    try:
+        return os.path.getsize(s)
+    except OSError:
+        return 0   # first pass: the opening of each document (its first pieces), the rest later
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")   # Apple GPU: operations it lacks run on the CPU instead of failing
 FILE_SECONDS = float(os.environ.get("FINDR_FILE_SECONDS") or 60)   # time budget per file; what was read by then is kept
 DATA = {".json", ".jsonl", ".csv", ".tsv", ".log"}   # machine-written results: the head says what they are
@@ -216,6 +225,9 @@ def main():
     ap.add_argument("--minutes", type=float, default=50, help="--upgrade: stop after N minutes (the next idle run continues)")
     a = ap.parse_args()
     roots = [Path(r) for r in a.root]; Path(a.db).expanduser().parent.mkdir(parents=True, exist_ok=True)
+    miss = missing_parts()
+    if miss:   # once per run, so a quiet gap has a reason and a fix
+        print("FINDR_WARN missing: " + ", ".join(miss) + " -> findr doctor (설치 명령을 알려 줍니다)", flush=True)
     con = sqlite3.connect(Path(a.db).expanduser(), timeout=60)
     con.execute("PRAGMA journal_mode=WAL")   # the search server keeps reading while the index is updated
     con.executescript("""
@@ -315,6 +327,8 @@ def main():
                 cid = con.execute("INSERT INTO chunks(file,n,text) VALUES(?,?,?)", (fid, 0, "")).lastrowid
                 con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(p.name), nfc(s[len(root.as_posix()):]), ""))
                 new += 1
+                if new % 500 == 0:
+                    pause_wait()
                 if new % 5000 == 0:
                     con.commit(); print(f"  {new} files {time.time() - t0:.0f}s", flush=True)
         gone = [k for k in known if k not in seen]
@@ -323,6 +337,9 @@ def main():
         con.commit()
         print(f"FINDR_SCAN new/changed {new} removed {len(gone)} in {time.time() - t0:.0f}s")
         progress("names", k + 1, len(roots))
+    _P["files"] = con.execute("SELECT count(*) FROM files WHERE tier>0").fetchone()[0]
+    if not a.no_embed:   # stage 1b: a meaning vector from each file's name and folders (natural-language search on names)
+        print("FINDR_STAGE namevec", flush=True); embed(con, a.model, names_only=True)
     print("FINDR_STAGE content", flush=True)
     for k, root in enumerate(roots):   # stage 2: content, the folders people look in first
         progress("content", k, len(roots)); read_wave(con, root, a)
@@ -342,16 +359,68 @@ def main():
           "chunks", con.execute("SELECT count(*) FROM chunks").fetchone()[0])
 
 
+STAGES = ("nfc", "names", "namevec", "content", "meaning", "ocr")
+_P = {"stages": {}, "started": time.time()}   # this run's view of every stage, for the app and the search page
+
+
 def progress(stage, done, total, **kw):
-    """where the index stands, for the search page ('색인 진행 중 …'); written to the data folder"""
+    """where the index stands, for the app and the search page; written to the data folder (atomically)
+    stages: done / now / later (left for idle time) / (absent: waiting). files: how many files this PC has."""
     d = os.environ.get("FINDR_DATA")
     if not d:
         return
+    st = _P["stages"]
+    if stage == "done":
+        for k in STAGES:
+            if st.get(k) == "now":
+                st[k] = "done"
+    elif stage in STAGES:
+        for k in STAGES[:STAGES.index(stage)]:   # every earlier stage is finished (or was left for later)
+            if st.get(k) in (None, "now") and k != "nfc":
+                st[k] = "done"
+        if st.get(stage) != "later":
+            st[stage] = "now"
+    p = {"stage": stage, "done": done, "total": total, "t": time.time(), "pid": os.getpid(), "started": _P["started"],
+         "stages": st, "files": _P.get("files"), "paused": _P.get("paused", False), **kw}
     try:
-        Path(d, "progress.json").write_text(json.dumps({"stage": stage, "done": done, "total": total, "t": time.time(), "pid": os.getpid(), **kw}),
-                                            encoding="utf-8")
+        f = Path(d, "progress.json"); tmp = f.with_suffix(".tmp")
+        tmp.write_text(json.dumps(p), encoding="utf-8"); os.replace(tmp, f)   # a reader never sees half a file
     except OSError:
         pass
+
+
+PAUSE_MAX = 3600   # a pause the person forgot about lapses after an hour
+
+
+def pause_wait():
+    """hold while the person paused indexing (the app or the search page writes 'pause' in the data folder)"""
+    d = os.environ.get("FINDR_DATA")
+    if not d:
+        return
+    f = Path(d, "pause")
+    held = False
+    while f.exists():
+        try:
+            if time.time() - f.stat().st_mtime > PAUSE_MAX:
+                f.unlink(); break
+        except OSError:
+            break
+        if not held:
+            held = True; _P["paused"] = True
+            print("FINDR_PAUSED", flush=True); _repeat_progress()
+        time.sleep(1)
+    if held:
+        _P["paused"] = False; print("FINDR_RESUMED", flush=True); _repeat_progress()
+
+
+def _repeat_progress():
+    d = os.environ.get("FINDR_DATA")
+    try:
+        last = json.loads(Path(d, "progress.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        last = {"stage": "names", "done": 0, "total": 0}
+    kw = {k: v for k, v in last.items() if k not in ("stage", "done", "total", "t", "pid", "started", "stages", "files", "paused")}
+    progress(last.get("stage", "names"), last.get("done", 0), last.get("total", 0), **kw)
 
 
 def priority(path, ext, mtime, now):
@@ -402,16 +471,21 @@ def read_all(jobs):
 def read_wave(con, root, a):
     """read the content of pending files under this root, best first, within this wave's age and size limits"""
     now = time.time(); pre = root.as_posix().rstrip("/") + "/"
-    rows = con.execute("SELECT id, path, ext, mtime, tier FROM files WHERE pending=1 AND path LIKE ?", (pre + "%",)).fetchall()
+    first = int(os.environ.get("FINDR_FIRST_PIECES") or 0) > 0
+    # first pass: pending=1 (never read); the deep run also finishes the files read only in part (pending=2)
+    rows = con.execute(f"SELECT id, path, ext, mtime, tier FROM files WHERE pending IN ({'1' if first else '1,2'}) AND path LIKE ?",
+                       (pre + "%",)).fetchall()
     if a.max_age_days:
         rows = [r for r in rows if now - r[3] <= a.max_age_days * 86400]
     rows.sort(key=lambda r: -priority(r[1], r[2], r[3], now))
     if a.limit:
         rows = rows[: a.limit]
     t0 = time.time()
-    jobs = [(s, 1500 if tr == 2 else DATA_READ if ext in DATA else MAXREAD) for _, s, ext, _, tr in rows]
+    full = lambda ext, tr: 1500 if tr == 2 else DATA_READ if ext in DATA else MAXREAD
+    jobs = [(s, min(GIST, full(ext, tr)) if first else full(ext, tr)) for _, s, ext, _, tr in rows]
     locked = 0
     for i, ((fid, s, ext, mtime, tr), txt) in enumerate(zip(rows, read_all(jobs))):
+        pause_wait()
         if txt is None:   # open in another program right now: stays pending, read on the next run
             locked += 1
             continue
@@ -423,12 +497,14 @@ def read_wave(con, root, a):
         for n, c in enumerate(cs):
             cid = con.execute("INSERT INTO chunks(file,n,text) VALUES(?,?,?)", (fid, n, c)).lastrowid
             con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(p.name), nfc(rel), nfc(c)))
-        con.execute("UPDATE files SET pending=0 WHERE id=?", (fid,))
+        part = first and tr == 1 and ext not in DATA and (len(txt) >= GIST - 64 or (ext not in RICH and _size(s) > GIST))   # cut at the gist
+        # (plain text is read by bytes: Korean takes 3 per character, so the file size tells): the deep run reads the rest
+        con.execute("UPDATE files SET pending=? WHERE id=?", (2 if part else 0, fid))
         if (i + 1) % 200 == 0:
             con.commit(); print(f"  read {i + 1}/{len(rows)} {time.time() - t0:.0f}s", flush=True)
             progress("content", i + 1, len(rows), folder=root.name)
     con.commit()
-    left = con.execute("SELECT count(*) FROM files WHERE pending=1 AND path LIKE ?", (pre + "%",)).fetchone()[0]
+    left = con.execute("SELECT count(*) FROM files WHERE pending IN (1,2) AND path LIKE ?", (pre + "%",)).fetchone()[0]
     print(f"FINDR_READ {len(rows)} files in {time.time() - t0:.0f}s, still pending {left}" + (f" (in use by another program: {locked})" if locked else ""))
 
 
@@ -462,7 +538,23 @@ def ocr_engine():
             pass
     elif sys.platform == "win32" and _windows_ocr() is not None:
         _ENGINE = "windows"
+    if _ENGINE == "easyocr":
+        import importlib.util
+        if importlib.util.find_spec("easyocr") is None:
+            _ENGINE = "none"   # no recognizer installed here (#31): scans stay findable by name
     return _ENGINE
+
+
+def missing_parts():
+    """readers this run will go without, each with what it costs (#31: after a git pull nothing said so)"""
+    import importlib.util
+    out = []
+    if ocr_engine() == "none":
+        out.append("easyocr (스캔·스크린샷 글자)")
+    for mod, what in (("pypdfium2", "빠른 PDF 읽기"), ("pillow_heif", "아이폰 사진 HEIC"), ("python_calamine", "xls·ods 표")):
+        if importlib.util.find_spec(mod) is None:
+            out.append(f"{mod} ({what})")
+    return out
 
 
 _WIN = []
@@ -569,6 +661,9 @@ def _page_scale(page, side=None):
 OCR_FIRST_PAGES = int(os.environ.get("FINDR_OCR_FIRST_PAGES") or 3)
 
 
+_SAID = []
+
+
 def _gpu_present():
     try:
         import torch
@@ -616,6 +711,13 @@ def ocr_wave(con, root, first_pages=None, deep_pages=50):
     A copy of a file already read gets that file's text instead of a second OCR."""
     deep = int(os.environ.get("FINDR_FIRST_PIECES") or 0) == 0
     first_pages, side = first_pages or OCR_FIRST_PAGES, OCR_SIDE
+    if ocr_engine() == "none":
+        return   # nothing to read with (FINDR_WARN at the start of the run says what to install)
+    if ocr_engine() == "easyocr" and not _gpu_present() and not deep and os.environ.get("FINDR_OCR_FIRST") != "1":
+        if not _SAID:
+            _SAID.append(1); print("FINDR_OCR later: scans are read during idle time on this PC (no GPU or system text recognizer)", flush=True)
+            _P["stages"]["ocr"] = "later"
+        return   # first index: speed first; the deep run reads them
     if ocr_engine() == "easyocr" and not _gpu_present():
         # EasyOCR on a CPU, for search (words that find the file, not a faithful copy). 12 synthetic A4 pages, 4 cores,
         # share of words found / s per page:  2400 px 89-91% 9-15 s,  1600 px 90% 4.1-4.4 s,  1200 px 85-88% 2.6-2.9 s,
@@ -642,6 +744,7 @@ def ocr_wave(con, root, first_pages=None, deep_pages=50):
     heif_on()
     items = pdfs + imgs
     for k, (fid, s) in enumerate(items):
+        pause_wait()
         lines, state, texts = [], 1, None
         if k % 10 == 0:
             progress("ocr", k, len(items), folder=root.name)
@@ -758,6 +861,14 @@ def ooxml_text(p, limit):
         m = re.search(r"(\d+)\.xml$", n)
         return (0 if ("document" in n or "sharedStrings" in n) else 1, n.rsplit("/", 1)[0], int(m.group(1)) if m else 0)
     z = zipfile.ZipFile(p); out, have = [], 0; end = time.time() + FILE_SECONDS
+    try:   # the properties the saving program wrote (title, subject, keywords, author): first, they say what the file is
+        core = z.read("docProps/core.xml").decode("utf-8", "ignore")
+        tag = lambda t: (re.search(rf"<(?:\w+:)?{t}[^>]*>([^<]*)</", core) or [None, None])[1]
+        props = props_line(tag("title"), tag("subject"), tag("keywords"), tag("creator"))
+        if props:
+            out.append(props); have += len(props)
+    except KeyError:
+        pass
     for n in sorted((n for n in z.namelist() if n.endswith(".xml") and any(k in n for k in keys)), key=order):
         with z.open(n) as f:
             tail = ""
@@ -889,11 +1000,40 @@ def keynote_text(p, limit):
         return ""
 
 
+def pdf_props(p):
+    """title, subject and keywords that the saving program wrote into the PDF ('' when none or generic)"""
+    try:
+        import pypdfium2 as pdfium
+        doc = pdfium.PdfDocument(str(p))
+        try:
+            m = doc.get_metadata_dict(skip_empty=True)
+        finally:
+            doc.close()
+    except Exception:
+        return ""
+    return props_line(m.get("Title"), m.get("Subject"), m.get("Keywords"), m.get("Author"))
+
+
+_GENERIC = re.compile(r"^(untitled|제목 ?없음|microsoft (word|powerpoint|excel).*|document\d*|문서\d*|슬라이드 ?\d*|presentation\d*|pdf|unknown|user|admin|owner)$", re.I)
+
+
+def props_line(title=None, subject=None, keywords=None, author=None):
+    """one line of document properties for the index, skipping the empty and the generic ('Microsoft Word - 문서1')"""
+    out = []
+    for k, v in (("제목", title), ("주제", subject), ("키워드", keywords), ("작성자", author)):
+        v = re.sub(r"\s+", " ", str(v or "")).strip()[:200]
+        if v and not _GENERIC.match(v) and not re.fullmatch(r"[\W_]*", v):
+            out.append(f"{k}: {v}")
+    return (" | ".join(out) + "\n") if out else ""
+
+
 def pdf_text(p, limit):
     """pdftotext when it is installed (Linux; best layout), else pypdf (Windows, macOS: nothing extra to install)"""
     import shutil
     if shutil.which("pdftotext") and os.environ.get("FINDR_PDF") in (None, "", "pdftotext"):
-        return subprocess.run(["pdftotext", "-layout", "-l", "500", str(p), "-"], capture_output=True, timeout=120).stdout.decode("utf-8", "ignore")[:limit]
+        pages = "500" if limit > 100_000 else "12"   # a gist needs the first pages only
+        out = subprocess.run(["pdftotext", "-layout", "-l", pages, str(p), "-"], capture_output=True, timeout=120).stdout.decode("utf-8", "ignore")
+        return (pdf_props(p) + out)[:limit]
     if os.environ.get("FINDR_PDF") != "pypdf":
         try:
             import pypdfium2 as pdfium   # Chrome's PDF engine: much faster than pure-Python parsing
@@ -908,7 +1048,7 @@ def pdf_text(p, limit):
                         break
             finally:
                 doc.close()
-            return "\n".join(out)[:limit]
+            return (pdf_props(p) + "\n".join(out))[:limit]
         except ImportError:
             pass
         except Exception:
@@ -936,7 +1076,7 @@ def drop(con, fid):
         pass
 
 
-def embed(con, model):
+def embed(con, model, names_only=False):
     Enc = None
     from enc_eg2 import EG2, SmallEnc, encoder_of
     import torch
@@ -950,11 +1090,15 @@ def embed(con, model):
     if os.environ.get("FINDR_THREADS"):   # background indexing: leave CPU cores for the person's own work
         torch.set_num_threads(max(1, int(os.environ["FINDR_THREADS"])))
     cap = int(os.environ.get("FINDR_FIRST_PIECES") or 0)   # first pass on a large PC: each file's opening pieces only
-    rows = con.execute(f"""SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
-                          WHERE c.emb IS NULL AND f.tier>0 AND COALESCE(f.pending,0)=0 {"AND c.n < %d" % cap if cap > 0 else ""}
+    if names_only:   # every file's name and folders, content or not (a file read later gets new pieces and vectors)
+        rows = con.execute("""SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
+                              WHERE c.emb IS NULL AND f.tier>0 AND c.n=0 AND COALESCE(c.text,'')='' ORDER BY f.mtime DESC""").fetchall()
+    else:
+        rows = con.execute(f"""SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
+                          WHERE c.emb IS NULL AND f.tier>0 AND COALESCE(f.pending,0) IN (0,2) {"AND c.n < %d" % cap if cap > 0 else ""}
                           ORDER BY (c.n > 1), f.mtime DESC, c.n""").fetchall()   # every file's opening pieces first, newest first
     later = con.execute("SELECT count(*) FROM chunks c JOIN files f ON f.id=c.file WHERE c.emb IS NULL AND f.tier>0 "
-                        "AND COALESCE(f.pending,0)=0 AND c.n >= ?", (cap,)).fetchone()[0] if cap > 0 else 0
+                        "AND COALESCE(f.pending,0) IN (0,2) AND c.n >= ?", (cap,)).fetchone()[0] if cap > 0 and not names_only else 0
     # identical inputs (a copied file, repeated boilerplate under the same name) are computed once
     groups = {}
     for cid, t, p in rows:
@@ -962,6 +1106,7 @@ def embed(con, model):
     uniq = list(groups.items())
     t0 = last = time.time(); warned = False
     for i in range(0, len(uniq), 256):
+        pause_wait()
         b = uniq[i:i + 256]
         with torch.no_grad():
             v = emb512(enc, [k for k, _ in b]).cpu().numpy().astype(np.float16)
@@ -971,7 +1116,7 @@ def embed(con, model):
             con.commit(); last = time.time()
             rate = done_ / max(last - t0, 1e-6); left = (len(uniq) - done_) / max(rate, 1e-6)
             print(f"  embedded {done_}/{len(uniq)} {last - t0:.0f}s | {rate:.0f} pieces/s | about {left / 60:.0f} min left", flush=True)
-            progress("meaning", done_, len(uniq), minutes_left=round(left / 60))
+            progress("namevec" if names_only else "meaning", done_, len(uniq), minutes_left=round(left / 60))
             if not warned and done_ >= 1024 and left > 6 * 3600 and isinstance(enc, EG2) and not isinstance(enc, SmallEnc):
                 warned = True
                 print("FINDR_SLOW 이 PC에서는 큰 모델이 느립니다. 작은 모델로 바꾸면 훨씬 빨라집니다:  findr setup --lite", flush=True)
