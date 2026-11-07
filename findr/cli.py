@@ -32,7 +32,11 @@ def _engine_env(photo_url=""):
 
 def _encoder():
     dev, _, want = models.plan()
-    return "embeddinggemma-2" if "embeddinggemma-2" in want and models.have("embeddinggemma-2") else "e5-small"
+    if "embeddinggemma-2" in want and models.have("embeddinggemma-2") and models.big_ok():
+        return "embeddinggemma-2"
+    if not models.have("multilingual-e5-small"):   # the fallback model, fetched once
+        models.pull(["multilingual-e5-small"])
+    return "e5-small"
 
 
 def cmd_setup(a):

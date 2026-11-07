@@ -21,12 +21,20 @@ def encoder_of(con):
         return "bge-m3"
 
 
+def pick_device(device=None):
+    """FINDR_DEVICE, else NVIDIA (cuda), else Apple GPU (mps), else cpu; a device that is not there falls back to the CPU"""
+    import os
+    d = device or os.environ.get("FINDR_DEVICE")
+    mps = getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available()
+    if d == "cuda" and not torch.cuda.is_available() or d == "mps" and not mps:
+        d = None
+    return d or ("cuda" if torch.cuda.is_available() else "mps" if mps else "cpu")
+
+
 class EG2:
     def __init__(self, device=None, max_len=512):   # no GPU on this PC: fall back to the CPU (FINDR_DEVICE can force it)
         import os
-        device = device or os.environ.get("FINDR_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
-        if device == "cuda" and not torch.cuda.is_available():
-            device = "cpu"
+        device = pick_device(device)
         from sentence_transformers import SentenceTransformer
         self.st = SentenceTransformer(PATH, device=device); self.st.max_seq_length = max_len; self.dev = device
 
@@ -44,9 +52,7 @@ class SmallEnc(EG2):
 
     def __init__(self, device=None, max_len=512):
         import os
-        device = device or os.environ.get("FINDR_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
-        if device == "cuda" and not torch.cuda.is_available():
-            device = "cpu"
+        device = pick_device(device)
         from sentence_transformers import SentenceTransformer
         p = _M / "multilingual-e5-small"
         self.st = SentenceTransformer(str(p) if p.exists() else "intfloat/multilingual-e5-small", device=device)

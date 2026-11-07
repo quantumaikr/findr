@@ -38,13 +38,38 @@ def gpu():
 def plan(photo=None, lite=False):
     """the folders this PC should have"""
     dev, gb = gpu()
-    big = dev in ("cuda", "mps") and not lite
-    want = ["rank", "gate", "qu"] + (["embeddinggemma-2", "checker"] if big else ["multilingual-e5-small"])
+    # GPU memory decides how much fits: under 4 GB the small meaning model, under 6 GB no side-by-side checker
+    big = dev == "mps" or (dev == "cuda" and gb >= 4)
+    big = big and not lite
+    want = ["rank", "gate", "qu"] + (["embeddinggemma-2"] if big else ["multilingual-e5-small"])
+    if big and (dev == "mps" or gb >= 6):
+        want.append("checker")
     if photo is None:
         photo = dev == "cuda" and gb >= 10   # the photo model needs about 7.5 GB of GPU memory next to the rest
     if photo:
         want.append("kanana-2-v-decide-3b-2611")
     return dev, gb, want
+
+
+def big_ok():
+    """the large meaning model on this device: on an Apple GPU it is tried once (a short text, timed); if it fails or is
+    very slow, the small model is used instead. The answer is kept in the data folder."""
+    dev, _ = gpu()
+    if dev != "mps":
+        return True
+    mark = paths.HOME / "device_check.json"
+    if mark.exists():
+        return json.loads(mark.read_text()).get("big_ok", False)
+    ok = False
+    try:
+        import time
+        import enc_eg2
+        e = enc_eg2.EG2("mps"); e.emb(["시험 문장입니다."] * 4)   # first call loads kernels
+        t = time.time(); e.emb(["회의 전에 고친 견적서를 찾아 줘"] * 16); ok = time.time() - t < 5
+    except Exception:
+        ok = False
+    mark.write_text(json.dumps({"device": dev, "big_ok": ok}))
+    return ok
 
 
 def have(folder):
