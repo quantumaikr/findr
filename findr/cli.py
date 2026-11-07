@@ -54,7 +54,7 @@ def cmd_setup(a):
             print("  회사 망 등에서 막히면 허깅페이스 로그인 후 다시:  hf auth login")
             return 1
         raise
-    if not a.no_llm:
+    if not a.no_llm and models.qu_ok(dev):   # without a GPU neither small language model runs: no llama.cpp download
         models.pull_llama_server(dev)
     # the components must really load: a missing Windows runtime (#3) used to pass as "done"
     _check_reranker()
@@ -225,7 +225,9 @@ def cmd_serve(a):
     ls = models.llama_server()
     side = []
     qu = sorted((paths.MODELS / "qu").glob("*.gguf"))
-    if ls and qu and not a.no_llm:
+    if not models.qu_ok(dev):   # a CPU reads questions by rules: faster there, same accuracy
+        os.environ.setdefault("QU_URL", "off")
+    elif ls and qu and not a.no_llm:
         _start("qu", [ls, "-m", str(qu[0]), "--port", str(PORTS["qu"]), "--host", "127.0.0.1", "-ngl", "99", "-np", "4", "-c", "4096",
                       "--temp", "0", "--cache-ram", "512"], "qu_server.log", models.llama_env()); side.append("질문 이해")
     ck = sorted((paths.MODELS / "checker").glob("*.gguf"))
@@ -343,7 +345,10 @@ def cmd_doctor(a):
     if dev == "cpu":
         ox = (paths.MODELS / "rank" / "model_int8.onnx").exists()
         print(f"  {'✓' if ox or (paths.MODELS / 'rank' / 'model.safetensors').exists() else '✗'} 재정렬: {'가벼운 8비트 (CPU용)' if ox else '전체 정밀도'}")
-    print(f"  {'✓' if models.llama_server() else '✗'} llama-server (없으면 질문을 규칙으로 읽음)")
+    if models.qu_ok(dev):
+        print(f"  {'✓' if models.llama_server() else '✗'} llama-server (없으면 질문을 규칙으로 읽음)")
+    else:
+        print("  ✓ 질문 읽기: 규칙 (GPU가 없으면 이쪽이 빠르고 정확도는 같음)")
     if dev == "cuda" and models.llama_server():   # a CUDA build that finds no GPU still runs, ~5x slower, and says nothing
         try:
             out = subprocess.run([models.llama_server(), "--list-devices"], capture_output=True, text=True, timeout=60, env=models.llama_env()).stdout

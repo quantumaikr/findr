@@ -57,13 +57,20 @@ def checker_ok(dev, gb):
     return dev == "cuda" and gb >= 6 or dev == "mps" and ram_gb() >= 24
 
 
+def qu_ok(dev):
+    """the question-reading model (0.6B) on a GPU only. On 4 CPU cores one reading took 3.1 s, past the 0.6 s the engine
+    waits, so its answer was never used, and it held the cores the reranker needed: rules alone answered in 2.2 s instead
+    of 3.5 s, with the same accuracy (real PC, 90 questions)"""
+    return dev in ("cuda", "mps")
+
+
 def plan(photo=None, lite=False):
     """the folders this PC should have"""
     dev, gb = gpu()
     # GPU memory decides how much fits: under 4 GB the small meaning model, under 6 GB no side-by-side checker
     big = dev == "mps" or (dev == "cuda" and gb >= 4)
     big = big and not lite
-    want = ["rank", "gate", "qu"] + (["embeddinggemma-2"] if big else ["multilingual-e5-small"])
+    want = ["rank", "gate"] + (["qu"] if qu_ok(dev) else []) + (["embeddinggemma-2"] if big else ["multilingual-e5-small"])
     if big and checker_ok(dev, gb):
         want.append("checker")
     if photo is None:
