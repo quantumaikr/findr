@@ -26,6 +26,11 @@ dependencies = [
   "pillow-heif>=0.18",          # iPhone photos (HEIC)
   "easyocr>=1.7",               # text in scanned PDFs, screenshots and photos (Korean + English)
   "pyobjc-framework-Vision>=10.0; sys_platform == 'darwin'",   # macOS built-in text recognition: faster and better Korean than EasyOCR
+  "winrt-Windows.Media.Ocr>=2.0; sys_platform == 'win32'",     # Windows built-in text recognition (with its Korean recognizer)
+  "winrt-Windows.Globalization>=2.0; sys_platform == 'win32'",
+  "winrt-Windows.Graphics.Imaging>=2.0; sys_platform == 'win32'",
+  "winrt-Windows.Storage.Streams>=2.0; sys_platform == 'win32'",
+  "winrt-Windows.Foundation>=2.0; sys_platform == 'win32'",
   "truststore>=0.9",            # system certificates (company networks)
   "accelerate>=1.0",
 ]

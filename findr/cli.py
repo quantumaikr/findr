@@ -63,9 +63,12 @@ def cmd_setup(a):
         if os.name == "nt":
             print("  Windows 구성 요소(Visual C++ 런타임)가 오래되었을 수 있습니다: winget install Microsoft.VCRedist.2015+.x64")
         return 1
-    try:   # the text reader for scans and screenshots (about 100 MB, once)
+    try:   # the text reader for scans and screenshots: the system's own (macOS, Windows with Korean OCR) or EasyOCR (about 100 MB, once)
         import index
-        print("  글자 인식 모델 받는 중 ...", flush=True); index.ocr_reader()
+        if index.ocr_engine() == "easyocr":
+            print("  글자 인식 모델 받는 중 ...", flush=True); index.ocr_reader()
+        else:
+            print(f"  글자 인식: 운영체제 기본 기능 ({index.ocr_engine()})", flush=True)
     except Exception as e:
         print(f"  글자 인식 모델을 받지 못했습니다 ({type(e).__name__}): 스캔 문서는 이름으로만 찾습니다.")
     print("\n완료. 다음:  findr index   (PC 전체의 내 파일)   →   findr serve")
@@ -266,6 +269,14 @@ def cmd_doctor(a):
     for w in want:
         print(f"  {'✓' if models.have(w) else '✗'} 모델 {w}")
     print(f"  {'✓' if models.llama_server() else '✗'} llama-server (없으면 질문을 규칙으로 읽음)")
+    try:
+        import index
+        e = index.ocr_engine()
+        print(f"  ✓ 글자 인식: {dict(vision='macOS 기본', windows='Windows 기본 (한국어)', easyocr='EasyOCR').get(e, e)}")
+        if e == "easyocr" and os.name == "nt":
+            print("    → 더 빠르게: Windows 한국어 글자 인식 설치 (관리자 PowerShell)  Add-WindowsCapability -Online -Name \"Language.OCR~~~ko-KR~0.0.1.0\"")
+    except Exception as e:
+        print(f"  ✗ 글자 인식 확인 실패: {type(e).__name__}")
     if Path(a.db).exists():
         import sqlite3
         c = sqlite3.connect(str(a.db))
