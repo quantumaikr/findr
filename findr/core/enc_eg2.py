@@ -68,6 +68,34 @@ class SmallEnc(EG2):
         return self.st.encode(texts, batch_size=bs, normalize_embeddings=True, convert_to_tensor=True).float()
 
 
+class OtherEnc(SmallEnc):
+    """e5-base (query:/passage: prefixes) or ko-sroberta (no prefixes): candidates for PCs without a GPU"""
+    REPO = {"e5-base": ("multilingual-e5-base", "intfloat/multilingual-e5-base", True),
+            "ko-sroberta": ("ko-sroberta-multitask", "jhgan/ko-sroberta-multitask", False)}
+
+    def __init__(self, name, device=None, max_len=512):
+        import os
+        device = pick_device(device)
+        from sentence_transformers import SentenceTransformer
+        local, hub, self.prefix = self.REPO[name]
+        m = Path(os.environ.get("FINDR_MODELS") or (Path.home() / ".findr" / "models")) / local
+        for c in (m,):
+            if c.exists():
+                hub = str(c); break
+        self.st = SentenceTransformer(hub, device=device); self.dev = device
+        self.st.max_seq_length = min(max_len, self.st.max_seq_length or max_len)
+
+    @torch.no_grad()
+    def emb(self, texts, bs=8, query=True):
+        texts = [(("query: " if query else "passage: ") if self.prefix else "") + _SAFE.sub(r"< \1 >", t) for t in texts]
+        return self.st.encode(texts, batch_size=bs, normalize_embeddings=True, convert_to_tensor=True).float()
+
+
+ENCODERS = ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta")
+
+
 def make_encoder(name, device=None, max_len=512):
     """the encoder named in an index's meta table"""
+    if name in OtherEnc.REPO:
+        return OtherEnc(name, device, max_len)
     return SmallEnc(device, max_len) if name == "e5-small" else EG2(device, max_len)

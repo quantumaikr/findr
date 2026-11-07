@@ -1,0 +1,49 @@
+# Every push: the same checks on Windows, macOS and Linux (CPU), so OS-specific breakage is caught before people meet it.
+# Folder rules, file formats, and the whole path: setup check -> search before meaning vectors -> index -> search -> search page.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      FINDR_E2E: "1"
+      PYTHONUTF8: "1"
+      FINDR_MODELS: ${{ github.workspace }}/.models
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Python environment
+        shell: bash
+        run: |
+          uv venv --python 3.12 .venv
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            uv pip install --python .venv torch torchvision
+          else
+            uv pip install --python .venv torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          fi
+          uv pip install --python .venv -e . pytest
+
+      - name: Model cache
+        uses: actions/cache@v4
+        with:
+          path: .models
+          key: findr-models-${{ runner.os }}-v1
+
+      - name: Tests
+        shell: bash
+        run: |
+          PY=.venv/bin/python; [ -f .venv/Scripts/python.exe ] && PY=.venv/Scripts/python.exe
+          "$PY" -m pytest -q -rs tests

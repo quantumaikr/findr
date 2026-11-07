@@ -375,7 +375,7 @@ class Finder:
         from enc_eg2 import EG2, encoder_of
         self.encoder = encoder_of(self.con)   # the index says which meaning encoder built its vectors
         from enc_eg2 import make_encoder
-        if self.encoder not in ("embeddinggemma-2", "e5-small"):   # a first index still being built: nothing recorded yet
+        if self.encoder not in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta"):   # a first index still being built: nothing recorded yet
             self.encoder = os.environ.get("FINDR_ENCODER") or "e5-small"
         self.enc = make_encoder(self.encoder, DEVICE, max_len=128)
         if not len(self.ids):   # no vectors yet: an empty matrix of this encoder's width (words and names still answer)
@@ -399,7 +399,7 @@ class Finder:
             return
         from enc_eg2 import encoder_of, make_encoder
         e_ = encoder_of(self.con)
-        if e_ in ("embeddinggemma-2", "e5-small") and e_ != self.encoder:   # the index now records another encoder (#9)
+        if e_ in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and e_ != self.encoder:   # the index now records another encoder (#9)
             self.encoder = e_; self.enc = make_encoder(e_, DEVICE, max_len=128)
         rows = self.con.execute("SELECT c.id, c.emb FROM chunks c WHERE c.emb IS NOT NULL").fetchall()
         self.ids = np.array([r[0] for r in rows], dtype=np.int64)

@@ -198,7 +198,7 @@ def main():
     if "pending" not in [r[1] for r in con.execute("PRAGMA table_info(files)")]:
         con.execute("ALTER TABLE files ADD COLUMN pending INT DEFAULT 0")
     con.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
-    if a.model in ("embeddinggemma-2", "e5-small") and not con.execute("SELECT 1 FROM chunks WHERE emb IS NOT NULL LIMIT 1").fetchone():
+    if a.model in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and not con.execute("SELECT 1 FROM chunks WHERE emb IS NOT NULL LIMIT 1").fetchone():
         con.execute("INSERT OR REPLACE INTO meta VALUES('encoder', ?)", (a.model,))   # known from the start: search works while indexing (#9)
     con.commit()
     progress("names", 0, len(roots))
@@ -679,9 +679,9 @@ def embed(con, model):
     import torch
     from enc_eg2 import make_encoder
     con.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
-    if model in ("embeddinggemma-2", "e5-small") and not con.execute("SELECT 1 FROM chunks WHERE emb IS NOT NULL LIMIT 1").fetchone():
+    if model in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and not con.execute("SELECT 1 FROM chunks WHERE emb IS NOT NULL LIMIT 1").fetchone():
         con.execute("INSERT OR REPLACE INTO meta VALUES('encoder', ?)", (model,)); con.commit()   # a new index records its encoder
-    enc = make_encoder(encoder_of(con)) if encoder_of(con) in ("embeddinggemma-2", "e5-small") else Enc(model)   # same encoder as the vectors already stored
+    enc = make_encoder(encoder_of(con)) if encoder_of(con) in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") else Enc(model)   # same encoder as the vectors already stored
     if not isinstance(enc, EG2):
         enc.tok.model_max_length = 512
     if os.environ.get("FINDR_THREADS"):   # background indexing: leave CPU cores for the person's own work
