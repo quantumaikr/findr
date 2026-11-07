@@ -125,35 +125,72 @@ async function folders(s: AppState) {
 }
 
 // ---------- indexing ----------
+const TIPS = ['지난달 받은 견적서', '작년 여름 바다에서 찍은 사진', '최종본 말고 그 직전 판', '회의 전에 고친 발표 자료', '카톡으로 받은 계약서 스캔', '소각로 48톤이라고 적힌 매뉴얼']
+const STAGES: [string, string, string][] = [
+  ['names', '파일 목록', '이름과 폴더로 찾을 수 있게 됩니다'],
+  ['content', '내용 읽기', '문서 속 글자로 찾을 수 있게 됩니다'],
+  ['meaning', '의미 계산', '비슷한 뜻의 말로도 찾을 수 있게 됩니다'],
+  ['ocr', '스캔 글자 읽기', '스캔한 문서와 스크린샷 속 글자까지'],
+]
 async function indexing(list: string[], deep = false) {
   view.innerHTML = `<h1>색인하는 중</h1>
-    <p class="lead">폴더마다 이름 → 내용 → 의미 순서로 처리합니다. 먼저 끝난 폴더부터 바로 검색할 수 있습니다.</p>
+    <p class="lead">파일 목록이 만들어지면 바로 검색 화면으로 넘어갑니다. 나머지는 검색하는 동안 뒤에서 이어서 합니다.</p>
+    <div class="card"><ul class="steps">${STAGES.map(([id, name, what]) => `
+      <li id="ix-${id}"><span class="state">대기</span><div><div class="step-name">${name}</div><div class="step-line">${what}</div></div></li>`).join('')}</ul></div>
     <div class="card"><div class="row between"><span id="now">시작하는 중</span><span class="muted" id="count"></span></div>
-      <div class="bar"><div id="bar"></div></div><p class="muted" id="detail" style="margin:6px 0 0"></p></div>
+      <div class="bar"><div id="bar"></div></div></div>
+    <div class="card"><p class="muted" style="margin:0 0 6px">이렇게 물어보세요</p><p id="tip" style="margin:0;font-weight:550"></p></div>
     <div class="actions"><button class="primary" id="go" disabled>지금 검색하기</button></div>
     <details><summary>자세한 기록</summary><pre id="log"></pre></details>`
   const log: string[] = []
-  let n = list.length, done = 0, files = 0
-  const set = (id: string, t: string) => { document.getElementById(id)!.textContent = t }
+  let files = 0, stage = '', engine: Promise<string> | null = null, moved = false, named = false, ready = false
+  const set = (id: string, t: string) => { const e = document.getElementById(id); if (e) e.textContent = t }
+  const mark = (id: string, cls: string, text: string) => {
+    const li = document.getElementById('ix-' + id); if (!li) return
+    const st = li.querySelector('.state')!; st.className = 'state ' + cls; st.textContent = text
+  }
+  let ti = 0; const tip = () => set('tip', '“' + TIPS[ti++ % TIPS.length] + '”'); tip()
+  const tipTimer = setInterval(tip, 6000)
+  const enter = (stg: string) => {
+    if (stg === stage) return
+    if (stage) mark(stage, 'ok', '완료')
+    stage = stg; if (STAGES.some(s => s[0] === stg)) mark(stg, 'run', '진행 중')
+  }
+  const goSearch = async () => {   // the engine was started in advance: no second wait
+    if (moved) return; moved = true; clearInterval(tipTimer)
+    try { const url = await (engine || invoke<string>('start_engine', { photo: photoOn() })); location.href = url }
+    catch (e) { location.hash = 'search' }
+  }
+  enter('names')
   unlisten.push(await listen<Line>('index', e => {
     const l = e.payload.line
     log.push(l); if (log.length > 300) log.shift(); set('log', log.join('\n'))
     let m
-    if ((m = l.match(/^FINDR_ROOT (\{.*\})/))) { const r = JSON.parse(m[1]); n = r.n; set('now', `${r.i + 1}/${r.n}  ${r.path}`) }
-    else if (l.startsWith('FINDR_ROOT_DONE')) {
-      done++; (document.getElementById('bar') as HTMLElement).style.width = `${Math.round(100 * done / n)}%`
-      ;(document.getElementById('go') as HTMLButtonElement).disabled = false
+    if (!engine && l.startsWith('FINDR_ROOT')) {   // the index exists from the first folder on: start the engine now, in parallel
+      engine = invoke<string>('start_engine', { photo: photoOn() })
+      engine.then(() => { ready = true; if (named) setTimeout(goSearch, 800) }).catch(() => {})
     }
-    else if ((m = l.match(/^FINDR_SCAN new\/changed (\d+)/))) { files += +m[1]; set('count', `새로 찾은 파일 ${files.toLocaleString()}개`); set('detail', '파일 목록을 만드는 중') }
-    else if ((m = l.match(/^FINDR_READ (\d+)/))) set('detail', `내용 읽음: ${(+m[1]).toLocaleString()}개`)
-    else if (/^\s*embedded \d+\/\d+/.test(l)) set('detail', '의미를 계산하는 중 ' + l.trim().split(' ')[1])
-    else if ((m = l.match(/^FINDR_EMBED (\d+)/))) set('detail', `의미 계산 완료: ${(+m[1]).toLocaleString()}개`)
+    if ((m = l.match(/^FINDR_ROOT (\{.*\})/))) { const r = JSON.parse(m[1]); set('now', `파일 목록 ${r.i + 1}/${r.n}: ${r.path}`)
+      ;(document.getElementById('bar') as HTMLElement).style.width = `${Math.round(100 * r.i / r.n)}%` }
+    else if ((m = l.match(/^FINDR_SCAN new\/changed (\d+)/))) { files += +m[1]; set('count', `찾은 파일 ${files.toLocaleString()}개`) }
+    else if ((m = l.match(/^FINDR_STAGE (\w+)/))) {
+      enter(m[1])
+      if (m[1] === 'content' && !named) {   // names are in: search as soon as the engine (started at the beginning) is ready
+        named = true; (document.getElementById('go') as HTMLButtonElement).disabled = false
+        if (ready) setTimeout(goSearch, 800); else set('tip', '검색 엔진을 켜는 중입니다. 곧 검색 화면으로 넘어갑니다.')
+      }
+      if (m[1] === 'done') { STAGES.forEach(s => mark(s[0], 'ok', '완료')) }
+    }
+    else if ((m = l.match(/^\s*read (\d+)\/(\d+)/))) { set('now', `내용 읽기 ${(+m[1]).toLocaleString()}/${(+m[2]).toLocaleString()}`)
+      ;(document.getElementById('bar') as HTMLElement).style.width = `${Math.round(100 * +m[1] / +m[2])}%` }
+    else if ((m = l.match(/^\s*embedded (\d+)\/(\d+).*about (\d+) min/))) { set('now', `의미 계산 ${(+m[1]).toLocaleString()}/${(+m[2]).toLocaleString()} · 약 ${m[3]}분 남음`)
+      ;(document.getElementById('bar') as HTMLElement).style.width = `${Math.round(100 * +m[1] / +m[2])}%` }
   }))
   unlisten.push(await listen<Done>('index-done', e => {
-    if (e.payload.ok) { location.hash = 'search'; return }
-    set('detail', e.payload.message); (document.getElementById('go') as HTMLButtonElement).disabled = false
+    if (!e.payload.ok) { set('now', e.payload.message); (document.getElementById('go') as HTMLButtonElement).disabled = false; return }
+    goSearch()
   }))
-  document.getElementById('go')!.onclick = () => { location.hash = 'search' }
+  document.getElementById('go')!.onclick = goSearch
   invoke('start_index', { folders: list, deep })
 }
 

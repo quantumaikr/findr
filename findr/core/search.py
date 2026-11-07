@@ -1352,6 +1352,14 @@ def serve(f, port):
         def do_GET(self):
             if urlparse(self.path).path == "/healthz":   # for the watchdog: says nothing but "ok"
                 return self.reply(200, b"ok", "text/plain")
+            if urlparse(self.path).path == "/progress":   # indexing still running: the page shows where it stands
+                if not self.authed():
+                    return
+                try:
+                    body_ = (Path(os.environ.get("FINDR_DATA") or Path.home() / ".findr") / "progress.json").read_bytes()
+                except OSError:
+                    body_ = b"{}"
+                return self.reply(200, body_, "application/json; charset=utf-8")
             if urlparse(self.path).path == "/auth":   # the desktop app opens the page once with its key; a cookie keeps it signed in
                 import hmac
                 t_ = parse_qs(urlparse(self.path).query).get("t", [""])[0]

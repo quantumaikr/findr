@@ -21,17 +21,8 @@ print(f"PC_ROOTS {len(roots)} folders:", ", ".join(sorted({lab for _, lab, _ in 
 if a.dry_run:
     sys.exit(0)
 env = {**os.environ, "FINDR_SCOPE": "user"}
-done_by = {}
-for i, (order, label, p) in enumerate(roots):
-    t = time.time()
-    last_of_order = i + 1 == len(roots) or roots[i + 1][0] != order   # load the meaning model once per order group, not per folder
-    out = subprocess.run([sys.executable, str(Path(__file__).with_name("index.py")), "--root", str(p), "--db", a.db, "--model", a.model] + ([] if last_of_order else ["--no-embed"]), env=env,
-                         capture_output=True, text=True)
-    if out.returncode:
-        print(f"PC_FAIL order {order} {label}: exit {out.returncode}:", out.stderr.strip().splitlines()[-1][:200] if out.stderr.strip() else "", flush=True)
-    out = out.stdout
-    stats = [l for l in out.splitlines() if l.startswith(("FINDR_SCAN", "FINDR_READ", "FINDR_EMBED"))]
-    nums = " | ".join(l.replace("FINDR_", "").lower() for l in stats)
-    done_by[order] = time.time() - t0
-    print(f"PC_STEP order {order} {label}: {time.time() - t:.0f}s ({nums}) | elapsed {time.time() - t0:.0f}s", flush=True)
-print("PC_DONE", {f"searchable after order {o}": f"{s:.0f}s" for o, s in sorted(done_by.items())})
+# one run for every folder: names of the whole PC first, then content, then meaning (models are loaded once)
+t = time.time()
+rc = subprocess.call([sys.executable, str(Path(__file__).with_name("index.py")), "--root", *[str(p) for _, _, p in roots],
+                      "--db", a.db, "--model", a.model], env=env)
+print(f"PC_DONE {len(roots)} folders in {time.time() - t:.0f}s (exit {rc})", flush=True)

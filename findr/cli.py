@@ -97,13 +97,9 @@ def cmd_index(a):
         cmd = [sys.executable, str(core / "index_pc.py"), "--db", str(a.db), "--model", enc]
         print(f"PC 전체의 내 파일을 색인합니다 (의미 모델: {enc}). 바탕화면·다운로드부터 — 진행 중에도 검색할 수 있습니다.")
         return subprocess.call(cmd, env=env, cwd=str(core))
-    rc = 0
-    for i, p in enumerate(a.paths):   # in the order given (the app passes the folders people look in first)
-        print("FINDR_ROOT " + json.dumps({"i": i, "n": len(a.paths), "path": p}, ensure_ascii=False), flush=True)
-        rc |= subprocess.call([sys.executable, str(core / "index.py"), "--root", str(Path(p).expanduser()), "--db", str(a.db), "--model", enc],
-                              env=env, cwd=str(core))
-        print("FINDR_ROOT_DONE " + json.dumps({"i": i, "n": len(a.paths)}), flush=True)
-    return rc
+    print(f"색인: 폴더 {len(a.paths)}개 (이름 → 내용 → 의미 순서, 모든 폴더 함께)", flush=True)
+    return subprocess.call([sys.executable, str(core / "index.py"), "--root", *[str(Path(p).expanduser()) for p in a.paths],
+                            "--db", str(a.db), "--model", enc], env=env, cwd=str(core))
 
 
 def cmd_roots(a):

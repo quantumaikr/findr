@@ -189,6 +189,16 @@ function pipeline(r){
  return st.map((s,i)=>(i?'<span class="ar"></span>':'')+'<span class="st" style="animation-delay:'+(i*70)+'ms">'+esc(s[0])+' <b>'+esc(s[1])+'</b></span>').join('');
 }
 const APP=!!(window.__TAURI__&&window.__TAURI__.core);   // inside the desktop app: open files and folders directly
+// indexing still running: a thin line at the top says where it stands (search works meanwhile)
+(function(){const ST={names:'파일 목록',content:'내용 읽기',meaning:'의미 계산',ocr:'스캔 글자 읽기'};
+ const bar=document.createElement('div');bar.style.cssText='position:fixed;top:0;left:0;right:0;z-index:50;font-size:12.5px;padding:5px 14px;background:var(--acc,#2f5d8a);color:#fff;display:none';
+ document.body.appendChild(bar);
+ async function tick(){try{const p=await (await fetch('/progress')).json();
+  if(!p.stage||p.stage==='done'||Date.now()/1000-p.t>900){bar.style.display='none';return}
+  const n=p.total?` ${Number(p.done).toLocaleString()}/${Number(p.total).toLocaleString()}`:'';
+  bar.textContent=`색인 진행 중: ${ST[p.stage]||p.stage}${n}${p.minutes_left?` · 약 ${p.minutes_left}분 남음`:''} · 지금도 검색할 수 있고, 새로 읽은 내용은 곧 결과에 들어갑니다`;
+  bar.style.display='block'}catch(e){} setTimeout(tick,5000)}
+ tick()})();
 function show(r){
  $('#under').innerHTML=understanding(r); $('#pipe').innerHTML=pipeline(r);
  $('#notice').innerHTML=(r.note?'<div class="notice">'+esc(r.note)+'</div>':'')+(r.info?'<div class="refine">ⓘ '+esc(r.info)+'</div>':'');

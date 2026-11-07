@@ -7,7 +7,12 @@ import os, re
 from pathlib import Path
 
 SYS_TOP = re.compile(r"^(windows|program files|program files \(x86\)|programdata|\$recycle\.bin|system volume information|recovery|perflogs|"
-                     r"msocache|inetpub|msi|dell|hp|lenovo|asus|acer|samsung|lg|swsetup|oem|esd|xboxgames|windows\.old|onedrivetemp_|\$windows\.~ws|\$winreagent|\$sysreset|intel|amd|nvidia|drivers|onedrivetemp|config\.msi|users|documents and settings|onedrive|\$windows\.~bt)$", re.I)
+                     r"msocache|inetpub|msi|dell|hp|lenovo|asus|acer|samsung|lg|swsetup|oem|esd|xboxgames|windows\.old|onedrivetemp_|\$windows\.~ws|\$winreagent|\$sysreset|intel|amd|nvidia|drivers|onedrivetemp|config\.msi|users|documents and settings|onedrive|\$windows\.~bt"
+                     r"|boot|system\.sav|efi|recovery image|"
+                     # games and launchers: not the person's documents
+                     r"nexon|steam|steamlibrary|riot games|epic games|blizzard|battle\.net|ea games|origin games|gog games|ubisoft|netmarble|smilegate|pearlabyss|kakaogames"
+                     r")$", re.I)
+OEM_DRIVERS = re.compile(r"(driver|드라이버|드라이브 설치)", re.I)   # 'hp드라이버', 'Dell Drivers', 'LenovoDrivers'
 JUNK_DIRS = {"appdata", "node_modules", "site-packages", "dist-packages", ".git", ".svn", ".hg", ".venv", "venv", "__pycache__", ".cache", "cache",
              "caches", "tmp", "temp", ".nuget", ".gradle", ".m2", ".cargo", ".rustup", ".npm", ".pnpm-store", ".idea", ".vscode", "build", "dist",
              "obj", "packages", "wpsystem", ".android", ".conda", "anaconda3", "miniconda3", "steamapps", "$recycle.bin"}
@@ -15,20 +20,29 @@ USER_DIRS = [  # (order, label, names) — order: what people look for first
     (1, "바탕화면", ("Desktop", "바탕 화면")),
     (1, "다운로드", ("Downloads", "다운로드")),
     (2, "문서", ("Documents", "문서")),
-    (2, "클라우드", ("OneDrive", "Google Drive", "GoogleDrive", "Dropbox")),
+    (2, "클라우드", ("OneDrive", "Google Drive", "GoogleDrive", "Dropbox", "iCloud Drive", "iCloudDrive")),
     (3, "사진", ("Pictures", "사진")),
-    (4, "동영상", ("Videos", "동영상")),
+    (4, "동영상", ("Videos", "동영상", "Movies")),   # Movies: macOS
     (4, "음악", ("Music", "음악")),
 ]
+# children of a home folder that are not the person's own work (Windows, macOS, Linux)
+HOME_SKIP = {"appdata", "library", "applications", "public", "contacts", "favorites", "links", "saved games", "searches", "3d objects",
+             "intelgraphicsprofiles", "microsoftedgebackups", "ansel", "snap", "go", "miniconda3", "anaconda3", "scoop", "sync", "templates"}
 SKIP_USERS = {"public", "default", "default user", "all users", "defaultappool", "wdagutilityaccount"}
 
 
 def skip_dir(rel, d):
     """rel: path of the parent relative to its drive root ('/' for the top); d: the folder name"""
     n = d.lower()
-    if rel in ("", "/") and SYS_TOP.match(n):
+    if rel in ("", "/") and (SYS_TOP.match(n) or OEM_DRIVERS.search(n)):
         return True
     return n in JUNK_DIRS or d.startswith("$") or d.startswith("~")
+
+
+def _hidden_or_system(p):
+    """Windows: hidden or system folders (Boot, recovery partitions' folders, vendor tools) are not the person's"""
+    a = getattr(p.stat(), "st_file_attributes", 0)
+    return bool(a & (0x2 | 0x4))   # FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM
 
 
 def _fixed_drive(letter):
@@ -59,10 +73,20 @@ def _places(mnt):
     return [Path.home()], []
 
 
+def _inside(p, k):
+    """p is k itself or inside it (any OS: compares path parts, not '/' text)"""
+    try:
+        Path(p).relative_to(k)
+        return True
+    except ValueError:
+        return False
+
+
 def user_roots(mnt="/mnt"):
-    """standard user folders, cloud folders, then non-system folders at the top of each drive"""
+    """standard user folders, cloud folders, other folders made in the home folder, then non-system folders at each drive top"""
     out, seen = [], set()
     homes, drives = _places(mnt)
+    std = {nm.lower() for _, _, names in USER_DIRS for nm in names}
     for u in homes:
         for order, label, names in USER_DIRS:
             for nm in names:
@@ -73,6 +97,20 @@ def user_roots(mnt="/mnt"):
                             seen.add(p.resolve()); out.append((order, label, p))
                 except OSError:
                     continue
+        # folders the person made directly in the home folder (projects, class material, 'source/repos', ...)
+        try:
+            kids = sorted(u.iterdir())
+        except OSError:
+            kids = []
+        for p in kids:
+            n = p.name.lower()
+            try:
+                ok = p.is_dir() and not p.is_symlink() and not n.startswith(".") and n not in std and n not in HOME_SKIP \
+                    and not n.startswith(("onedrive", "google drive", "dropbox")) and not skip_dir("", p.name) and not _hidden_or_system(p)
+            except OSError:
+                ok = False
+            if ok and p.resolve() not in seen:
+                seen.add(p.resolve()); out.append((5, "홈 폴더 기타", p))
     for drv in drives:
         try:
             tops = sorted(drv.iterdir())
@@ -80,16 +118,16 @@ def user_roots(mnt="/mnt"):
             continue
         for t in tops:
             try:
-                is_dir = t.is_dir()
+                ok = t.is_dir() and not t.is_symlink() and not skip_dir("/", t.name) and not _hidden_or_system(t)   # junctions point back into Users
             except OSError:
                 continue
-            if is_dir and not t.is_symlink() and not skip_dir("/", t.name) and t.resolve() not in seen:   # junctions point back into Users
-                seen.add(t.resolve()); out.append((5, f"{(drv.name or drv.drive).rstrip(':').upper()}: 기타 폴더", t))
+            if ok and t.resolve() not in seen:
+                seen.add(t.resolve()); out.append((6, f"{(drv.name or drv.drive).rstrip(':').rstrip(chr(92)).upper()}: 기타 폴더", t))
     out = sorted(out, key=lambda x: x[0])
     kept = []   # a folder inside another chosen folder is walked with it (no double scan)
     for o, lab, p in out:
         rp = p.resolve()
-        if not any(rp != k.resolve() and str(rp).startswith(str(k.resolve()) + "/") for _, _, k in out):
+        if not any(rp != k.resolve() and _inside(rp, k.resolve()) for _, _, k in out):
             kept.append((o, lab, p))
     return kept
 

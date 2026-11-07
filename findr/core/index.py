@@ -177,14 +177,15 @@ def label(p: Path):   # what the encoder sees besides the text: names carry mean
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", required=True); ap.add_argument("--db", required=True)
+    ap.add_argument("--root", required=True, nargs="+", help="one or more folders, in the order people look in them")
+    ap.add_argument("--db", required=True)
     ap.add_argument("--model", default="embeddinggemma-2"); ap.add_argument("--no-embed", action="store_true")
     ap.add_argument("--with-libs", action="store_true", help="also index bundled libraries and build output (head only)")
     # 2026-11-05: newest and most useful first. The scan registers every file by name at once; content is read in waves.
     ap.add_argument("--max-age-days", type=float, default=0, help="this wave reads content only of files changed within N days (0 = all)")
     ap.add_argument("--limit", type=int, default=0, help="read content of at most N pending files in this run (0 = no limit)")
     a = ap.parse_args()
-    root = Path(a.root); Path(a.db).expanduser().parent.mkdir(parents=True, exist_ok=True)
+    roots = [Path(r) for r in a.root]; Path(a.db).expanduser().parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(Path(a.db).expanduser(), timeout=60)
     con.execute("PRAGMA journal_mode=WAL")   # the search server keeps reading while the index is updated
     con.executescript("""
@@ -195,57 +196,79 @@ def main():
       CREATE TABLE IF NOT EXISTS cards(file INTEGER PRIMARY KEY, outline TEXT, summary TEXT, done INT DEFAULT 0);""")
     if "pending" not in [r[1] for r in con.execute("PRAGMA table_info(files)")]:
         con.execute("ALTER TABLE files ADD COLUMN pending INT DEFAULT 0")
-    seen, t0, new = set(), time.time(), 0
-    pre = root.as_posix().rstrip("/") + "/"   # several roots share one db: only this root's files can be "gone"
-    known = {r[0]: (r[1], r[2], r[3], r[4]) for r in con.execute("SELECT path,size,mtime,id,tier FROM files WHERE path LIKE ?", (pre + "%",))}
-    for dp, dns, fns in os.walk(root):
-        if not a.with_libs and APP_MARK & set(dns):
-            dns[:] = []; continue   # an installed application bundle (ships its own Python): not the user's files
-        dns[:] = [d for d in dns if d not in (SKIP_DIR if a.with_libs else SKIP_DIR | LIB_DIRS)]
-        if os.environ.get("FINDR_SCOPE") == "user":   # whole-PC mode: no system, program, cache or library folders
-            from scope import skip_dir
-            rel = "/" if Path(dp) == root else ""
-            dns[:] = [d for d in dns if not skip_dir(rel, d)]
-        for fn in fns:
-            if not a.with_libs and JUNK.search(fn):
-                continue
-            p = Path(dp) / fn
-            try:
-                st = p.stat()
-            except OSError:
-                continue
-            s = p.as_posix(); seen.add(s)
-            if s in known and known[s][0] == st.st_size and abs(known[s][1] - st.st_mtime) < 1 and known[s][3] == tier(p):
-                continue   # unchanged (a changed tier rule re-reads the file)
-            if s in known:   # changed: drop old rows
-                fid = known[s][2]
-                drop(con, fid)
-            tr = tier(p)
-            if tr in (1, 2) and cloud_only(st):
-                tr = 3   # OneDrive 'online-only': reading it would download it; found by name until it is on the PC
-            cur = con.execute("INSERT INTO files(path,name,ext,size,mtime,tier,pending) VALUES(?,?,?,?,?,?,?)",
-                              (s, p.name, real_ext(p), st.st_size, st.st_mtime, tr, 1 if tr in (1, 2) else 0))
-            fid = cur.lastrowid   # name and folder searchable at once; content comes in its wave
-            cid = con.execute("INSERT INTO chunks(file,n,text) VALUES(?,?,?)", (fid, 0, "")).lastrowid
-            con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, p.name, s[len(root.as_posix()):], ""))
-            new += 1
-            if new % 5000 == 0:
-                con.commit(); print(f"  {new} files {time.time() - t0:.0f}s", flush=True)
-    gone = [k for k in known if k not in seen]
-    for s in gone:
-        drop(con, known[s][2])
-    con.commit()
-    print(f"FINDR_SCAN new/changed {new} removed {len(gone)} in {time.time() - t0:.0f}s")
-    read_wave(con, root, a)
-    if os.environ.get("FINDR_OCR", "1") != "0":
-        ocr_wave(con, root)
+    progress("names", 0, len(roots))
+    for k, root in enumerate(roots):   # stage 1: names and folders of every chosen folder first (seconds)
+        print("FINDR_ROOT " + json.dumps({"i": k, "n": len(roots), "path": str(root)}, ensure_ascii=False), flush=True)
+        seen, t0, new = set(), time.time(), 0
+        pre = root.as_posix().rstrip("/") + "/"   # several roots share one db: only this root's files can be "gone"
+        known = {r[0]: (r[1], r[2], r[3], r[4]) for r in con.execute("SELECT path,size,mtime,id,tier FROM files WHERE path LIKE ?", (pre + "%",))}
+        for dp, dns, fns in os.walk(root):
+            if not a.with_libs and APP_MARK & set(dns):
+                dns[:] = []; continue   # an installed application bundle (ships its own Python): not the user's files
+            dns[:] = [d for d in dns if d not in (SKIP_DIR if a.with_libs else SKIP_DIR | LIB_DIRS)]
+            if os.environ.get("FINDR_SCOPE") == "user":   # whole-PC mode: no system, program, cache or library folders
+                from scope import skip_dir
+                rel = "/" if Path(dp) == root else ""
+                dns[:] = [d for d in dns if not skip_dir(rel, d)]
+            for fn in fns:
+                if not a.with_libs and JUNK.search(fn):
+                    continue
+                p = Path(dp) / fn
+                try:
+                    st = p.stat()
+                except OSError:
+                    continue
+                s = p.as_posix(); seen.add(s)
+                if s in known and known[s][0] == st.st_size and abs(known[s][1] - st.st_mtime) < 1 and known[s][3] == tier(p):
+                    continue   # unchanged (a changed tier rule re-reads the file)
+                if s in known:   # changed: drop old rows
+                    fid = known[s][2]
+                    drop(con, fid)
+                tr = tier(p)
+                if tr in (1, 2) and cloud_only(st):
+                    tr = 3   # OneDrive 'online-only': reading it would download it; found by name until it is on the PC
+                cur = con.execute("INSERT INTO files(path,name,ext,size,mtime,tier,pending) VALUES(?,?,?,?,?,?,?)",
+                                  (s, p.name, real_ext(p), st.st_size, st.st_mtime, tr, 1 if tr in (1, 2) else 0))
+                fid = cur.lastrowid   # name and folder searchable at once; content comes in its wave
+                cid = con.execute("INSERT INTO chunks(file,n,text) VALUES(?,?,?)", (fid, 0, "")).lastrowid
+                con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, p.name, s[len(root.as_posix()):], ""))
+                new += 1
+                if new % 5000 == 0:
+                    con.commit(); print(f"  {new} files {time.time() - t0:.0f}s", flush=True)
+        gone = [k for k in known if k not in seen]
+        for s in gone:
+            drop(con, known[s][2])
+        con.commit()
+        print(f"FINDR_SCAN new/changed {new} removed {len(gone)} in {time.time() - t0:.0f}s")
+        progress("names", k + 1, len(roots))
+    print("FINDR_STAGE content", flush=True)
+    for k, root in enumerate(roots):   # stage 2: content, the folders people look in first
+        progress("content", k, len(roots)); read_wave(con, root, a)
     remask(con)
-    if not a.no_embed:
-        embed(con, a.model)
+    if not a.no_embed:   # stage 3: meaning (each file's opening pieces first)
+        print("FINDR_STAGE meaning", flush=True); embed(con, a.model)
+    if os.environ.get("FINDR_OCR", "1") != "0":   # stage 4: text in scans and screenshots
+        print("FINDR_STAGE ocr", flush=True)
+        for k, root in enumerate(roots):
+            progress("ocr", k, len(roots)); ocr_wave(con, root)
+        if not a.no_embed:
+            embed(con, a.model)
+    progress("done", 1, 1); print("FINDR_STAGE done", flush=True)
     if os.environ.get("PHOTO_URL"):   # photos: one meaning vector each from the local photo model (no request seen)
         embed_photos(con, os.environ["PHOTO_URL"])
     print("FINDR_STATS", dict(con.execute("SELECT tier,count(*) FROM files GROUP BY tier").fetchall()),
           "chunks", con.execute("SELECT count(*) FROM chunks").fetchone()[0])
+
+
+def progress(stage, done, total, **kw):
+    """where the index stands, for the search page ('색인 진행 중 …'); written to the data folder"""
+    d = os.environ.get("FINDR_DATA")
+    if not d:
+        return
+    try:
+        Path(d, "progress.json").write_text(json.dumps({"stage": stage, "done": done, "total": total, "t": time.time(), **kw}), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def priority(path, ext, mtime, now):
@@ -318,8 +341,9 @@ def read_wave(con, root, a):
             cid = con.execute("INSERT INTO chunks(file,n,text) VALUES(?,?,?)", (fid, n, c)).lastrowid
             con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, p.name, rel, c))
         con.execute("UPDATE files SET pending=0 WHERE id=?", (fid,))
-        if (i + 1) % 500 == 0:
+        if (i + 1) % 200 == 0:
             con.commit(); print(f"  read {i + 1}/{len(rows)} {time.time() - t0:.0f}s", flush=True)
+            progress("content", i + 1, len(rows), folder=root.name)
     con.commit()
     left = con.execute("SELECT count(*) FROM files WHERE pending=1 AND path LIKE ?", (pre + "%",)).fetchone()[0]
     print(f"FINDR_READ {len(rows)} files in {time.time() - t0:.0f}s, still pending {left}" + (f" (in use by another program: {locked})" if locked else ""))
@@ -672,6 +696,7 @@ def embed(con, model):
             con.commit(); last = time.time()
             rate = done_ / max(last - t0, 1e-6); left = (len(uniq) - done_) / max(rate, 1e-6)
             print(f"  embedded {done_}/{len(uniq)} {last - t0:.0f}s | {rate:.0f} pieces/s | about {left / 60:.0f} min left", flush=True)
+            progress("meaning", done_, len(uniq), minutes_left=round(left / 60))
             if not warned and done_ >= 1024 and left > 6 * 3600 and isinstance(enc, EG2) and not isinstance(enc, SmallEnc):
                 warned = True
                 print("FINDR_SLOW 이 PC에서는 큰 모델이 느립니다. 작은 모델로 바꾸면 훨씬 빨라집니다:  findr setup --lite", flush=True)
