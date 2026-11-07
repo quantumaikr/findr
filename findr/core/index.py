@@ -8,7 +8,7 @@ Secrets (.env, keys, credentials) are listed by name only when allowed, never re
     python index.py --root FOLDER --db INDEX.db
 Re-running only re-reads files whose size or mtime changed.
 """
-import argparse, datetime
+import argparse, datetime, unicodedata
 import json
 import os
 import re
@@ -172,8 +172,13 @@ def chunks(text):
     return out
 
 
+def nfc(s):
+    """one form for Korean (macOS writes names decomposed, people type them composed): what search compares is NFC"""
+    return unicodedata.normalize("NFC", s) if s else s
+
+
 def label(p: Path):   # what the encoder sees besides the text: names carry meaning ("LoRA_실험_요약.pdf")
-    return f"{p.name} | {'/'.join(p.parts[-4:-1])}"
+    return nfc(f"{p.name} | {'/'.join(p.parts[-4:-1])}")
 
 
 def main():
@@ -198,6 +203,20 @@ def main():
     if "pending" not in [r[1] for r in con.execute("PRAGMA table_info(files)")]:
         con.execute("ALTER TABLE files ADD COLUMN pending INT DEFAULT 0")
     con.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
+    if not con.execute("SELECT 1 FROM meta WHERE key='nfc'").fetchone():   # an index made before NFC: moved once (#12)
+        moved = 0
+        for fid, name, path in con.execute("SELECT id, name, path FROM files").fetchall():
+            if nfc(name) == name and nfc(path) == path:
+                continue
+            con.execute("UPDATE files SET name=? WHERE id=?", (nfc(name), fid))
+            for cid, text in con.execute("SELECT id, text FROM chunks WHERE file=?", (fid,)).fetchall():
+                con.execute("DELETE FROM fts WHERE rowid=?", (cid,))
+                con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(name), nfc(path), nfc(text or "")))
+            con.execute("UPDATE chunks SET emb=NULL WHERE file=? AND n < 8", (fid,))   # the name is part of the meaning vector
+            moved += 1
+        con.execute("INSERT OR REPLACE INTO meta VALUES('nfc', '1')"); con.commit()
+        if moved:
+            print(f"FINDR_NFC {moved} files with decomposed (NFD) names moved to NFC", flush=True)
     if a.model in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and not con.execute("SELECT 1 FROM chunks WHERE emb IS NOT NULL LIMIT 1").fetchone():
         con.execute("INSERT OR REPLACE INTO meta VALUES('encoder', ?)", (a.model,))   # known from the start: search works while indexing (#9)
     con.commit()
@@ -233,10 +252,10 @@ def main():
                 if tr in (1, 2) and cloud_only(st):
                     tr = 3   # OneDrive 'online-only': reading it would download it; found by name until it is on the PC
                 cur = con.execute("INSERT INTO files(path,name,ext,size,mtime,tier,pending) VALUES(?,?,?,?,?,?,?)",
-                                  (s, p.name, real_ext(p), st.st_size, st.st_mtime, tr, 1 if tr in (1, 2) else 0))
+                                  (s, nfc(p.name), real_ext(p), st.st_size, st.st_mtime, tr, 1 if tr in (1, 2) else 0))
                 fid = cur.lastrowid   # name and folder searchable at once; content comes in its wave
                 cid = con.execute("INSERT INTO chunks(file,n,text) VALUES(?,?,?)", (fid, 0, "")).lastrowid
-                con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, p.name, s[len(root.as_posix()):], ""))
+                con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(p.name), nfc(s[len(root.as_posix()):]), ""))
                 new += 1
                 if new % 5000 == 0:
                     con.commit(); print(f"  {new} files {time.time() - t0:.0f}s", flush=True)
@@ -344,7 +363,7 @@ def read_wave(con, root, a):
         rel = s[len(root.as_posix()):]
         for n, c in enumerate(cs):
             cid = con.execute("INSERT INTO chunks(file,n,text) VALUES(?,?,?)", (fid, n, c)).lastrowid
-            con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, p.name, rel, c))
+            con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(p.name), nfc(rel), nfc(c)))
         con.execute("UPDATE files SET pending=0 WHERE id=?", (fid,))
         if (i + 1) % 200 == 0:
             con.commit(); print(f"  read {i + 1}/{len(rows)} {time.time() - t0:.0f}s", flush=True)
@@ -431,7 +450,7 @@ def ocr_wave(con, root, first_pages=10, deep_pages=50):
             con.execute("DELETE FROM chunks WHERE file=? AND n>=0", (fid,))
             for n, c in enumerate(chunks(txt)[:2000] or [""]):
                 cid = con.execute("INSERT INTO chunks(file,n,text) VALUES(?,?,?)", (fid, n, c)).lastrowid
-                con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, p_.name, rel, c))
+                con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(p_.name), nfc(rel), nfc(c)))
             got += 1; chars += len(txt)
         con.execute("UPDATE files SET ocr=1 WHERE id=?", (fid,))
         if (got + 1) % 50 == 0:
@@ -447,7 +466,7 @@ def remask(con):
         if txt and KEYLIKE.search(txt):
             t = KEYLIKE.sub("[가림]", txt); name, path = con.execute("SELECT name, path FROM files WHERE id=?", (fid,)).fetchone()
             con.execute("DELETE FROM fts WHERE rowid=?", (cid,))
-            con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, name, path, t))
+            con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(name), nfc(path), t))
             con.execute("UPDATE chunks SET text=?, emb=NULL WHERE id=?", (t, cid)); hit += 1
     con.commit(); print(f"FINDR_MASK {hit} chunks masked")
 

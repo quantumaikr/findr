@@ -367,6 +367,8 @@ def chat_json(prompt, max_tokens):
 class Finder:
     def __init__(self, db, model="bge-m3"):
         self.con = sqlite3.connect(Path(db).expanduser(), check_same_thread=False)
+        import unicodedata as _ud
+        self.con.create_function("nfc", 1, lambda s: _ud.normalize("NFC", s) if s else s, deterministic=True)
         self.con.execute("CREATE TABLE IF NOT EXISTS cards(file INTEGER PRIMARY KEY, outline TEXT, summary TEXT, done INT DEFAULT 0)")
         rows = self.con.execute("SELECT c.id, c.emb FROM chunks c WHERE c.emb IS NOT NULL").fetchall()
         self.ids = np.array([r[0] for r in rows], dtype=np.int64)   # a fresh index may have no vectors yet (words only)
@@ -471,7 +473,7 @@ class Finder:
         sets = None
         for w in ws:
             like = "%" + w.replace("%", "").replace("_", "\\_") + "%"
-            fs = {f_ for (f_,) in self.con.execute("SELECT id FROM files WHERE (name LIKE ? ESCAPE '\\' OR path LIKE ? ESCAPE '\\') AND tier IN (1,3)", (like, like))}
+            fs = {f_ for (f_,) in self.con.execute("SELECT id FROM files WHERE (name LIKE ? ESCAPE '\\' OR nfc(path) LIKE ? ESCAPE '\\') AND tier IN (1,3)", (like, like))}
             if len(w) >= 3:   # trigram index: fast
                 fs |= {f_ for (f_,) in self.con.execute("SELECT DISTINCT c.file FROM fts JOIN chunks c ON c.id = fts.rowid WHERE fts MATCH ? LIMIT 5000",
                                                         ('"' + w.replace('"', '') + '"',))}
@@ -655,6 +657,7 @@ class Finder:
         return set(loose), dict(cond, relaxed=True)
 
     def search(self, q, k=10, mode="base"):
+        import unicodedata as _ud; q = _ud.normalize("NFC", q or "")
         self.refresh()
         t0 = time.time(); p = parse(q); text = p["text"]
         pfut = None
@@ -1070,8 +1073,8 @@ def photo_text_vec(q):
     req = urllib.request.Request(PHOTO_URL.rstrip("/") + "/text", json.dumps({"q": q}).encode(), {"Content-Type": "application/json"})
     o = json.loads(urllib.request.urlopen(req, timeout=3).read())
     return np.frombuffer(base64.b64decode(o["vec"]), np.float16).astype(np.float32), float(o["scale"])
-NCAND = int(os.environ.get("NCAND", 30))   # candidates reranked (15 for the CPU ranker, 2026-11-06)
-CE_MAXLEN = int(os.environ.get("CE_MAXLEN", 384))   # ranker input length (256 for the CPU ranker)
+NCAND = int(os.environ.get("NCAND") or (15 if DEVICE == "cpu" else 30))   # candidates reranked (15 for the CPU ranker, 2026-11-06)
+CE_MAXLEN = int(os.environ.get("CE_MAXLEN") or (256 if DEVICE == "cpu" else 384))   # ranker input length (256 for the CPU ranker)
 _OLD_NCAND = 30   # candidates handed to the 4B (40 cost 1.1 s per rerank on 2026-11-04; set 1 had every found answer within 20)
 
 
@@ -1147,6 +1150,7 @@ def rerank_pick1(q, res):
 P_NONE1 = 0.5   # 'none' when its share is at least this; to be set on dev only
 CE = {}
 CE_BIAS = {}
+CE_RATE = {}   # seconds per candidate on the CPU, per reranker
 
 
 def ce_scores(q, res, d=None, nosumm=None):
@@ -1171,9 +1175,20 @@ def ce_scores(q, res, d=None, nosumm=None):
     else:
         docs = [f"{x['name']} | {'/'.join(x['path'].replace(chr(92), '/').split('/')[-3:-1])} | {(x.get('summary') or '')[:200]} {x.get('head', '')[:500]}"
                 for x in res]
+    # on the CPU: as many candidates as fit the time budget (CE_BUDGET s), learned from the previous queries;
+    # the rest keep their first-stage order below the scored ones
+    n = len(docs)
+    if m.device.type == "cpu" and CE_RATE.get(d):
+        n = max(5, min(n, int(float(os.environ.get("CE_BUDGET") or 3) / CE_RATE[d])))
+    t_ = time.time()
     with torch.no_grad():
-        b = tok([q] * len(docs), docs, padding=True, truncation=True, max_length=CE_MAXLEN, return_tensors="pt").to(m.device)
-        return torch.sigmoid(m(**b).logits.view(-1).float()).cpu().tolist()
+        b = tok([q] * n, docs[:n], padding=True, truncation=True, max_length=CE_MAXLEN, return_tensors="pt").to(m.device)
+        sc = torch.sigmoid(m(**b).logits.view(-1).float()).cpu().tolist()
+    if m.device.type == "cpu":
+        per = (time.time() - t_) / max(n, 1)
+        CE_RATE[d] = per if d not in CE_RATE else 0.7 * CE_RATE[d] + 0.3 * per
+    low = min(sc) if sc else 0.0
+    return sc + [low * 0.5 - 0.001 * i for i in range(len(docs) - n)]
 
 
 NONE_M = json.load(open(os.environ["NONE_MODEL"])) if os.environ.get("NONE_MODEL") else None   # A2 none classifier (logistic, numpy)

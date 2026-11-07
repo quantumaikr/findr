@@ -39,6 +39,8 @@ def world(tmp_path_factory):
         z.writestr("word/document.xml", "<w:document><w:t>휴가 신청서 2025년 12월 24일부터 26일까지 가족 행사</w:t></w:document>")
     with zipfile.ZipFile(docs / "출장비_정산.xlsx", "w") as z:
         z.writestr("xl/sharedStrings.xml", "<sst><si><t>부산 출장 교통비 숙박비 정산</t></si></sst>")
+    import unicodedata   # a name written decomposed, as macOS does (#12); no body text, so only the name can find it
+    (docs / unicodedata.normalize("NFD", "퀀텀아이_회사소개서.pptx")).write_bytes(b"PK")
     (docs / ".env").write_text("OPENAI_API_KEY=sk-test-should-never-be-indexed-000000", encoding="utf-8")
     rc, out = findr(home, "setup", "--lite", "--no-photo", "--no-llm")
     assert rc == 0, "setup failed:\n" + out[-3000:]
@@ -71,7 +73,7 @@ def test_index_then_search(world):   # #6: progress is printed; the right file c
     rc, out = findr(home, "index", str(docs))
     assert rc == 0, out[-3000:]
     assert "FINDR_STAGE meaning" in out and "FINDR_STAGE done" in out, out[-2000:]
-    for q, want in (("스마트센서 견적서", "견적서_스마트센서"), ("3분기 회의록", "회의록_3분기"), ("휴가 신청서", "휴가신청서"), ("출장비 정산", "출장비_정산")):
+    for q, want in (("퀀텀아이 회사소개서", "퀀텀아이_회사소개서"), ("스마트센서 견적서", "견적서_스마트센서"), ("3분기 회의록", "회의록_3분기"), ("휴가 신청서", "휴가신청서"), ("출장비 정산", "출장비_정산")):
         rc, o = findr(home, "ask", q)
         assert want in top(o), f"{q} -> {top(o)!r}\n{o[-1200:]}"
     import sqlite3
