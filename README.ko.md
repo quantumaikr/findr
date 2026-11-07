@@ -152,6 +152,26 @@ findr doctor                         설치와 색인 상태 점검
 
 색인하는 동안에도 검색할 수 있습니다. 검색 화면 아래의 작은 진행 표시를 누르면 단계마다 진행 상황이 실시간으로 보이고, 잠시 멈출 수도 있습니다. PC 전체 색인에서 빼고 싶은 폴더는 데이터 폴더의 `exclude.txt`에 적으세요.
 
+## AI 도구에서 쓰기
+
+PC에 있는 AI 도구가 findr로 내 파일을 찾을 수 있습니다. "지난달 거래처 견적서 찾아서 요약해 줘"라고 하면, AI가 findr로 찾고 그 파일을 읽습니다. findr는 AI 도구가 로컬 도구에 연결하는 표준 방식인 MCP로 동작합니다.
+
+도구는 두 가지입니다. `search_files`는 맞을 가능성이 높은 파일을 확률, 위치, 날짜, 짧은 발췌와 함께 돌려줍니다. `read_file`은 색인에 있는 파일에서 findr가 이미 읽어 둔 글을 돌려줍니다. 다른 경로는 열지 않습니다.
+
+```bash
+# Claude Code
+claude mcp add findr -- <python> -m findr mcp
+```
+
+```json
+// Claude Desktop: 설정 → 개발자 → 구성 편집
+{ "mcpServers": { "findr": { "command": "<python>", "args": ["-m", "findr", "mcp"] } } }
+```
+
+`<python>`은 findr 전용 파이썬입니다. 데스크톱 앱의 설정 → AI 도구에 연결에 두 줄이 복사할 수 있게 나옵니다. 명령줄로 설치했다면 저장소 폴더의 `.venv/bin/python`(Windows는 `.venv\Scripts\python.exe`)입니다.
+
+도구가 돌려준 내용은 그것을 요청한 AI 도구로 갑니다. 클라우드에서 도는 AI라면 파일 이름과 발췌가 그 회사로 보내질 수 있습니다. 도구를 쓸 때마다 묻도록 AI 도구를 설정해 두세요.
+
 ## PC 사양에 따른 차이
 
 | | NVIDIA GPU | Apple 칩 Mac | GPU 없음 |
@@ -191,6 +211,7 @@ findr doctor                         설치와 색인 상태 점검
 - 쓰면서 더 배우기: 사람이 열어 보고 고른 파일이 순위와 읽는 순서에 함께 반영되게
 - Windows·macOS 코드 서명 설치 파일
 - 한국어와 영어 밖의 언어
+- AI 도구와 더 깊게: findr가 찾은 파일로 AI가 일을 하되, 사람이 허락한 만큼만
 
 ## 기여하기
 

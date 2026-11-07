@@ -248,6 +248,13 @@ def cmd_serve(a):
     return 0
 
 
+def cmd_mcp(a):
+    """AI tools on this PC find the person's files through findr (search_files, read_file). Speaks MCP on stdin/stdout."""
+    from .mcp_server import main as serve_mcp
+    serve_mcp()
+    return 0
+
+
 def cmd_ask(a):
     _engine_env()
     os.environ.setdefault("FINDR_ENCODER", _encoder())
@@ -368,6 +375,7 @@ def main(argv=None):
     s.add_argument("--app", action="store_true", help=argparse.SUPPRESS)
     s.set_defaults(fn=cmd_serve)
     s = sub.add_parser("roots", help="PC 전체 색인 때 볼 폴더 목록 (JSON)"); s.set_defaults(fn=cmd_roots)
+    s = sub.add_parser("mcp", help="AI 도구(Claude 등)에 findr 연결: MCP 서버 (stdio)"); s.set_defaults(fn=cmd_mcp)
     s = sub.add_parser("ask", help="터미널에서 찾기"); s.add_argument("query", nargs="+"); s.add_argument("-k", type=int, default=5); s.set_defaults(fn=cmd_ask)
     s = sub.add_parser("doctor", help="설치 상태 점검"); s.set_defaults(fn=cmd_doctor)
     s = sub.add_parser("upgrade", help="쉬는 시간에 더 정확한 의미 모델로 조금씩 바꾸기 (GPU 없는 PC)")

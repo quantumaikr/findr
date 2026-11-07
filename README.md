@@ -144,6 +144,26 @@ findr doctor                         check the installation and the index
 
 You can search while indexing runs. The search page shows a small progress chip that opens a live view of every stage, with a pause button. To leave a folder out of a whole-PC index, list it in `exclude.txt` in the data folder.
 
+## Use findr from AI tools
+
+AI assistants on your PC can find your files through findr. Ask "find last month's quote from the supplier and summarize it", and the assistant searches with findr and reads the file it found. findr speaks MCP, the standard way assistants connect to local tools.
+
+Two tools are offered. `search_files` returns the likely files with their odds, location, date and a short excerpt. `read_file` returns the text findr already read from a file in its index; it never opens other paths.
+
+```bash
+# Claude Code
+claude mcp add findr -- <python> -m findr mcp
+```
+
+```json
+// Claude Desktop: Settings → Developer → Edit config
+{ "mcpServers": { "findr": { "command": "<python>", "args": ["-m", "findr", "mcp"] } } }
+```
+
+`<python>` is findr's own Python. The desktop app shows both lines, ready to copy, under Settings → AI tools. For a command-line install, it is `.venv/bin/python` (Windows: `.venv\Scripts\python.exe`) in the repository folder.
+
+What the tools return goes to the assistant that asked. If the assistant runs in the cloud, file names and excerpts can leave the PC there, so set the assistant to ask before it uses a tool.
+
 ## Differences by hardware
 
 | | NVIDIA GPU | Apple silicon Mac | No GPU |
@@ -183,6 +203,7 @@ Most of what changed in 0.2.x came from people installing findr on their own mac
 - Learning more from use: the files people open and pick should shape both ranking and what gets read first.
 - Code-signed installers for Windows and macOS.
 - More languages beyond Korean and English.
+- Deeper links with AI tools: let assistants act on what findr finds, with the person's approval.
 
 ## Contributing
 

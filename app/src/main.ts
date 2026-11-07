@@ -262,6 +262,11 @@ async function settings(s: AppState) {
     <div class="card"><label class="switch"><input type="checkbox" id="photo" ${photoOn() ? 'checked' : ''} ${s.gpu !== 'nvidia' ? 'disabled' : ''}>
       <span>사진을 찍힌 내용으로 찾기</span></label>
       <p class="muted" style="margin:8px 0 0">${s.gpu === 'nvidia' ? 'GPU 메모리를 7GB 정도 더 씁니다. 끄면 사진은 이름과 날짜로 찾습니다.' : '이 PC에서는 사진을 이름과 날짜로 찾습니다 (NVIDIA GPU 필요).'}</p></div>
+    <h2>AI 도구에 연결</h2>
+    <div class="card"><p>Claude 같은 AI 도구가 findr로 이 PC의 파일을 찾게 할 수 있습니다. "지난달 견적서 찾아서 요약해 줘"처럼 말하면, AI가 findr에 물어 파일을 찾고 그 내용을 읽습니다.</p>
+      <p class="muted" style="margin:0 0 10px">찾은 파일의 이름과 내용 일부가 그 AI 도구로 전달됩니다. 클라우드 AI라면 그 회사로 보내질 수 있습니다. AI 도구가 findr를 쓸 때마다 묻도록 설정해 두면, 허용한 것만 전달됩니다.</p>
+      <div class="mcp"><div class="muted">Claude Code: 터미널에 붙여 넣기</div><pre id="mcp-code"></pre><button data-copy="mcp-code">복사</button></div>
+      <div class="mcp"><div class="muted">Claude Desktop: 설정 → 개발자 → 구성 편집에 추가</div><pre id="mcp-desk"></pre><button data-copy="mcp-desk">복사</button></div></div>
     <h2>데이터</h2>
     <div class="card"><p>색인, 설정, findr가 배운 것은 모두 데이터 폴더에 있습니다.</p>
       <div class="actions" style="margin-top:6px"><button id="data">데이터 폴더 열기</button></div></div>
@@ -275,6 +280,16 @@ async function settings(s: AppState) {
   }
   document.getElementById('back')!.onclick = () => { location.hash = 'search'; if (location.hash === '#search') route() }
   upgradeCard()
+  // the two lines to paste: this PC's own findr (the app's Python in the data folder) speaking MCP
+  const win = navigator.userAgent.includes('Windows'), sep = win ? '\\' : '/'
+  const py = s.home + sep + 'runtime' + sep + (win ? 'Scripts' + sep + 'python.exe' : 'bin' + sep + 'python')
+  document.getElementById('mcp-code')!.textContent = `claude mcp add findr -- "${py}" -m findr mcp`
+  document.getElementById('mcp-desk')!.textContent = JSON.stringify({ mcpServers: { findr: { command: py, args: ['-m', 'findr', 'mcp'] } } }, null, 2)
+  view.querySelectorAll<HTMLButtonElement>('[data-copy]').forEach(b => b.onclick = async () => {
+    try { await navigator.clipboard.writeText(document.getElementById(b.dataset.copy!)!.textContent || ''); b.textContent = '복사됨' }
+    catch { b.textContent = '직접 선택해 복사하세요' }
+    setTimeout(() => { b.textContent = '복사' }, 2000)
+  })
 }
 
 // PCs without a GPU start on the small meaning model; the larger one is computed while nobody uses the PC
