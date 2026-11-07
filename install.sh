@@ -12,11 +12,11 @@ echo "[2/5] 전용 파이썬 환경 (.venv, Python 3.12)"
 uv venv .venv --python 3.12 --allow-existing
 PY=.venv/bin/python
 if [ "$(uname)" = "Darwin" ]; then
-  echo "[3/5] macOS: Apple GPU용 torch"; uv pip install --python $PY torch
+  echo "[3/5] macOS: Apple GPU용 torch"; uv pip install --python $PY torch torchvision
 elif command -v nvidia-smi >/dev/null && nvidia-smi -L >/dev/null 2>&1; then
-  echo "[3/5] NVIDIA GPU 확인: GPU용 torch"; uv pip install --python $PY torch --index-url https://download.pytorch.org/whl/cu128
+  echo "[3/5] NVIDIA GPU 확인: GPU용 torch"; uv pip install --python $PY torch torchvision --index-url https://download.pytorch.org/whl/cu128
 else
-  echo "[3/5] GPU 없음: CPU용 torch (작은 모델로 동작)"; uv pip install --python $PY torch --index-url https://download.pytorch.org/whl/cpu
+  echo "[3/5] GPU 없음: CPU용 torch (작은 모델로 동작)"; uv pip install --python $PY torch torchvision --index-url https://download.pytorch.org/whl/cpu
 fi
 echo "[4/5] findr"
 uv pip install --python $PY -e .

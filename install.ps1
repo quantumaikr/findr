@@ -21,7 +21,7 @@ $gpu = $false
 try { if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) { nvidia-smi -L | Out-Null; $gpu = ($LASTEXITCODE -eq 0) } } catch {}
 if ($gpu) { $idx = "https://download.pytorch.org/whl/cu128"; Write-Host "[3/5] NVIDIA GPU 확인: GPU용 torch" }
 else      { $idx = "https://download.pytorch.org/whl/cpu";   Write-Host "[3/5] GPU 없음: CPU용 torch (작은 모델로 동작)" }
-uv pip install --python $py torch --index-url $idx
+uv pip install --python $py torch torchvision --index-url $idx
 
 Write-Host "[4/5] findr"
 uv pip install --python $py -e .

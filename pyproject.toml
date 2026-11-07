@@ -13,6 +13,7 @@ requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.24",
   "torch>=2.4",                 # the installer picks the CUDA / CPU / Apple build
+  "torchvision>=0.19",
   # EmbeddingGemma-2 needs a transformers build newer than the last release (5.22.2): pinned to the tested commit
   "transformers @ git+https://github.com/huggingface/transformers.git@6df64031b9fa0ecebe50161df8ad42ed8d36595c",
   "sentence-transformers>=5.0",
