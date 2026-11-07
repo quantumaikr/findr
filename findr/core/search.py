@@ -835,7 +835,7 @@ class Finder:
                     extra = [f_ for f_ in lit if f_ not in {x["fid"] for x in have}][:max(0, k - len(have))]
                     rest_ = [x for x in r["results"] if x["fid"] not in lit]
                     r["results"] = (have + self.files_out(extra) + rest_)[:k]; r["literal"] = len(lit)
-                j = xling_name_first(q, r["results"])   # Korean words, English name: Local_AI_Tunneling_Blueprint.pdf (#19)
+                j = xling_name_first(q, r["results"])   # Korean words, English name: Remote_Access_Design.pdf (#19)
                 if j:
                     r["results"] = [r["results"][j]] + r["results"][:j] + r["results"][j + 1:]; r["xling"] = 1
                 # version questions last: a page that quotes the question ('…최종본이 아닙니다') must not undo the version choice
@@ -1410,7 +1410,7 @@ def indexer_alive(p):
 # everyday Korean words and the English people name files with (Korean question, English file name: #19).
 # Loanwords and common work words only; a name has to carry EVERY idea of the question through this list.
 XLING = {
-    "로컬": "local", "터널링": "tunnel", "터널": "tunnel", "설계": "design blueprint architecture", "설계서": "design spec blueprint",
+    "로컬": "local", "원격": "remote", "접속": "access connect", "터널링": "tunnel", "터널": "tunnel", "설계": "design blueprint architecture", "설계서": "design spec blueprint",
     "아키텍처": "architecture", "구조": "architecture structure", "배포": "deploy release", "자동화": "automation automate", "자동": "auto",
     "영상": "video", "동영상": "video", "사진": "photo image", "이미지": "image", "음성": "voice audio", "오디오": "audio",
     "보고서": "report", "리포트": "report", "계획서": "plan", "계획": "plan", "사업계획서": "business plan", "제안서": "proposal",
