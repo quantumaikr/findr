@@ -191,7 +191,7 @@ function pipeline(r){
 }
 const APP=!!(window.__TAURI__&&window.__TAURI__.core);   // inside the desktop app: open files and folders directly
 // indexing still running: a thin line at the top says where it stands (search works meanwhile)
-(function(){const ST={names:'파일 목록',content:'내용 읽기',meaning:'의미 계산',ocr:'스캔 글자 읽기'};
+(function(){const ST={nfc:'한글 이름 정리',names:'파일 목록',content:'내용 읽기',meaning:'의미 계산',ocr:'스캔 글자 읽기'};
  const bar=document.createElement('div');bar.style.cssText='position:fixed;top:0;left:0;right:0;z-index:50;font-size:12.5px;padding:5px 14px;background:var(--acc,#2f5d8a);color:#fff;display:none';
  document.body.appendChild(bar);
  async function tick(){try{const p=await (await fetch('/progress')).json();

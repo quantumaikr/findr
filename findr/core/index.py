@@ -209,19 +209,22 @@ def main():
         con.execute("ALTER TABLE chunks ADD COLUMN emb2 BLOB")
     con.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
     if not con.execute("SELECT 1 FROM meta WHERE key='nfc'").fetchone():   # an index made before NFC: moved once (#12)
+        start = int((con.execute("SELECT value FROM meta WHERE key='nfc_upto'").fetchone() or ["0"])[0])   # an interrupted move goes on from here
+        rows = con.execute("SELECT id, name, path FROM files WHERE id > ? ORDER BY id", (start,)).fetchall()
         moved, t0 = 0, time.time()
-        for fid, name, path in con.execute("SELECT id, name, path FROM files").fetchall():
-            if nfc(name) == name and nfc(path) == path:
-                continue
-            if moved and moved % 2000 == 0:   # saved in parts and reported: a large index does not look hung
-                con.commit(); print(f"  FINDR_NFC {moved} files so far ({time.time() - t0:.0f}s)", flush=True)
-            con.execute("UPDATE files SET name=? WHERE id=?", (nfc(name), fid))
-            for cid, text in con.execute("SELECT id, text FROM chunks WHERE file=?", (fid,)).fetchall():
-                con.execute("DELETE FROM fts WHERE rowid=?", (cid,))
-                con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(name), nfc(path), nfc(text or "")))
-            con.execute("UPDATE chunks SET emb=NULL WHERE file=? AND n < 8", (fid,))   # the name is part of the meaning vector
-            moved += 1
-        con.execute("INSERT OR REPLACE INTO meta VALUES('nfc', '1')"); con.commit()
+        for i, (fid, name, path) in enumerate(rows, 1):
+            if nfc(name) != name or nfc(path) != path:
+                con.execute("UPDATE files SET name=? WHERE id=?", (nfc(name), fid))
+                for cid, text in con.execute("SELECT id, text FROM chunks WHERE file=?", (fid,)).fetchall():
+                    con.execute("DELETE FROM fts WHERE rowid=?", (cid,))
+                    con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(name), nfc(path), nfc(text or "")))
+                con.execute("UPDATE chunks SET emb=NULL WHERE file=? AND n < 8", (fid,))   # the name is part of the meaning vector
+                moved += 1
+            if i % 2000 == 0 or i == len(rows):   # minutes on a large Mac index: show it moving, and keep what is done if it is stopped
+                con.execute("INSERT OR REPLACE INTO meta VALUES('nfc_upto', ?)", (str(fid),)); con.commit()
+                progress("nfc", i, len(rows))
+                print(f"FINDR_NFC_PROGRESS {i}/{len(rows)} {time.time() - t0:.0f}s", flush=True)
+        con.execute("INSERT OR REPLACE INTO meta VALUES('nfc', '1')"); con.execute("DELETE FROM meta WHERE key='nfc_upto'"); con.commit()
         if moved:
             print(f"FINDR_NFC {moved} files with decomposed (NFD) names moved to NFC", flush=True)
     if a.model in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and not con.execute("SELECT 1 FROM chunks WHERE emb IS NOT NULL LIMIT 1").fetchone():
