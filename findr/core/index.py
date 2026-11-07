@@ -43,6 +43,7 @@ JUNK = re.compile(r"^(vocab\.json|merges\.txt|tokenizer(_config)?\.json|special_
 # backups keep the user's history ("bos 넣기 전 학습 스크립트"): read them as the kind of file they back up
 BAK = re.compile(r"(\.(bak\w*|old|orig|backup|swp|tmp)|~)$", re.I)
 MAXREAD = 2_000_000   # bytes of text read per tier-1 file
+FILE_SECONDS = float(os.environ.get("FINDR_FILE_SECONDS") or 60)   # time budget per file; what was read by then is kept
 DATA = {".json", ".jsonl", ".csv", ".tsv", ".log"}   # machine-written results: the head says what they are
 DATA_READ = 30_000
 CHUNK, OVER = 900, 150
@@ -354,8 +355,10 @@ def ocr_wave(con, root, first_pages=10, deep_pages=50):
         if s.lower().endswith(".pdf"):
             try:
                 import numpy as _np, pypdfium2 as pdfium
-                doc = pdfium.PdfDocument(s)
+                doc = pdfium.PdfDocument(s); end = time.time() + 3 * FILE_SECONDS   # reading a scan is slower than reading text
                 for i in range(min(len(doc), deep_pages if deep else first_pages)):
+                    if time.time() > end:
+                        break
                     lines += ocr_lines(_np.array(doc[i].render(scale=2).to_pil().convert("RGB")))
                 doc.close()
             except Exception:
@@ -450,11 +453,11 @@ def ooxml_text(p, limit):
     def order(n):   # body first; slides and sections in their own order (slide2 before slide10)
         m = re.search(r"(\d+)\.xml$", n)
         return (0 if ("document" in n or "sharedStrings" in n) else 1, n.rsplit("/", 1)[0], int(m.group(1)) if m else 0)
-    z = zipfile.ZipFile(p); out, have = [], 0
+    z = zipfile.ZipFile(p); out, have = [], 0; end = time.time() + FILE_SECONDS
     for n in sorted((n for n in z.namelist() if n.endswith(".xml") and any(k in n for k in keys)), key=order):
         with z.open(n) as f:
             tail = ""
-            while have < limit:
+            while have < limit and time.time() < end:
                 b = f.read(1 << 20)
                 if not b:
                     break
@@ -551,8 +554,10 @@ def keynote_text(p, limit):
                 return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", raw.decode("utf-8", "ignore"))).strip()[:limit]
         if "Index.zip" in names:
             z = zipfile.ZipFile(io.BytesIO(z.read("Index.zip"))); names = z.namelist()
-        seen, out, size = set(), [], 0
+        seen, out, size = set(), [], 0; end = time.time() + FILE_SECONDS
         for nm in sorted(names, key=lambda x: (not x.startswith("Index/Slide"), x)):   # slides first
+            if time.time() > end:
+                break
             if not (nm.startswith("Index/") and nm.endswith(".iwa")) or z.getinfo(nm).file_size > 50_000_000:
                 continue
             for t in _pb_strings(_iwa(z.read(nm))):
@@ -576,9 +581,11 @@ def pdf_text(p, limit):
     if os.environ.get("FINDR_PDF") != "pypdf":
         try:
             import pypdfium2 as pdfium   # Chrome's PDF engine: much faster than pure-Python parsing
-            doc = pdfium.PdfDocument(str(p)); out, n = [], 0
+            doc = pdfium.PdfDocument(str(p)); out, n = [], 0; end = time.time() + FILE_SECONDS
             try:
                 for i in range(len(doc)):
+                    if time.time() > end:
+                        break
                     pg = doc[i]; tp = pg.get_textpage(); t = tp.get_text_range() or ""; tp.close(); pg.close()
                     out.append(t); n += len(t)
                     if n >= limit:
@@ -592,8 +599,10 @@ def pdf_text(p, limit):
             return ""
     try:
         from pypdf import PdfReader
-        out, n = [], 0
+        out, n = [], 0; end = time.time() + FILE_SECONDS
         for pg in PdfReader(str(p)).pages:
+            if time.time() > end:
+                break
             t = pg.extract_text() or ""; out.append(t); n += len(t)
             if n >= limit:
                 break
