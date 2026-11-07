@@ -213,7 +213,7 @@ def _cpu_ranker(m):
     """on a PC without a GPU the reranker can run with 8-bit weights (CE_INT8=1): several times faster on laptop CPUs"""
     if os.environ.get("CE_INT8", "0") == "1":
         import torch
-        m = torch.quantization.quantize_dynamic(m, {torch.nn.Linear}, dtype=torch.qint8)
+        m = torch.quantization.quantize_dynamic(m, {torch.nn.Linear}, dtype=torch.qint8, inplace=True)   # no second copy in memory
     return m
 
 
@@ -375,7 +375,11 @@ class Finder:
         from enc_eg2 import EG2, encoder_of
         self.encoder = encoder_of(self.con)   # the index says which meaning encoder built its vectors
         from enc_eg2 import make_encoder
-        self.enc = make_encoder(self.encoder, DEVICE, max_len=128) if self.encoder in ("embeddinggemma-2", "e5-small") else Enc(model, device=DEVICE)
+        if self.encoder not in ("embeddinggemma-2", "e5-small"):   # a first index still being built: nothing recorded yet
+            self.encoder = os.environ.get("FINDR_ENCODER") or "e5-small"
+        self.enc = make_encoder(self.encoder, DEVICE, max_len=128)
+        if not len(self.ids):   # no vectors yet: an empty matrix of this encoder's width (words and names still answer)
+            self.M = np.zeros((0, len(self.qvec("준비"))), np.float32)
         # installed package names: a question that names one (peft, trl, bitsandbytes) means the library
         self.pkgs = {m.group(1).lower() for (p,) in self.con.execute("SELECT path FROM files WHERE tier=2")
                      for m in [re.search(r"site-packages/([A-Za-z0-9_]+)/", p)] if m and len(m.group(1)) >= 3}
@@ -393,9 +397,13 @@ class Finder:
         if n == len(self.ids) and top == getattr(self, "_top", top):
             self._top = top
             return
+        from enc_eg2 import encoder_of, make_encoder
+        e_ = encoder_of(self.con)
+        if e_ in ("embeddinggemma-2", "e5-small") and e_ != self.encoder:   # the index now records another encoder (#9)
+            self.encoder = e_; self.enc = make_encoder(e_, DEVICE, max_len=128)
         rows = self.con.execute("SELECT c.id, c.emb FROM chunks c WHERE c.emb IS NOT NULL").fetchall()
         self.ids = np.array([r[0] for r in rows], dtype=np.int64)
-        self.M = np.stack([np.frombuffer(r[1], np.float16) for r in rows]).astype(np.float32) if rows else np.zeros((0, 1024), np.float32)
+        self.M = np.stack([np.frombuffer(r[1], np.float16) for r in rows]).astype(np.float32) if rows else np.zeros((0, len(self.qvec("준비"))), np.float32)
         self.Mg = None; self.name_rows = None; self._top = top
         print(f"FINDR_RELOAD vectors {len(self.ids)}", flush=True)
 
@@ -1149,7 +1157,8 @@ def ce_scores(q, res, d=None, nosumm=None):
     nosumm = bool(os.environ.get("CE_NOSUMM")) if nosumm is None else nosumm
     if d not in CE:
         tok = AutoTokenizer.from_pretrained(d)
-        m = (AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float16).to(DEVICE) if DEVICE in ("cuda", "mps")
+        m = (AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float16).to(DEVICE) if DEVICE == "cuda"
+             else AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float32).to(DEVICE) if DEVICE == "mps"
              else _cpu_ranker(AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float32))).eval()
         CE[d] = (tok, m)
         nb = Path(d) / "none_bias.txt"   # a none-aware reranker carries its learned 'no answer' score
@@ -1163,7 +1172,7 @@ def ce_scores(q, res, d=None, nosumm=None):
         docs = [f"{x['name']} | {'/'.join(x['path'].replace(chr(92), '/').split('/')[-3:-1])} | {(x.get('summary') or '')[:200]} {x.get('head', '')[:500]}"
                 for x in res]
     with torch.no_grad():
-        b = tok([q] * len(docs), docs, padding=True, truncation=True, max_length=CE_MAXLEN, return_tensors="pt").to(DEVICE)
+        b = tok([q] * len(docs), docs, padding=True, truncation=True, max_length=CE_MAXLEN, return_tensors="pt").to(m.device)
         return torch.sigmoid(m(**b).logits.view(-1).float()).cpu().tolist()
 
 

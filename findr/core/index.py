@@ -43,6 +43,7 @@ JUNK = re.compile(r"^(vocab\.json|merges\.txt|tokenizer(_config)?\.json|special_
 # backups keep the user's history ("bos 넣기 전 학습 스크립트"): read them as the kind of file they back up
 BAK = re.compile(r"(\.(bak\w*|old|orig|backup|swp|tmp)|~)$", re.I)
 MAXREAD = 2_000_000   # bytes of text read per tier-1 file
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")   # Apple GPU: operations it lacks run on the CPU instead of failing
 FILE_SECONDS = float(os.environ.get("FINDR_FILE_SECONDS") or 60)   # time budget per file; what was read by then is kept
 DATA = {".json", ".jsonl", ".csv", ".tsv", ".log"}   # machine-written results: the head says what they are
 DATA_READ = 30_000
@@ -196,6 +197,10 @@ def main():
       CREATE TABLE IF NOT EXISTS cards(file INTEGER PRIMARY KEY, outline TEXT, summary TEXT, done INT DEFAULT 0);""")
     if "pending" not in [r[1] for r in con.execute("PRAGMA table_info(files)")]:
         con.execute("ALTER TABLE files ADD COLUMN pending INT DEFAULT 0")
+    con.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
+    if a.model in ("embeddinggemma-2", "e5-small") and not con.execute("SELECT 1 FROM chunks WHERE emb IS NOT NULL LIMIT 1").fetchone():
+        con.execute("INSERT OR REPLACE INTO meta VALUES('encoder', ?)", (a.model,))   # known from the start: search works while indexing (#9)
+    con.commit()
     progress("names", 0, len(roots))
     for k, root in enumerate(roots):   # stage 1: names and folders of every chosen folder first (seconds)
         print("FINDR_ROOT " + json.dumps({"i": k, "n": len(roots), "path": str(root)}, ensure_ascii=False), flush=True)
@@ -360,7 +365,8 @@ def ocr_reader():
         import easyocr, torch
         d = Path(os.environ.get("FINDR_MODELS") or (Path.home() / ".findr" / "models")) / "ocr"
         d.mkdir(parents=True, exist_ok=True)
-        _OCR = easyocr.Reader(["ko", "en"], gpu=torch.cuda.is_available(), model_storage_directory=str(d), verbose=False)
+        mps = getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available()
+        _OCR = easyocr.Reader(["ko", "en"], gpu=torch.cuda.is_available() or mps, model_storage_directory=str(d), verbose=False)   # Apple GPU too (#8)
     return _OCR
 
 
@@ -381,6 +387,12 @@ def ocr_wave(con, root, first_pages=10, deep_pages=50):
     if "ocr" not in [r[1] for r in con.execute("PRAGMA table_info(files)")]:
         con.execute("ALTER TABLE files ADD COLUMN ocr INT DEFAULT 0")
     deep = int(os.environ.get("FINDR_FIRST_PIECES") or 0) == 0
+    try:   # without a GPU, reading a scan is slow: the first pass takes the first pages, a deep run the rest
+        import torch
+        if not (torch.cuda.is_available() or (getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available())):
+            first_pages = min(first_pages, 3)
+    except Exception:
+        pass
     pre = root.as_posix().rstrip("/") + "/"
     pdfs = [r for r in con.execute("""SELECT f.id, f.path FROM files f WHERE f.ext='.pdf' AND f.tier=1 AND COALESCE(f.ocr,0)=0
               AND f.path LIKE ? AND (SELECT COALESCE(sum(length(c.text)),0) FROM chunks c WHERE c.file=f.id) < 200

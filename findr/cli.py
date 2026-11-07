@@ -151,6 +151,8 @@ def cmd_serve(a):
         if _wait(PORTS["photo"], "/", secs=300):
             photo_url = f"http://127.0.0.1:{PORTS['photo']}"; side.append("사진 내용")
     _engine_env(photo_url)
+    os.environ.setdefault("FINDR_ENCODER", _encoder())   # the planned encoder, for an index still being built (#9)
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     import search
     f = search.Finder(str(a.db))
     if photo_url:   # photos get their meaning vectors in the background, newest first; search works meanwhile
@@ -181,6 +183,7 @@ def cmd_serve(a):
 
 def cmd_ask(a):
     _engine_env()
+    os.environ.setdefault("FINDR_ENCODER", _encoder())
     import search
     f = search.Finder(str(a.db))
     r = search.add_probs(f.search(" ".join(a.query), mode="xce", k=a.k))
