@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "findr-ai"
-version = "0.2.5"
+version = "0.2.6"
 description = "기억나는 대로 물으면, 내 PC가 찾아 줍니다 - 내 PC 안에서만 동작하는 자연어 파일·사진 검색"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -15,7 +15,8 @@ dependencies = [
   "torch>=2.4",                 # the installer picks the CUDA / CPU / Apple build
   "torchvision>=0.19",
   # EmbeddingGemma-2 needs a transformers build newer than the last release (5.22.2): pinned to the tested commit
-  "transformers @ https://github.com/huggingface/transformers/archive/6df64031b9fa0ecebe50161df8ad42ed8d36595c.zip",   # the tested commit, no git needed
+  # the tested commit, pre-built (pure Python): nothing is compiled on the user's PC (#3)
+  "transformers @ https://github.com/quantumaikr/findr/releases/download/deps/transformers-5.23.0.dev0-py3-none-any.whl",
   "sentence-transformers>=5.0",
   "huggingface_hub>=0.30",
   "pypdf>=4.0",
@@ -23,7 +24,8 @@ dependencies = [
   "olefile>=0.46",
   "pillow>=10.0",
   "pillow-heif>=0.18",          # iPhone photos (HEIC)
-  "easyocr>=1.7",               # text in scanned PDFs, screenshots and photos (Korean + English)
+  "easyocr>=1.7",
+  "truststore>=0.9",            # system certificates (company networks)               # text in scanned PDFs, screenshots and photos (Korean + English)
   "accelerate>=1.0",
 ]
 

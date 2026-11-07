@@ -47,7 +47,7 @@ function welcome(s: AppState) {
   if (s.autotest) setTimeout(() => document.getElementById('go')?.click(), 3000)
 }
 
-const STEPS: [string, string][] = [['env', '파이썬 환경'], ['torch', '연산 라이브러리'], ['engine', '검색 엔진'], ['models', '모델 받기']]
+const STEPS: [string, string][] = [['vcrt', 'Windows 구성 요소'], ['env', '파이썬 환경'], ['torch', '연산 라이브러리'], ['engine', '검색 엔진'], ['models', '모델 받기']]
 
 async function setup(s: AppState) {
   view.innerHTML = `
@@ -79,7 +79,7 @@ async function setup(s: AppState) {
       <div class="actions"><button class="primary" id="retry">다시 시도</button></div>`
     document.getElementById('retry')!.onclick = () => { route() }
   }))
-  mark('env', 'run', '진행 중'); cur = 'env'
+  mark('vcrt', 'run', '진행 중'); cur = 'vcrt'
   invoke('setup_runtime')
 }
 

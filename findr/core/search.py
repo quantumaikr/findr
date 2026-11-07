@@ -209,6 +209,14 @@ def _auto_device():
     return "cpu"
 
 
+def _cpu_ranker(m):
+    """on a PC without a GPU the reranker can run with 8-bit weights (CE_INT8=1): several times faster on laptop CPUs"""
+    if os.environ.get("CE_INT8", "0") == "1":
+        import torch
+        m = torch.quantization.quantize_dynamic(m, {torch.nn.Linear}, dtype=torch.qint8)
+    return m
+
+
 def _has_facts(f):
     """the understanding-first route reads work facts; an index built without them uses the reranker route"""
     if getattr(f, "_facts_ok", None) is None:
@@ -1141,8 +1149,8 @@ def ce_scores(q, res, d=None, nosumm=None):
     nosumm = bool(os.environ.get("CE_NOSUMM")) if nosumm is None else nosumm
     if d not in CE:
         tok = AutoTokenizer.from_pretrained(d)
-        m = (AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float16).cuda() if DEVICE == "cuda"
-             else AutoModelForSequenceClassification.from_pretrained(d)).eval()
+        m = (AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float16).to(DEVICE) if DEVICE in ("cuda", "mps")
+             else _cpu_ranker(AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float32))).eval()
         CE[d] = (tok, m)
         nb = Path(d) / "none_bias.txt"   # a none-aware reranker carries its learned 'no answer' score
         if nb.exists():

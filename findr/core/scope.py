@@ -31,11 +31,20 @@ def skip_dir(rel, d):
     return n in JUNK_DIRS or d.startswith("$") or d.startswith("~")
 
 
+def _fixed_drive(letter):
+    """a local fixed disk (Windows GetDriveType == DRIVE_FIXED); network shares and removable drives are left out"""
+    try:
+        import ctypes
+        return ctypes.windll.kernel32.GetDriveTypeW(f"{letter}:\\") == 3
+    except Exception:
+        return Path(f"{letter}:\\").exists()
+
+
 def _places(mnt):
     """(home folders to look in, drive tops) for this system: Windows, macOS, Linux, or Windows seen from WSL"""
     import string, sys
     if os.name == "nt":   # only the signed-in person's folders: on a shared PC other accounts are not ours to index
-        drives = [Path(f"{d}:\\") for d in string.ascii_uppercase if Path(f"{d}:\\").exists()]
+        drives = [Path(f"{d}:\\") for d in string.ascii_uppercase if _fixed_drive(d)]   # not network, USB or optical drives
         return [Path.home()], drives
     if sys.platform == "darwin":
         return [Path.home()], []

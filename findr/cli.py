@@ -54,6 +54,13 @@ def cmd_setup(a):
         raise
     if not a.no_llm:
         models.pull_llama_server(dev)
+    # the components must really load: a missing Windows runtime (#3) used to pass as "done"
+    err = _check_runtime()
+    if err:
+        print(f"\n  준비가 끝나지 않았습니다: {err}")
+        if os.name == "nt":
+            print("  Windows 구성 요소(Visual C++ 런타임)가 오래되었을 수 있습니다: winget install Microsoft.VCRedist.2015+.x64")
+        return 1
     try:   # the text reader for scans and screenshots (about 100 MB, once)
         import index
         print("  글자 인식 모델 받는 중 ...", flush=True); index.ocr_reader()
@@ -64,6 +71,20 @@ def cmd_setup(a):
 
 
 FIRST_PIECES = 8   # first pass: meaning vectors for each file's opening pieces; the rest are found by words until a deep run
+
+
+def _check_runtime():
+    """'' when the compute library and the meaning model load and run here, else what failed"""
+    try:
+        import torch  # noqa: F401
+    except Exception as e:
+        return f"연산 라이브러리(torch)를 불러오지 못함 ({type(e).__name__}: {str(e)[:160]})"
+    try:
+        import enc_eg2
+        enc_eg2.make_encoder(_encoder()).emb(["준비 확인"])
+    except Exception as e:
+        return f"의미 모델을 실행하지 못함 ({type(e).__name__}: {str(e)[:160]})"
+    return ""
 
 
 def cmd_index(a):
@@ -178,6 +199,13 @@ def cmd_ask(a):
 def cmd_doctor(a):
     dev, gb, want = models.plan()
     print(f"findr {__version__} | 파이썬 {sys.version.split()[0]} | 장치 {dev}{f' {gb:.0f}GB' if gb else ''} | 데이터 {paths.HOME}")
+    try:
+        import torch
+        print(f"  ✓ 연산 라이브러리 torch {torch.__version__}")
+    except Exception as e:
+        print(f"  ✗ 연산 라이브러리를 불러오지 못함: {type(e).__name__}: {str(e)[:160]}")
+        if os.name == "nt":
+            print("    → Visual C++ 런타임 업데이트: winget install Microsoft.VCRedist.2015+.x64")
     for w in want:
         print(f"  {'✓' if models.have(w) else '✗'} 모델 {w}")
     print(f"  {'✓' if models.llama_server() else '✗'} llama-server (없으면 질문을 규칙으로 읽음)")
@@ -198,6 +226,11 @@ def cmd_doctor(a):
 
 def main(argv=None):
     paths.setup_env()
+    try:   # company networks that inspect TLS: model downloads trust the system's certificates
+        import truststore
+        truststore.inject_into_ssl()
+    except Exception:
+        pass
     ap = argparse.ArgumentParser(prog="findr", description="기억나는 대로 물으면, 내 PC가 찾아 줍니다.")
     ap.add_argument("--db", default=str(paths.DB), help="색인 파일 (기본: 데이터 폴더의 index.db)")
     ap.add_argument("--version", action="version", version=f"findr {__version__}")

@@ -221,6 +221,8 @@ def main():
                 fid = known[s][2]
                 drop(con, fid)
             tr = tier(p)
+            if tr in (1, 2) and cloud_only(st):
+                tr = 3   # OneDrive 'online-only': reading it would download it; found by name until it is on the PC
             cur = con.execute("INSERT INTO files(path,name,ext,size,mtime,tier,pending) VALUES(?,?,?,?,?,?,?)",
                               (s, p.name, real_ext(p), st.st_size, st.st_mtime, tr, 1 if tr in (1, 2) else 0))
             fid = cur.lastrowid   # name and folder searchable at once; content comes in its wave
@@ -259,10 +261,21 @@ def priority(path, ext, mtime, now):
     return bonus - age
 
 
+def cloud_only(st):
+    """a cloud placeholder (Windows: OneDrive 'online-only' and similar): its content is not on this PC"""
+    a = getattr(st, "st_file_attributes", 0)
+    return bool(a & (0x00400000 | 0x00040000 | 0x00001000))   # RECALL_ON_DATA_ACCESS | RECALL_ON_OPEN | OFFLINE
+
+
 def _read_one(job):
+    """text of one file; None when it could not be opened now (locked by another program): tried again next time"""
     s, lim = job
     try:
         return extract(Path(s), lim) or ""
+    except (PermissionError, BlockingIOError):
+        return None
+    except OSError as e:
+        return None if getattr(e, "winerror", None) in (32, 33) else ""   # sharing / lock violation on Windows
     except Exception:
         return ""
 
@@ -291,7 +304,11 @@ def read_wave(con, root, a):
         rows = rows[: a.limit]
     t0 = time.time()
     jobs = [(s, 1500 if tr == 2 else DATA_READ if ext in DATA else MAXREAD) for _, s, ext, _, tr in rows]
+    locked = 0
     for i, ((fid, s, ext, mtime, tr), txt) in enumerate(zip(rows, read_all(jobs))):
+        if txt is None:   # open in another program right now: stays pending, read on the next run
+            locked += 1
+            continue
         p = Path(s)
         cs = chunks(txt)[: (1 if tr == 2 else 2000)] or [""]
         con.execute("DELETE FROM fts WHERE rowid IN (SELECT id FROM chunks WHERE file=? AND n>=0)", (fid,))
@@ -305,7 +322,7 @@ def read_wave(con, root, a):
             con.commit(); print(f"  read {i + 1}/{len(rows)} {time.time() - t0:.0f}s", flush=True)
     con.commit()
     left = con.execute("SELECT count(*) FROM files WHERE pending=1 AND path LIKE ?", (pre + "%",)).fetchone()[0]
-    print(f"FINDR_READ {len(rows)} files in {time.time() - t0:.0f}s, still pending {left}")
+    print(f"FINDR_READ {len(rows)} files in {time.time() - t0:.0f}s, still pending {left}" + (f" (in use by another program: {locked})" if locked else ""))
 
 
 SHOTLIKE = re.compile(r"screenshot|screen ?shot|스크린샷|캡처|캡쳐|화면 ?캡|capture|snip|clip|scan|스캔|영수증|receipt", re.I)
@@ -631,6 +648,8 @@ def embed(con, model):
     enc = make_encoder(encoder_of(con)) if encoder_of(con) in ("embeddinggemma-2", "e5-small") else Enc(model)   # same encoder as the vectors already stored
     if not isinstance(enc, EG2):
         enc.tok.model_max_length = 512
+    if os.environ.get("FINDR_THREADS"):   # background indexing: leave CPU cores for the person's own work
+        torch.set_num_threads(max(1, int(os.environ["FINDR_THREADS"])))
     cap = int(os.environ.get("FINDR_FIRST_PIECES") or 0)   # first pass on a large PC: each file's opening pieces only
     rows = con.execute(f"""SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
                           WHERE c.emb IS NULL AND f.tier>0 AND COALESCE(f.pending,0)=0 {"AND c.n < %d" % cap if cap > 0 else ""}

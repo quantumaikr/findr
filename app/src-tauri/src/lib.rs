@@ -49,6 +49,34 @@ fn low_priority(prog: impl AsRef<std::ffi::OsStr>) -> Command {
     }
 }
 
+/// running on battery: background indexing waits for the charger (Windows, macOS, Linux)
+fn on_battery() -> bool {
+    #[cfg(windows)]
+    {
+        // BatteryStatus 2 = on AC; no battery at all (a desktop) prints nothing
+        let out = command("powershell").args(["-NoProfile", "-Command", "(Get-CimInstance Win32_Battery).BatteryStatus"]).output();
+        if let Ok(o) = out {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            return !s.is_empty() && s != "2";
+        }
+        false
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("pmset").args(["-g", "batt"]).output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("Battery Power")).unwrap_or(false)
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let ac = std::fs::read_dir("/sys/class/power_supply").map(|d| d.flatten()
+            .filter(|e| std::fs::read_to_string(e.path().join("type")).map(|t| t.trim() == "Mains").unwrap_or(false))
+            .any(|e| std::fs::read_to_string(e.path().join("online")).map(|t| t.trim() == "1").unwrap_or(false))).unwrap_or(true);
+        let has_mains = std::fs::read_dir("/sys/class/power_supply").map(|d| d.flatten()
+            .any(|e| std::fs::read_to_string(e.path().join("type")).map(|t| t.trim() == "Mains").unwrap_or(false))).unwrap_or(false);
+        has_mains && !ac
+    }
+}
+
 /// after the search page is up: changed files now and every hour, and once the later pieces of long documents
 fn start_refresher() {
     use std::sync::atomic::Ordering;
@@ -57,7 +85,7 @@ fn start_refresher() {
     }
     thread::spawn(|| loop {
         let folders = load_folders();
-        if !folders.is_empty() && home().join("index.db").exists() {
+        if !folders.is_empty() && home().join("index.db").exists() && !on_battery() {
             for deep in [false, true] {
                 if deep && home().join(".deep-done").exists() {
                     continue;
@@ -65,6 +93,8 @@ fn start_refresher() {
                 take_index_turn();
                 let log = std::fs::File::create(home().join("logs").join(if deep { "deep.log" } else { "refresh.log" }));
                 let mut c = low_priority(python());
+                let half = std::thread::available_parallelism().map(|n| (n.get() / 2).max(1)).unwrap_or(2);
+                c.env("FINDR_THREADS", half.to_string()).env("OMP_NUM_THREADS", half.to_string());   // leave cores for the person
                 c.args(["-m", "findr", "index"]).args(&folders);
                 if deep {
                     c.arg("--deep");
@@ -144,7 +174,8 @@ fn gpu() -> &'static str {
 // every child process: no console window on Windows, UTF-8 and unbuffered output for the engine
 fn command(prog: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut c = Command::new(prog);
-    c.env("PYTHONUTF8", "1").env("PYTHONUNBUFFERED", "1").env("FINDR_HOME", home());
+    c.env("PYTHONUTF8", "1").env("PYTHONUNBUFFERED", "1").env("FINDR_HOME", home())
+        .env("UV_NATIVE_TLS", "1");   // company networks that inspect TLS: trust the system's certificates
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -250,6 +281,10 @@ fn setup_runtime(app: AppHandle) {
             let _ = app.emit("setup-done", Done { ok, message: message.into() });
         };
         let _ = std::fs::create_dir_all(home());
+        // 0. Windows: the Visual C++ runtime that Python 3.12 and PyTorch need (14.40 or later, #3)
+        if let Err(m) = ensure_vc_runtime(&app) {
+            return done(false, &m);
+        }
         // 1. environment (uv also fetches Python 3.12 itself when the PC has none)
         let mut c = command(uv());
         c.args(["venv", "--python", "3.12", "--allow-existing"]).arg(runtime());
@@ -289,7 +324,7 @@ fn setup_runtime(app: AppHandle) {
         let mut c = command(python());
         c.args(["-m", "findr", "setup"]);
         if !stream(&app, "setup", "models", c) {
-            return done(false, "모델을 받지 못했습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.");
+            return done(false, "구성 요소를 받거나 불러오지 못했습니다. 아래 '자세한 기록'의 마지막 줄을 확인하고 다시 시도해 주세요.");
         }
         let _ = std::fs::write(ready_mark(), engine_stamp(&app));
         done(true, "준비가 끝났습니다.");
@@ -307,6 +342,41 @@ fn engine_source(app: &AppHandle) -> Option<PathBuf> {
         cands.push(d.join("resources").join("engine"));
     }
     cands.into_iter().find(|p| p.join("pyproject.toml").exists())
+}
+
+/// Windows: Microsoft Visual C++ runtime 14.40+ (an older one breaks Python 3.12 and PyTorch). Installs the official
+/// redistributable when it is missing or old; Windows asks the person once for permission.
+fn ensure_vc_runtime(app: &AppHandle) -> Result<(), String> {
+    let say = |line: &str| { let _ = app.emit("setup", Line { step: "vcrt".into(), line: line.into() }); };
+    if !cfg!(windows) {
+        say("필요 없음");
+        return Ok(());
+    }
+    let version = || -> (u32, u32) {
+        let out = command("powershell").args(["-NoProfile", "-Command",
+            "[System.Diagnostics.FileVersionInfo]::GetVersionInfo(\"$env:WINDIR\\System32\\msvcp140.dll\").FileVersion"]).output();
+        let s = out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+        let mut it = s.split(|c: char| c == '.' || c == ',' || c == ' ').filter_map(|x| x.parse::<u32>().ok());
+        (it.next().unwrap_or(0), it.next().unwrap_or(0))
+    };
+    let (ma, mi) = version();
+    if ma > 14 || (ma == 14 && mi >= 40) {
+        say(&format!("Visual C++ 런타임 {ma}.{mi}: 준비됨"));
+        return Ok(());
+    }
+    say(if ma == 0 { "Visual C++ 런타임이 없어 설치합니다 (권한 확인 창이 뜨면 '예')" } else { "Visual C++ 런타임이 오래되어 업데이트합니다 (권한 확인 창이 뜨면 '예')" });
+    let exe = std::env::temp_dir().join("vc_redist.x64.exe");
+    let script = format!(
+        "Invoke-WebRequest -UseBasicParsing -Uri https://aka.ms/vs/17/release/vc_redist.x64.exe -OutFile '{0}';          Start-Process -FilePath '{0}' -ArgumentList '/install','/quiet','/norestart' -Verb RunAs -Wait",
+        exe.display());
+    let _ = command("powershell").args(["-NoProfile", "-Command", &script]).status();
+    let (ma, mi) = version();
+    if ma > 14 || (ma == 14 && mi >= 40) {
+        say(&format!("Visual C++ 런타임 {ma}.{mi}: 설치됨"));
+        Ok(())
+    } else {
+        Err("Windows 구성 요소(Visual C++ 런타임)를 설치하지 못했습니다. https://aka.ms/vs/17/release/vc_redist.x64.exe 를 받아 설치한 뒤 다시 시도해 주세요.".into())
+    }
 }
 
 fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
