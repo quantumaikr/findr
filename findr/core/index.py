@@ -546,6 +546,14 @@ def _page_scale(page, side=None):
 
 
 OCR_FIRST_PAGES = int(os.environ.get("FINDR_OCR_FIRST_PAGES") or 3)
+
+
+def _gpu_present():
+    try:
+        import torch
+        return torch.cuda.is_available() or (getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available())
+    except Exception:
+        return False
 OCR_PARTIAL = 3   # files.ocr: 1 = read, 3 = only the first pages read (a deep run reads the rest)
 
 
@@ -585,7 +593,14 @@ def ocr_wave(con, root, first_pages=None, deep_pages=50):
     """scanned PDFs and screenshots now; every photo on a deep run. Each file is read once (files.ocr).
     First pass: the first OCR_FIRST_PAGES pages of a PDF (files.ocr = 3 when pages are left); a deep run reads the rest.
     A copy of a file already read gets that file's text instead of a second OCR."""
-    first_pages = first_pages or OCR_FIRST_PAGES
+    deep = int(os.environ.get("FINDR_FIRST_PIECES") or 0) == 0
+    first_pages, side = first_pages or OCR_FIRST_PAGES, OCR_SIDE
+    if ocr_engine() == "easyocr" and not _gpu_present():
+        # EasyOCR on a CPU, for search (words that find the file, not a faithful copy). 12 synthetic A4 pages, 4 cores,
+        # share of words found / s per page:  2400 px 89-91% 9-15 s,  1600 px 90% 4.1-4.4 s,  1200 px 85-88% 2.6-2.9 s,
+        # 1000 px 72-87% 2 s (small print falls off). First pass: page 1 at 1200 px; the deep run: the rest at 1600 px.
+        first_pages = int(os.environ.get("FINDR_OCR_FIRST_PAGES") or 1)
+        side = int(os.environ.get("FINDR_OCR_SIDE") or (1600 if deep else 1200))
     if ocr_engine() == "easyocr":
         try:
             import easyocr  # noqa: F401
@@ -593,7 +608,6 @@ def ocr_wave(con, root, first_pages=None, deep_pages=50):
             return
     if "ocr" not in [r[1] for r in con.execute("PRAGMA table_info(files)")]:
         con.execute("ALTER TABLE files ADD COLUMN ocr INT DEFAULT 0")
-    deep = int(os.environ.get("FINDR_FIRST_PIECES") or 0) == 0
     pre = root.as_posix().rstrip("/") + "/"
     pdfs = [r for r in con.execute("""SELECT f.id, f.path FROM files f WHERE f.ext='.pdf' AND f.tier=1 AND f.path LIKE ?
               AND ((COALESCE(f.ocr,0)=0 AND (SELECT COALESCE(sum(length(c.text)),0) FROM chunks c WHERE c.file=f.id) < 200)
@@ -628,7 +642,7 @@ def ocr_wave(con, root, first_pages=None, deep_pages=50):
                     if time.time() > end:
                         break
                     pg = doc[i]
-                    lines += ocr_lines(_np.array(pg.render(scale=_page_scale(pg)).to_pil().convert("RGB")))
+                    lines += ocr_lines(_np.array(pg.render(scale=_page_scale(pg, side)).to_pil().convert("RGB")))
                 doc.close()
             except Exception:
                 pass
@@ -636,7 +650,7 @@ def ocr_wave(con, root, first_pages=None, deep_pages=50):
             try:
                 from PIL import Image
                 import numpy as _np
-                im = Image.open(s).convert("RGB"); im.thumbnail((2400, 2400))
+                im = Image.open(s).convert("RGB"); im.thumbnail((side, side))
                 lines = ocr_lines(_np.array(im))
             except Exception:
                 lines = []
