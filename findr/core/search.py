@@ -208,6 +208,16 @@ def _auto_device():
         pass
     return "cpu"
 
+
+def _has_facts(f):
+    """the understanding-first route reads work facts; an index built without them uses the reranker route"""
+    if getattr(f, "_facts_ok", None) is None:
+        try:
+            f._facts_ok = bool(f.con.execute("SELECT 1 FROM facts LIMIT 1").fetchone())
+        except Exception:
+            f._facts_ok = False
+    return f._facts_ok
+
 DEVICE = os.environ.get("FINDR_DEVICE") or _auto_device()   # cpu: when the GPU is busy (2026-11-05: the 12B teacher held it)   # biz: company documents; pc: a researcher's own workspace
 if PROFILE == "pc":
     FKINDS = ["보고서", "문서", "코드", "설정", "데이터", "실험결과", "로그", "프롬프트", "메모"]
@@ -1402,7 +1412,7 @@ def serve(f, port):
                 if not q_:
                     return self.reply(200, b'{"results": [], "note": ""}', "application/json; charset=utf-8")
                 if mode == "auto":   # route by what the question asks: business conditions -> understanding-first, else reranker
-                    mode = "ng" if (ROUTE_NG.search(q_) or prev_) else "xce"   # a follow-up turn keeps context
+                    mode = "ng" if ((ROUTE_NG.search(q_) or prev_) and _has_facts(f)) else "xce"   # understanding-first needs work facts in the index
                 with SEARCH_LOCK:
                   global EVAL_NOW
                   try:
