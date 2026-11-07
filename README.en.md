@@ -84,6 +84,8 @@ bash install.sh
 
 The script creates a dedicated Python environment, checks for a GPU and downloads the matching models. No sign-in is required.
 
+To update, run `git pull` and then the install script again, so that components added since are installed. `findr doctor` lists anything missing.
+
 ## Usage
 
 Run `.\findr` on Windows or `./findr.sh` on macOS and Linux, from the repository folder.

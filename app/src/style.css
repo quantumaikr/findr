@@ -53,3 +53,23 @@ pre { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 12px
 .switch input { width: 17px; height: 17px; accent-color: var(--acc); }
 .spinner { width: 18px; height: 18px; border: 2px solid var(--line); border-top-color: var(--acc); border-radius: 50%; animation: spin .9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* first index: progress that is honest, abilities lit as they become ready */
+.hero .big { display: flex; align-items: baseline; gap: 8px; font-variant-numeric: tabular-nums; }
+.hero .big #nfiles { font-size: 34px; font-weight: 650; letter-spacing: -0.02em; }
+.hero .big .unit { color: var(--mut); font-size: 15px; }
+.hero .where { margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ladder { list-style: none; padding: 0; margin: 0; }
+.ladder li { display: grid; grid-template-columns: 22px 1fr auto; gap: 12px; align-items: start; padding: 11px 0; border-bottom: 1px solid var(--line); }
+.ladder li:last-child { border-bottom: 0; }
+.ladder .ic { text-align: center; color: var(--mut); line-height: 22px; }
+.ladder .can { font-weight: 550; } .ladder .doing { color: var(--mut); font-size: 13px; margin-top: 1px; }
+.ladder .st { font-size: 12.5px; color: var(--mut); line-height: 22px; }
+.ladder li.done .ic, .ladder li.done .st { color: var(--ok); }
+.ladder li.now .ic, .ladder li.now .st { color: var(--acc); }
+.ladder li.now .ic { animation: pulse 1.4s ease-in-out infinite; }
+.ladder li.wait .can { color: var(--mut); font-weight: 500; }
+@keyframes pulse { 50% { opacity: .35; } }
+.tip p { margin: 4px 0 0; font-weight: 550; }
+.auto { margin-top: 12px; } button.link { border: 0; background: none; padding: 0 0 0 4px; color: var(--acc); text-decoration: underline; font-size: 13.5px; }
+@media (prefers-reduced-motion: reduce) { .ladder li.now .ic { animation: none; } .bar > div { transition: none; } }

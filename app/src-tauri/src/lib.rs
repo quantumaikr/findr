@@ -211,7 +211,11 @@ fn start_refresher() {
         let folders = load_folders();
         if !folders.is_empty() && home().join("index.db").exists() && !on_battery() {
             for deep in [false, true] {
-                if deep && home().join(".deep-done").exists() {
+                // the deep run (rest of long documents, scans on a CPU, the opening-only reads of the first pass) every 6 hours:
+                // files added since the last one get the same care
+                let fresh = std::fs::metadata(home().join(".deep-done")).and_then(|m| m.modified()).ok()
+                    .and_then(|t| t.elapsed().ok()).map(|e| e.as_secs() < 6 * 3600).unwrap_or(false);
+                if deep && fresh {
                     continue;
                 }
                 take_index_turn();
@@ -542,12 +546,27 @@ fn load_folders() -> Vec<String> {
     std::fs::read_to_string(home().join("folders.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
 }
 
+/// where indexing stands (progress.json written by the indexer), or "" before it starts
+#[tauri::command]
+fn read_progress() -> String {
+    std::fs::read_to_string(home().join("progress.json")).unwrap_or_default()
+}
+
+/// pause or resume indexing: the indexer holds between steps while the file exists (a forgotten pause lapses after an hour)
+#[tauri::command]
+fn set_pause(on: bool) -> Result<(), String> {
+    let f = home().join("pause");
+    if on { std::fs::write(f, "1").map_err(|e| e.to_string()) } else { let _ = std::fs::remove_file(f); Ok(()) }
+}
+
 /// index the chosen folders in order; progress as `index` events, then `index-done`
 #[tauri::command]
 fn start_index(app: AppHandle, folders: Vec<String>, deep: Option<bool>) {
     thread::spawn(move || {
         let _ = app.emit("index", Line { step: "index".into(), line: "앞선 색인 작업이 끝나기를 기다리는 중".into() });
         stop_upgrade(); // the person's own run comes first (the upgrade keeps what it computed)
+        let _ = std::fs::remove_file(home().join("progress.json")); // a fresh picture for this run
+        let _ = std::fs::remove_file(home().join("pause"));
         take_index_turn();
         let mut c = command(python());
         c.args(["-m", "findr", "index"]).args(&folders);
@@ -691,7 +710,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_state, setup_runtime, list_roots, start_index, start_engine, stop_engine, open_path, open_data_dir, save_folders, load_folders,
-            upgrade_state, set_upgrade
+            upgrade_state, set_upgrade, read_progress, set_pause
         ])
         .build(tauri::generate_context!())
         .expect("findr 창을 여는 중 오류가 났습니다")
