@@ -58,9 +58,14 @@ def cmd_setup(a):
     return 0
 
 
+FIRST_PIECES = 8   # first pass: meaning vectors for each file's opening pieces; the rest are found by words until a deep run
+
+
 def cmd_index(a):
     enc = _encoder()
     env = {**os.environ}
+    if not a.deep:
+        env.setdefault("FINDR_FIRST_PIECES", str(FIRST_PIECES))
     core = paths.CORE
     if not a.paths:   # the whole PC, the person's own files only, in the order people look for them
         cmd = [sys.executable, str(core / "index_pc.py"), "--db", str(a.db), "--model", enc]
@@ -197,7 +202,9 @@ def main(argv=None):
     s.add_argument("--no-photo", action="store_true"); s.add_argument("--no-llm", action="store_true", help="llama-server 받지 않기")
     s.add_argument("--token", default=None, help="허깅페이스 토큰 (비공개 모델용)")
     s.set_defaults(fn=cmd_setup)
-    s = sub.add_parser("index", help="색인 (폴더를 주지 않으면 PC 전체의 내 파일)"); s.add_argument("paths", nargs="*"); s.set_defaults(fn=cmd_index)
+    s = sub.add_parser("index", help="색인 (폴더를 주지 않으면 PC 전체의 내 파일)"); s.add_argument("paths", nargs="*")
+    s.add_argument("--deep", action="store_true", help="긴 문서의 뒷부분까지 의미 계산 (오래 걸림, 쉬는 시간에 권장)")
+    s.set_defaults(fn=cmd_index)
     s = sub.add_parser("serve", help="검색 화면 열기"); s.add_argument("--port", type=int, default=8096)
     s.add_argument("--no-browser", action="store_true"); s.add_argument("--no-photo", action="store_true"); s.add_argument("--no-llm", action="store_true")
     s.add_argument("--app", action="store_true", help=argparse.SUPPRESS)

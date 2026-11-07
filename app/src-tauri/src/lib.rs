@@ -284,10 +284,13 @@ fn load_folders() -> Vec<String> {
 
 /// index the chosen folders in order; progress as `index` events, then `index-done`
 #[tauri::command]
-fn start_index(app: AppHandle, folders: Vec<String>) {
+fn start_index(app: AppHandle, folders: Vec<String>, deep: Option<bool>) {
     thread::spawn(move || {
         let mut c = command(python());
         c.args(["-m", "findr", "index"]).args(&folders);
+        if deep.unwrap_or(false) {
+            c.arg("--deep"); // the later pieces of long documents too
+        }
         let ok = stream(&app, "index", "index", c);
         let _ = app.emit("index-done", Done { ok, message: if ok { "색인을 마쳤습니다.".into() } else { "색인 중 오류가 있었습니다.".into() } });
     });

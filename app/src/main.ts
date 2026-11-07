@@ -21,7 +21,7 @@ async function route() {
   const h = location.hash.slice(1)
   if (!s.ready) return h === 'setup' || s.update ? setup(s) : welcome(s)   // a newer engine in the app: update without asking
   if (h === 'settings') return settings(s)
-  if (h === 'index' && s.folders.length) return indexing(s.folders)
+  if ((h === 'index' || h === 'deep') && s.folders.length) return indexing(s.folders, h === 'deep')
   if (h === 'folders' || !s.indexed) return folders(s)
   return search()
 }
@@ -125,7 +125,7 @@ async function folders(s: AppState) {
 }
 
 // ---------- indexing ----------
-async function indexing(list: string[]) {
+async function indexing(list: string[], deep = false) {
   view.innerHTML = `<h1>색인하는 중</h1>
     <p class="lead">폴더마다 이름 → 내용 → 의미 순서로 처리합니다. 먼저 끝난 폴더부터 바로 검색할 수 있습니다.</p>
     <div class="card"><div class="row between"><span id="now">시작하는 중</span><span class="muted" id="count"></span></div>
@@ -154,7 +154,7 @@ async function indexing(list: string[]) {
     set('detail', e.payload.message); (document.getElementById('go') as HTMLButtonElement).disabled = false
   }))
   document.getElementById('go')!.onclick = () => { location.hash = 'search' }
-  invoke('start_index', { folders: list })
+  invoke('start_index', { folders: list, deep })
 }
 
 // ---------- search (the engine's page) ----------
@@ -183,7 +183,10 @@ async function settings(s: AppState) {
       <dt>색인 폴더</dt><dd>${s.folders.length ? s.folders.map(esc).join('<br>') : 'PC 전체의 내 파일'}</dd></dl></div>
     <h2>색인</h2>
     <div class="card"><p>새로 생기거나 바뀐 파일만 다시 읽습니다.</p>
-      <div class="actions" style="margin-top:6px"><button class="primary" id="re">바뀐 파일 반영</button><button id="fold">폴더 바꾸기</button></div></div>
+      <div class="actions" style="margin-top:6px"><button class="primary" id="re">바뀐 파일 반영</button><button id="fold">폴더 바꾸기</button></div>
+      <p class="muted" style="margin:14px 0 6px">처음 색인은 긴 문서의 앞부분만 의미로 찾게 해서 빨리 끝냅니다. 뒷부분도 단어로는 찾을 수 있습니다.
+        뒷부분까지 의미로 찾으려면 아래를 누르세요. 시간이 오래 걸리니 PC를 쓰지 않을 때 권합니다.</p>
+      <div class="actions" style="margin-top:0"><button id="deep">깊은 내용까지 계산</button></div></div>
     <h2>사진</h2>
     <div class="card"><label class="switch"><input type="checkbox" id="photo" ${photoOn() ? 'checked' : ''} ${s.gpu !== 'nvidia' ? 'disabled' : ''}>
       <span>사진을 찍힌 내용으로 찾기</span></label>
@@ -193,6 +196,7 @@ async function settings(s: AppState) {
       <div class="actions" style="margin-top:6px"><button id="data">데이터 폴더 열기</button></div></div>
     <div class="actions"><button class="primary" id="back">검색으로 돌아가기</button></div>`
   document.getElementById('re')!.onclick = () => { invoke('stop_engine'); location.hash = 'index' }
+  document.getElementById('deep')!.onclick = () => { invoke('stop_engine'); location.hash = 'deep' }
   document.getElementById('fold')!.onclick = () => { location.hash = 'folders' }
   document.getElementById('data')!.onclick = () => invoke('open_data_dir')
   document.getElementById('photo')!.onchange = ev => {

@@ -396,19 +396,27 @@ def embed(con, model):
     enc = make_encoder(encoder_of(con)) if encoder_of(con) in ("embeddinggemma-2", "e5-small") else Enc(model)   # same encoder as the vectors already stored
     if not isinstance(enc, EG2):
         enc.tok.model_max_length = 512
-    rows = con.execute("""SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
-                          WHERE c.emb IS NULL AND f.tier>0 AND COALESCE(f.pending,0)=0
+    cap = int(os.environ.get("FINDR_FIRST_PIECES") or 0)   # first pass on a large PC: each file's opening pieces only
+    rows = con.execute(f"""SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
+                          WHERE c.emb IS NULL AND f.tier>0 AND COALESCE(f.pending,0)=0 {"AND c.n < %d" % cap if cap > 0 else ""}
                           ORDER BY (c.n > 1), f.mtime DESC, c.n""").fetchall()   # every file's opening pieces first, newest first
+    later = con.execute("SELECT count(*) FROM chunks c JOIN files f ON f.id=c.file WHERE c.emb IS NULL AND f.tier>0 "
+                        "AND COALESCE(f.pending,0)=0 AND c.n >= ?", (cap,)).fetchone()[0] if cap > 0 else 0
+    # identical inputs (a copied file, repeated boilerplate under the same name) are computed once
+    groups = {}
+    for cid, t, p in rows:
+        groups.setdefault(f"{label(Path(p))}\n{t}"[:1200], []).append(cid)
+    uniq = list(groups.items())
     t0 = time.time()
-    for i in range(0, len(rows), 256):
-        b = rows[i:i + 256]
-        texts = [f"{label(Path(p))}\n{t}"[:1200] for _, t, p in b]
+    for i in range(0, len(uniq), 256):
+        b = uniq[i:i + 256]
         with torch.no_grad():
-            v = emb512(enc, texts).cpu().numpy().astype(np.float16)
-        con.executemany("UPDATE chunks SET emb=? WHERE id=?", [(x.tobytes(), cid) for x, (cid, _, _) in zip(v, b)])
+            v = emb512(enc, [k for k, _ in b]).cpu().numpy().astype(np.float16)
+        con.executemany("UPDATE chunks SET emb=? WHERE id=?", [(x.tobytes(), cid) for x, (_, cids) in zip(v, b) for cid in cids])
         if i % 25600 == 0:
-            con.commit(); print(f"  embedded {i + len(b)}/{len(rows)} {time.time() - t0:.0f}s", flush=True)
-    con.commit(); print(f"FINDR_EMBED {len(rows)} chunks {time.time() - t0:.0f}s")
+            con.commit(); print(f"  embedded {i + len(b)}/{len(uniq)} {time.time() - t0:.0f}s", flush=True)
+    con.commit(); print(f"FINDR_EMBED {len(rows)} chunks {time.time() - t0:.0f}s (computed {len(uniq)}, identical skipped {len(rows) - len(uniq)}"
+                        + (f", later pieces left for a deep run {later})" if later else ")"))
 
 
 def emb512(enc, texts):
