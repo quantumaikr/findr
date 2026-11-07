@@ -1,0 +1,44 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "findr",
+  "version": "0.2.0",
+  "identifier": "com.quantumaikr.findr",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://127.0.0.1:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "findr",
+        "width": 1180,
+        "height": 820,
+        "minWidth": 860,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Productivity",
+    "shortDescription": "기억나는 대로 물으면, 내 PC가 찾아 줍니다",
+    "copyright": "Copyright 2026 quantumaikr",
+    "license": "Apache-2.0",
+    "externalBin": ["binaries/uv"],
+    "resources": {
+      "../../findr/": "engine/findr/",
+      "../../pyproject.toml": "engine/pyproject.toml",
+      "../../README.md": "engine/README.md",
+      "../../LICENSE": "engine/LICENSE"
+    },
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
+  }
+}

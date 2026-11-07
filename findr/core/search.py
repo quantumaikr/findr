@@ -1288,7 +1288,7 @@ FAILS = {}   # client -> [count, first failure time]; slows password guessing th
 SEC_HEADERS = [("X-Content-Type-Options", "nosniff"), ("X-Frame-Options", "DENY"), ("Referrer-Policy", "no-referrer"),
                ("Cache-Control", "no-store"),
                ("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
-                                          "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")]
+                                          "img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")]
 ROUTE_NG = re.compile(r"그거\s*말고|그\s*전\s*버전|바로\s*전|맨\s*처음|퇴사|그만둔|인계|넘겨받|후임|회의록|회의한|협의|견적|발주|명세서|계약|거래처|업체|만원|억원?|원짜리|점검일지|출장\s*보고|제안서|클레임|교육\s*보고|NDA|비밀유지|인계서|작업일보|배차표|장애보고")
 
 
@@ -1326,6 +1326,19 @@ def serve(f, port):
         def do_GET(self):
             if urlparse(self.path).path == "/healthz":   # for the watchdog: says nothing but "ok"
                 return self.reply(200, b"ok", "text/plain")
+            if urlparse(self.path).path == "/auth":   # the desktop app opens the page once with its key; a cookie keeps it signed in
+                import hmac
+                t_ = parse_qs(urlparse(self.path).query).get("t", [""])[0]
+                if PASSWORD and hmac.compare_digest(t_.encode(), PASSWORD.encode()):
+                    from urllib.parse import quote as _q
+                    q0 = parse_qs(urlparse(self.path).query).get("q", [""])[0][:200]
+                    to = "/" + ("?q=" + _q(q0) if q0 else "")
+                    # a page of this site moves on by itself: the strict cookie is sent from then on (a redirect from the app would not carry it)
+                    body = f'<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url={to}"><title>findr</title>'.encode()
+                    self.send_response(200); self.send_header("Set-Cookie", f"findr_t={PASSWORD}; Path=/; HttpOnly; SameSite=Strict")
+                    self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
+                self.send_response(401); self.end_headers(); return
             if not self.authed():
                 return
             try:
@@ -1495,6 +1508,9 @@ def serve(f, port):
                 n_, t_ = 0, time.time()
             if n_ >= 10:   # ten wrong passwords in ten minutes: refuse that client for the rest of the window
                 self.send_response(429); self.end_headers(); return False
+            ck_ = re.search(r"(?:^|;\s*)findr_t=([^;]+)", self.headers.get("Cookie", ""))
+            if PASSWORD and ck_ and hmac.compare_digest(ck_.group(1).encode(), PASSWORD.encode()):
+                return True
             got = self.headers.get("Authorization", "")
             try:
                 pw = base64.b64decode(got.split(" ", 1)[1]).decode().split(":", 1)[1] if got.startswith("Basic ") else ""

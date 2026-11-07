@@ -4,7 +4,7 @@ A search tool that finds files on your PC from what you remember about them. Eve
 
 [한국어](README.md)
 
-This is the 0.2 private preview.
+This is the 0.2 preview release.
 
 ## Why
 

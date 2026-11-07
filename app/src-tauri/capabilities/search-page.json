@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "search-page",
+  "description": "The search page served by the local engine may only open a found file or show it in its folder.",
+  "windows": ["main"],
+  "remote": { "urls": ["http://127.0.0.1:8096/*"] },
+  "permissions": ["allow-open-path"]
+}

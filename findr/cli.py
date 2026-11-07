@@ -6,6 +6,7 @@
     findr doctor             설치 상태 점검"""
 import argparse
 import atexit
+import json
 import os
 import subprocess
 import sys
@@ -62,11 +63,22 @@ def cmd_index(a):
         print(f"PC 전체의 내 파일을 색인합니다 (의미 모델: {enc}). 바탕화면·다운로드부터 — 진행 중에도 검색할 수 있습니다.")
         return subprocess.call(cmd, env=env, cwd=str(core))
     rc = 0
-    for p in a.paths:
-        print(f"색인: {p}")
+    for i, p in enumerate(a.paths):   # in the order given (the app passes the folders people look in first)
+        print("FINDR_ROOT " + json.dumps({"i": i, "n": len(a.paths), "path": p}, ensure_ascii=False), flush=True)
         rc |= subprocess.call([sys.executable, str(core / "index.py"), "--root", str(Path(p).expanduser()), "--db", str(a.db), "--model", enc],
                               env=env, cwd=str(core))
+        print("FINDR_ROOT_DONE " + json.dumps({"i": i, "n": len(a.paths)}), flush=True)
     return rc
+
+
+def cmd_roots(a):
+    """the folders a whole-PC index would cover, in the order people look in them (for the app's folder list)"""
+    import scope
+    out = []
+    for order, label, p in scope.user_roots():
+        out.append({"order": order, "label": label, "path": str(p)})
+    print(json.dumps(out, ensure_ascii=False))
+    return 0
 
 
 def _start(name, cmd, log):
@@ -89,6 +101,8 @@ def _wait(port, path="/health", secs=120):
 def cmd_serve(a):
     if not Path(a.db).exists():
         print("아직 색인이 없습니다. 먼저:  findr index"); return 1
+    import signal
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # a polite stop still ends the helper servers (atexit)
     dev, gb, _ = models.plan()
     ls = models.llama_server()
     side = []
@@ -123,9 +137,12 @@ def cmd_serve(a):
         except OSError:
             pass
     url = f"http://127.0.0.1:{a.port}"
-    print(f"\nfindr 검색 화면: {url}\n  로그인: 사용자 이름은 아무거나, 비밀번호는 {pw.read_text().strip()}   (비밀번호 파일: {pw})")
-    print(f"  함께 켜진 기능: {', '.join(side) or '기본 검색만'}   |  끝내려면 Ctrl+C")
-    if not a.no_browser:
+    if a.app:   # the desktop app reads the key from the data folder itself; it only needs to know the page is up
+        print("FINDR_APP_READY " + json.dumps({"port": a.port, "features": side}, ensure_ascii=False), flush=True)
+    else:
+        print(f"\nfindr 검색 화면: {url}\n  로그인: 사용자 이름은 아무거나, 비밀번호는 {pw.read_text().strip()}   (비밀번호 파일: {pw})")
+        print(f"  함께 켜진 기능: {', '.join(side) or '기본 검색만'}   |  끝내려면 Ctrl+C")
+    if not a.no_browser and not a.app:
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()
     search.serve(f, a.port)
     return 0
@@ -179,7 +196,9 @@ def main(argv=None):
     s = sub.add_parser("index", help="색인 (폴더를 주지 않으면 PC 전체의 내 파일)"); s.add_argument("paths", nargs="*"); s.set_defaults(fn=cmd_index)
     s = sub.add_parser("serve", help="검색 화면 열기"); s.add_argument("--port", type=int, default=8096)
     s.add_argument("--no-browser", action="store_true"); s.add_argument("--no-photo", action="store_true"); s.add_argument("--no-llm", action="store_true")
+    s.add_argument("--app", action="store_true", help=argparse.SUPPRESS)
     s.set_defaults(fn=cmd_serve)
+    s = sub.add_parser("roots", help="PC 전체 색인 때 볼 폴더 목록 (JSON)"); s.set_defaults(fn=cmd_roots)
     s = sub.add_parser("ask", help="터미널에서 찾기"); s.add_argument("query", nargs="+"); s.add_argument("-k", type=int, default=5); s.set_defaults(fn=cmd_ask)
     s = sub.add_parser("doctor", help="설치 상태 점검"); s.set_defaults(fn=cmd_doctor)
     a = ap.parse_args(argv)

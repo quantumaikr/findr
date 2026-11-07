@@ -15,10 +15,11 @@ dependencies = [
   "torch>=2.4",                 # the installer picks the CUDA / CPU / Apple build
   "torchvision>=0.19",
   # EmbeddingGemma-2 needs a transformers build newer than the last release (5.22.2): pinned to the tested commit
-  "transformers @ git+https://github.com/huggingface/transformers.git@6df64031b9fa0ecebe50161df8ad42ed8d36595c",
+  "transformers @ https://github.com/huggingface/transformers/archive/6df64031b9fa0ecebe50161df8ad42ed8d36595c.zip",   # the tested commit, no git needed
   "sentence-transformers>=5.0",
   "huggingface_hub>=0.30",
   "pypdf>=4.0",
+  "pypdfium2>=4.30",            # fast PDF text on Windows and macOS (Chrome's PDF engine)
   "olefile>=0.46",
   "pillow>=10.0",
   "accelerate>=1.0",

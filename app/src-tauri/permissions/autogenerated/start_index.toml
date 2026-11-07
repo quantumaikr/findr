@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-index"
+description = "Enables the start_index command without any pre-configured scope."
+commands.allow = ["start_index"]
+
+[[permission]]
+identifier = "deny-start-index"
+description = "Denies the start_index command without any pre-configured scope."
+commands.deny = ["start_index"]

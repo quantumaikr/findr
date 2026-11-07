@@ -245,6 +245,27 @@ def priority(path, ext, mtime, now):
     return bonus - age
 
 
+def _read_one(job):
+    s, lim = job
+    try:
+        return extract(Path(s), lim) or ""
+    except Exception:
+        return ""
+
+
+def read_all(jobs):
+    """text of each (path, limit) in order; several worker processes when there is enough to read (FINDR_READ_WORKERS)"""
+    n = int(os.environ.get("FINDR_READ_WORKERS") or max(1, min(8, (os.cpu_count() or 2) - 1)))
+    if n <= 1 or len(jobs) < 16:
+        yield from map(_read_one, jobs); return
+    from concurrent.futures import ProcessPoolExecutor
+    try:
+        with ProcessPoolExecutor(max_workers=n) as ex:
+            yield from ex.map(_read_one, jobs, chunksize=4)   # results come back in the given (priority) order
+    except Exception:   # a platform without working worker processes: read in this process
+        yield from map(_read_one, jobs)
+
+
 def read_wave(con, root, a):
     """read the content of pending files under this root, best first, within this wave's age and size limits"""
     now = time.time(); pre = root.as_posix().rstrip("/") + "/"
@@ -255,10 +276,9 @@ def read_wave(con, root, a):
     if a.limit:
         rows = rows[: a.limit]
     t0 = time.time()
-    for i, (fid, s, ext, mtime, tr) in enumerate(rows):
+    jobs = [(s, 1500 if tr == 2 else DATA_READ if ext in DATA else MAXREAD) for _, s, ext, _, tr in rows]
+    for i, ((fid, s, ext, mtime, tr), txt) in enumerate(zip(rows, read_all(jobs))):
         p = Path(s)
-        lim = 1500 if tr == 2 else DATA_READ if ext in DATA else MAXREAD
-        txt = extract(p, lim)
         cs = chunks(txt)[: (1 if tr == 2 else 2000)] or [""]
         con.execute("DELETE FROM fts WHERE rowid IN (SELECT id FROM chunks WHERE file=? AND n>=0)", (fid,))
         con.execute("DELETE FROM chunks WHERE file=? AND n>=0", (fid,))
@@ -325,8 +345,25 @@ def embed_photos(con, url, bs=16):
 def pdf_text(p, limit):
     """pdftotext when it is installed (Linux; best layout), else pypdf (Windows, macOS: nothing extra to install)"""
     import shutil
-    if shutil.which("pdftotext"):
+    if shutil.which("pdftotext") and os.environ.get("FINDR_PDF") in (None, "", "pdftotext"):
         return subprocess.run(["pdftotext", "-layout", str(p), "-"], capture_output=True, timeout=120).stdout.decode("utf-8", "ignore")[:limit]
+    if os.environ.get("FINDR_PDF") != "pypdf":
+        try:
+            import pypdfium2 as pdfium   # Chrome's PDF engine: much faster than pure-Python parsing
+            doc = pdfium.PdfDocument(str(p)); out, n = [], 0
+            try:
+                for i in range(len(doc)):
+                    pg = doc[i]; tp = pg.get_textpage(); t = tp.get_text_range() or ""; tp.close(); pg.close()
+                    out.append(t); n += len(t)
+                    if n >= limit:
+                        break
+            finally:
+                doc.close()
+            return "\n".join(out)[:limit]
+        except ImportError:
+            pass
+        except Exception:
+            return ""
     try:
         from pypdf import PdfReader
         out, n = [], 0
@@ -360,7 +397,8 @@ def embed(con, model):
     if not isinstance(enc, EG2):
         enc.tok.model_max_length = 512
     rows = con.execute("""SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
-                          WHERE c.emb IS NULL AND f.tier>0 AND COALESCE(f.pending,0)=0 ORDER BY f.mtime DESC""").fetchall()
+                          WHERE c.emb IS NULL AND f.tier>0 AND COALESCE(f.pending,0)=0
+                          ORDER BY (c.n > 1), f.mtime DESC, c.n""").fetchall()   # every file's opening pieces first, newest first
     t0 = time.time()
     for i in range(0, len(rows), 256):
         b = rows[i:i + 256]

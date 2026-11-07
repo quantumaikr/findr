@@ -7,7 +7,7 @@ import os, re
 from pathlib import Path
 
 SYS_TOP = re.compile(r"^(windows|program files|program files \(x86\)|programdata|\$recycle\.bin|system volume information|recovery|perflogs|"
-                     r"msocache|\$windows\.~ws|\$winreagent|\$sysreset|intel|amd|nvidia|drivers|onedrivetemp|config\.msi|users|documents and settings|onedrive|\$windows\.~bt)$", re.I)
+                     r"msocache|inetpub|msi|dell|hp|lenovo|asus|acer|samsung|lg|swsetup|oem|esd|xboxgames|windows\.old|onedrivetemp_|\$windows\.~ws|\$winreagent|\$sysreset|intel|amd|nvidia|drivers|onedrivetemp|config\.msi|users|documents and settings|onedrive|\$windows\.~bt)$", re.I)
 JUNK_DIRS = {"appdata", "node_modules", "site-packages", "dist-packages", ".git", ".svn", ".hg", ".venv", "venv", "__pycache__", ".cache", "cache",
              "caches", "tmp", "temp", ".nuget", ".gradle", ".m2", ".cargo", ".rustup", ".npm", ".pnpm-store", ".idea", ".vscode", "build", "dist",
              "obj", "packages", "wpsystem", ".android", ".conda", "anaconda3", "miniconda3", "steamapps", "$recycle.bin"}
