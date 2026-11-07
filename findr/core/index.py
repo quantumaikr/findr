@@ -105,12 +105,7 @@ def extract(p: Path, limit):
         if ext == ".key":
             return keynote_text(p, limit)
         if ext in (".docx", ".xlsx", ".pptx", ".hwpx"):
-            import zipfile
-            z = zipfile.ZipFile(p); parts = []
-            for n in z.namelist():
-                if n.endswith(".xml") and any(k in n for k in ("word/document", "sharedStrings", "worksheets/", "slides/slide", "Contents/section")):
-                    parts.append(re.sub(r"<[^>]+>", " ", z.read(n).decode("utf-8", "ignore")))
-            return re.sub(r"\s+", " ", " ".join(parts))[:limit]
+            return ooxml_text(p, limit)
         raw = open(p, "rb").read(limit)
         if b"\x00" in raw[:4096]:
             return ""
@@ -239,6 +234,8 @@ def main():
     con.commit()
     print(f"FINDR_SCAN new/changed {new} removed {len(gone)} in {time.time() - t0:.0f}s")
     read_wave(con, root, a)
+    if os.environ.get("FINDR_OCR", "1") != "0":
+        ocr_wave(con, root)
     remask(con)
     if not a.no_embed:
         embed(con, a.model)
@@ -310,6 +307,83 @@ def read_wave(con, root, a):
     print(f"FINDR_READ {len(rows)} files in {time.time() - t0:.0f}s, still pending {left}")
 
 
+SHOTLIKE = re.compile(r"screenshot|screen ?shot|스크린샷|캡처|캡쳐|화면 ?캡|capture|snip|clip|scan|스캔|영수증|receipt", re.I)
+_OCR = None
+
+
+def ocr_reader():
+    """EasyOCR (Korean + English), loaded once; its models live in findr's model folder"""
+    global _OCR
+    if _OCR is None:
+        import easyocr, torch
+        d = Path(os.environ.get("FINDR_MODELS") or (Path.home() / ".findr" / "models")) / "ocr"
+        d.mkdir(parents=True, exist_ok=True)
+        _OCR = easyocr.Reader(["ko", "en"], gpu=torch.cuda.is_available(), model_storage_directory=str(d), verbose=False)
+    return _OCR
+
+
+def ocr_lines(img):
+    """text lines of one image (a path or an RGB array), top to bottom"""
+    try:
+        return [t for t in ocr_reader().readtext(img, detail=0, paragraph=True) if t.strip()]
+    except Exception:
+        return []
+
+
+def ocr_wave(con, root, first_pages=10, deep_pages=50):
+    """scanned PDFs and screenshots now; every photo on a deep run. Each file is read once (files.ocr)."""
+    try:
+        import easyocr  # noqa: F401
+    except ImportError:
+        return
+    if "ocr" not in [r[1] for r in con.execute("PRAGMA table_info(files)")]:
+        con.execute("ALTER TABLE files ADD COLUMN ocr INT DEFAULT 0")
+    deep = int(os.environ.get("FINDR_FIRST_PIECES") or 0) == 0
+    pre = root.as_posix().rstrip("/") + "/"
+    pdfs = [r for r in con.execute("""SELECT f.id, f.path FROM files f WHERE f.ext='.pdf' AND f.tier=1 AND COALESCE(f.ocr,0)=0
+              AND f.path LIKE ? AND (SELECT COALESCE(sum(length(c.text)),0) FROM chunks c WHERE c.file=f.id) < 200
+              ORDER BY f.mtime DESC""", (pre + "%",))]
+    imgs = [(i, s) for i, s, e in con.execute("SELECT id, path, ext FROM files WHERE tier=3 AND COALESCE(ocr,0)=0 AND path LIKE ? AND size < 30000000 "
+                                              "ORDER BY mtime DESC", (pre + "%",)) if (e or "").lower() in PHOTO_EXT and (deep or SHOTLIKE.search(s))]
+    if not pdfs and not imgs:
+        return
+    t0, got, chars = time.time(), 0, 0
+    heif_on()
+    for fid, s in pdfs + imgs:
+        lines = []
+        if s.lower().endswith(".pdf"):
+            try:
+                import numpy as _np, pypdfium2 as pdfium
+                doc = pdfium.PdfDocument(s)
+                for i in range(min(len(doc), deep_pages if deep else first_pages)):
+                    lines += ocr_lines(_np.array(doc[i].render(scale=2).to_pil().convert("RGB")))
+                doc.close()
+            except Exception:
+                pass
+        else:
+            try:
+                from PIL import Image
+                import numpy as _np
+                im = Image.open(s).convert("RGB"); im.thumbnail((2400, 2400))
+                lines = ocr_lines(_np.array(im))
+            except Exception:
+                lines = []
+        txt = "\n".join(lines)
+        if len(re.sub(r"\s", "", txt)) >= 8:   # real text, not a stray mark
+            p_ = Path(s); rel = s[len(root.as_posix()):]
+            con.execute("DELETE FROM fts WHERE rowid IN (SELECT id FROM chunks WHERE file=? AND n>=0)", (fid,))
+            con.execute("DELETE FROM chunks WHERE file=? AND n>=0", (fid,))
+            for n, c in enumerate(chunks(txt)[:2000] or [""]):
+                cid = con.execute("INSERT INTO chunks(file,n,text) VALUES(?,?,?)", (fid, n, c)).lastrowid
+                con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, p_.name, rel, c))
+            got += 1; chars += len(txt)
+        con.execute("UPDATE files SET ocr=1 WHERE id=?", (fid,))
+        if (got + 1) % 50 == 0:
+            con.commit()
+    con.commit()
+    print(f"FINDR_OCR {len(pdfs)} scanned PDFs + {len(imgs)} images read, text found in {got} ({chars:,} chars) {time.time() - t0:.0f}s", flush=True)
+
+
 def remask(con):
     """every run: any stored chunk that still holds a key-like value is masked, re-indexed and re-embedded"""
     hit = 0
@@ -366,6 +440,33 @@ def embed_photos(con, url, bs=16):
                         [(i, base64.b64decode(v), taken_at(p)) for (i, p), v in zip(b, vecs) if v])
         con.commit(); done += sum(1 for v in vecs if v)
     print(f"FINDR_PHOTO {done}/{len(rows)} photos {time.time() - t0:.0f}s")
+
+
+def ooxml_text(p, limit):
+    """Word, Excel, PowerPoint, HWPX: text parts read in pieces, stopping once `limit` characters are in.
+    A large workbook can expand to gigabytes of XML; reading it whole used to take all the memory and time."""
+    import zipfile
+    keys = ("word/document", "sharedStrings", "worksheets/", "slides/slide", "Contents/section")
+    def order(n):   # body first; slides and sections in their own order (slide2 before slide10)
+        m = re.search(r"(\d+)\.xml$", n)
+        return (0 if ("document" in n or "sharedStrings" in n) else 1, n.rsplit("/", 1)[0], int(m.group(1)) if m else 0)
+    z = zipfile.ZipFile(p); out, have = [], 0
+    for n in sorted((n for n in z.namelist() if n.endswith(".xml") and any(k in n for k in keys)), key=order):
+        with z.open(n) as f:
+            tail = ""
+            while have < limit:
+                b = f.read(1 << 20)
+                if not b:
+                    break
+                txt = tail + b.decode("utf-8", "ignore")
+                cut = txt.rfind(">") + 1   # a tag may continue in the next piece
+                tail = txt[cut:]
+                t = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", txt[:cut]))
+                if t.strip():
+                    out.append(t); have += len(t)
+        if have >= limit:
+            break
+    return re.sub(r"\s+", " ", " ".join(out)).strip()[:limit]
 
 
 def _snappy(b):
@@ -471,7 +572,7 @@ def pdf_text(p, limit):
     """pdftotext when it is installed (Linux; best layout), else pypdf (Windows, macOS: nothing extra to install)"""
     import shutil
     if shutil.which("pdftotext") and os.environ.get("FINDR_PDF") in (None, "", "pdftotext"):
-        return subprocess.run(["pdftotext", "-layout", str(p), "-"], capture_output=True, timeout=120).stdout.decode("utf-8", "ignore")[:limit]
+        return subprocess.run(["pdftotext", "-layout", "-l", "500", str(p), "-"], capture_output=True, timeout=120).stdout.decode("utf-8", "ignore")[:limit]
     if os.environ.get("FINDR_PDF") != "pypdf":
         try:
             import pypdfium2 as pdfium   # Chrome's PDF engine: much faster than pure-Python parsing

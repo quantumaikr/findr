@@ -27,7 +27,7 @@ findr is built Korean-first (Korean phrasing, HWP documents, local office conven
 - Indexes the whole PC but skips system, program and cache folders. Desktop and Downloads come first, so search is usable within minutes.
 - Switches to a lighter setup automatically on PCs without a GPU.
 
-Readable formats: PDF, HWP, HWPX, DOC, DOCX, XLSX, PPTX, Keynote, TXT, Markdown, source code and photos (JPG, PNG, WEBP, iPhone HEIC and others). Other files are found by name, folder and date.
+Readable formats: PDF, HWP, HWPX, DOC, DOCX, XLSX, PPTX, Keynote, TXT, Markdown, source code and photos (JPG, PNG, WEBP, iPhone HEIC and others). Text inside scanned PDFs and screenshots is read too (OCR). Other files are found by name, folder and date.
 
 ## Performance
 

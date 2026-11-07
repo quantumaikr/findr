@@ -25,7 +25,7 @@
 - PC 전체를 색인하되 시스템, 프로그램, 캐시 폴더는 건너뜁니다. 바탕화면과 다운로드부터 처리하므로 몇 분 안에 검색을 시작할 수 있습니다.
 - GPU가 없는 PC에서는 가벼운 구성으로 자동 전환합니다.
 
-읽을 수 있는 형식은 PDF, HWP, HWPX, DOC, DOCX, XLSX, PPTX, Keynote, TXT, Markdown, 소스 코드, 사진(JPG, PNG, WEBP, 아이폰 HEIC 등)입니다. 그 밖의 파일은 이름, 폴더, 날짜로 찾습니다.
+읽을 수 있는 형식은 PDF, HWP, HWPX, DOC, DOCX, XLSX, PPTX, Keynote, TXT, Markdown, 소스 코드, 사진(JPG, PNG, WEBP, 아이폰 HEIC 등)입니다. 스캔한 PDF와 스크린샷 속 글자도 읽습니다(글자 인식). 그 밖의 파일은 이름, 폴더, 날짜로 찾습니다.
 
 ## 성능
 

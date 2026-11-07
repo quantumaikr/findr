@@ -54,6 +54,11 @@ def cmd_setup(a):
         raise
     if not a.no_llm:
         models.pull_llama_server(dev)
+    try:   # the text reader for scans and screenshots (about 100 MB, once)
+        import index
+        print("  글자 인식 모델 받는 중 ...", flush=True); index.ocr_reader()
+    except Exception as e:
+        print(f"  글자 인식 모델을 받지 못했습니다 ({type(e).__name__}): 스캔 문서는 이름으로만 찾습니다.")
     print("\n완료. 다음:  findr index   (PC 전체의 내 파일)   →   findr serve")
     return 0
 
