@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="432" font-family="-apple-system, Segoe UI, Apple SD Gothic Neo, Malgun Gothic, Noto Sans KR, sans-serif" viewBox="0 0 1120 432" role="img" aria-label="앱이 색인기와 검색 엔진을 실행하고, 색인기는 index.db에 쓰고, 검색 엔진은 읽어 검색 화면에 답하는 구성"><rect x="0" y="0" width="100%" height="100%" rx="12" fill="#f7f6f2"/>
+<defs>
+<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1d1c1a"/></marker>
+<marker id="arA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2f5d8a"/></marker>
+</defs>
+<!-- app -->
+<rect fill="#ffffff" stroke="#d9d5cc" stroke-width="1.2" x="20" y="30" width="250" height="370" rx="12"/>
+<text font-size="13.5" font-weight="650" fill="#1d1c1a" x="40" y="58">데스크톱 앱 (Tauri)</text>
+<text font-size="11.5" fill="#6b6862" x="40" y="78">Windows · macOS · Linux</text>
+<text font-size="11.5" fill="#1d1c1a" x="40" y="112">• 첫 실행: 이 PC에 맞는 준비</text>
+<text font-size="11.5" fill="#6b6862" x="52" y="130">GPU 확인 → 연산 라이브러리 → 모델</text>
+<text font-size="11.5" fill="#1d1c1a" x="40" y="158">• 폴더 고르기 · 첫 색인 화면</text>
+<text font-size="11.5" fill="#6b6862" x="52" y="176">지금 할 수 있는 것 · 멈추기</text>
+<text font-size="11.5" fill="#1d1c1a" x="40" y="204">• 쉬는 시간 작업 (전원 연결 시)</text>
+<text font-size="11.5" fill="#6b6862" x="52" y="222">매시간: 바뀐 파일</text>
+<text font-size="11.5" fill="#6b6862" x="52" y="240">6시간마다: 깊은 계산</text>
+<text font-size="11.5" fill="#6b6862" x="52" y="258">입력 없음 5분: 큰 모델로 전환</text>
+<text font-size="11.5" fill="#1d1c1a" x="40" y="286">• 파일 열기 · 폴더 보기</text>
+<text font-size="11.5" fill="#1d1c1a" x="40" y="314">• 설정 · 데이터 폴더</text>
+<text font-size="11.5" fill="#6b6862" x="40" y="372">낮은 우선순위, 코어 절반만</text>
+<!-- indexer -->
+<rect fill="#e7eef6" stroke="#2f5d8a" stroke-width="1.4" x="340" y="30" width="230" height="160" rx="12"/>
+<text font-size="13.5" font-weight="650" fill="#1d1c1a" x="360" y="58">색인기</text>
+<text font-size="11.5" fill="#6b6862" x="360" y="78">파일을 읽어 색인에 씀</text>
+<text font-size="11.5" fill="#1d1c1a" x="360" y="108">이름 → 이름 뜻 → 내용</text>
+<text font-size="11.5" fill="#1d1c1a" x="360" y="128">→ 뜻 → 스캔 글자</text>
+<text font-size="11.5" fill="#6b6862" x="360" y="156">형식별 리더 · 글자 인식</text>
+<text font-size="11.5" fill="#6b6862" x="360" y="174">진행: progress.json</text>
+<!-- store -->
+<rect fill="#ffffff" stroke="#d9d5cc" stroke-width="1.2" x="340" y="240" width="230" height="160" rx="12"/>
+<text font-size="13.5" font-weight="650" fill="#1d1c1a" x="360" y="268">색인 저장소 (index.db)</text>
+<text font-size="11.5" fill="#6b6862" x="360" y="288">SQLite · 데이터 폴더</text>
+<text font-size="11.5" fill="#1d1c1a" x="360" y="316">files: 파일 · 이름 · 날짜</text>
+<text font-size="11.5" fill="#1d1c1a" x="360" y="336">chunks: 조각 글 + 뜻 벡터</text>
+<text font-size="11.5" fill="#1d1c1a" x="360" y="356">fts: 3글자 단어 색인</text>
+<text font-size="11.5" fill="#1d1c1a" x="360" y="376">meta · 사진 벡터</text>
+<!-- engine -->
+<rect fill="#e7eef6" stroke="#2f5d8a" stroke-width="1.4" x="640" y="30" width="270" height="370" rx="12"/>
+<text font-size="13.5" font-weight="650" fill="#1d1c1a" x="660" y="58">검색 엔진</text>
+<text font-size="11.5" fill="#6b6862" x="660" y="78">127.0.0.1 전용 · 비밀번호 쿠키</text>
+<text font-size="11.5" fill="#1d1c1a" x="660" y="108">질문 이해 · 후보 모으기</text>
+<text font-size="11.5" fill="#1d1c1a" x="660" y="128">다시 순위 · 확률 · 없음 판단</text>
+<rect fill="#ffffff" stroke="#d9d5cc" stroke-width="1.2" x="660" y="150" width="230" height="44" rx="8"/>
+<text font-size="11.5" fill="#1d1c1a" x="672" y="170">질문 이해 모델</text>
+<text font-size="11.5" fill="#6b6862" x="672" y="186">기억 단서·날짜 읽기</text>
+<rect fill="#ffffff" stroke="#d9d5cc" stroke-width="1.2" x="660" y="202" width="230" height="44" rx="8"/>
+<text font-size="11.5" fill="#1d1c1a" x="672" y="222">나란히 비교 모델</text>
+<text font-size="11.5" fill="#6b6862" x="672" y="238">NVIDIA 6GB+ · 맥 24GB+</text>
+<rect fill="#ffffff" stroke="#d9d5cc" stroke-width="1.2" x="660" y="254" width="230" height="44" rx="8"/>
+<text font-size="11.5" fill="#1d1c1a" x="672" y="274">사진 내용 모델</text>
+<text font-size="11.5" fill="#6b6862" x="672" y="290">NVIDIA 10GB+</text>
+<text font-size="11.5" fill="#6b6862" x="660" y="324">도우미 서버</text>
+<text font-size="11.5" fill="#6b6862" x="660" y="342">PC 사양에 맞는 것만 켬</text>
+<!-- page -->
+<rect fill="#ffffff" stroke="#d9d5cc" stroke-width="1.2" x="960" y="30" width="140" height="160" rx="12"/>
+<text font-size="13.5" font-weight="650" fill="#1d1c1a" x="976" y="58">검색 화면</text>
+<text font-size="11.5" fill="#6b6862" x="976" y="78">앱 창 · 브라우저</text>
+<text font-size="11.5" fill="#1d1c1a" x="976" y="108">결과 · 확률</text>
+<text font-size="11.5" fill="#1d1c1a" x="976" y="128">맞음 / 아님</text>
+<text font-size="11.5" fill="#1d1c1a" x="976" y="148">진행 표시</text>
+<text font-size="11.5" fill="#1d1c1a" x="976" y="168">멈추기</text>
+<!-- learned -->
+<rect fill="#ffffff" stroke="#d9d5cc" stroke-width="1.2" x="960" y="240" width="140" height="160" rx="12"/>
+<text font-size="13.5" font-weight="650" fill="#1d1c1a" x="976" y="268">배운 것</text>
+<text font-size="11.5" fill="#6b6862" x="976" y="288">데이터 폴더</text>
+<text font-size="11.5" fill="#1d1c1a" x="976" y="318">고른 파일</text>
+<text font-size="11.5" fill="#1d1c1a" x="976" y="338">'아님' 표시</text>
+<text font-size="11.5" fill="#1d1c1a" x="976" y="358">질문 기록</text>
+<!-- arrows -->
+<line stroke="#1d1c1a" stroke-width="1.3" fill="none" x1="270" y1="110" x2="338" y2="110" marker-end="url(#ar)"/><text font-size="11" fill="#6b6862" x="276" y="102">실행 · 멈춤</text>
+<line stroke="#2f5d8a" stroke-width="1.6" fill="none" x1="455" y1="190" x2="455" y2="238" marker-end="url(#arA)"/><text font-size="11" fill="#2f5d8a" font-weight="600" x="463" y="219">쓰기</text>
+<line stroke="#2f5d8a" stroke-width="1.6" fill="none" x1="570" y1="320" x2="638" y2="320" marker-end="url(#arA)"/><text font-size="11" fill="#2f5d8a" font-weight="600" x="576" y="312">읽기</text>
+<line stroke="#1d1c1a" stroke-width="1.3" fill="none" x1="570" y1="150" x2="638" y2="150" marker-end="url(#ar)"/><text font-size="11" fill="#6b6862" x="574" y="142">진행 상태</text>
+<path stroke="#1d1c1a" stroke-width="1.3" fill="none" d="M145,400 L145,418 L775,418 L775,402" marker-end="url(#ar)"/><text font-size="11" fill="#6b6862" x="420" y="412">엔진 켜기 · 끄기</text>
+<line stroke="#2f5d8a" stroke-width="1.6" fill="none" x1="910" y1="100" x2="958" y2="100" marker-end="url(#arA)" marker-start="url(#arA)"/><text font-size="11" fill="#2f5d8a" font-weight="600" x="914" y="92">/api</text>
+<text font-size="11" fill="#6b6862" x="914" y="120">/refine</text>
+<text font-size="11" fill="#6b6862" x="914" y="136">/progress</text>
+<line stroke="#1d1c1a" stroke-width="1.3" fill="none" x1="910" y1="320" x2="958" y2="320" marker-end="url(#ar)" marker-start="url(#ar)"/><text font-size="11" fill="#6b6862" x="914" y="312">적용·기록</text>
+</svg>
