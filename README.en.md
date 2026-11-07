@@ -1,138 +1,101 @@
-<p align="center">
-  <img src="assets/logo.svg" width="88" alt="findr">
-</p>
+# findr
 
-<h1 align="center">findr</h1>
+A search tool that finds files on your PC from what you remember about them. Everything runs on your own computer.
 
-<p align="center">
-  <b>Ask your PC the way you remember.</b><br>
-  Natural-language file and photo search that runs entirely on your own computer
-</p>
+[한국어](README.md)
 
-<p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.2.0-2563eb">
-  <img alt="status" src="https://img.shields.io/badge/status-private%20preview-f59e0b">
-  <img alt="platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-475569">
-  <img alt="privacy" src="https://img.shields.io/badge/data-stays%20on%20your%20PC-16a34a">
-  <img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-64748b">
-</p>
+This is the 0.2 private preview.
 
-<p align="center">
-  <a href="README.md">한국어</a> · <b>English</b>
-</p>
+## Why
 
----
+People rarely remember file names. They remember what happened around a file: the quote a supplier sent last month, the beach photos from last summer, the draft right before the final one. findr takes questions like these as they are and lists candidates in order of how likely each one is to be the file you mean. If nothing fits, it says so and still shows the closest candidates.
 
-## Overview
+findr is built Korean-first (Korean phrasing, HWP documents, local office conventions) and also handles English names and text.
 
-When we look for a file, we rarely remember its name. We remember **what happened**: "the quote the supplier sent last month",
-"the beach photos from last summer", "not the final version, the one right before it".
-findr understands requests like these, finds the files on your PC, and lists them **ordered by how likely each one is to be the one you want**.
-When nothing really matches, it **says so** instead of handing you the wrong file.
-
-findr is designed Korean-first (Korean phrasing, HWP documents, Korean office conventions) and also handles English file names and text.
-
-```text
-(example)
-> 작년 여름 휴가 때 찍은 바다 사진        ("beach photos from last summer's vacation")
-  1. 92%  IMG_5082.jpg     2025-08-12   photo content matches
-  2. 71%  IMG_5090.jpg     2025-08-13   photo content matches
-  3. 38%  KakaoTalk_...jpg 2025-08-20   photo content partly matches
+```
+> 작년 여름 휴가 때 찍은 바다 사진      (beach photos from last summer's vacation)
+  1  92%  IMG_5082.jpg      2025-08-12
+  2  71%  IMG_5090.jpg      2025-08-13
+  3  38%  KakaoTalk_...jpg  2025-08-20
 ```
 
-## Features
+## What it does
 
-| | |
-|---|---|
-| 🗣️ **Ask as you remember** | Understands content, time, people and actions together: "last August", "during winter break", "edited before the meeting", "the one Mr. Kim sent" |
-| 🖼️ **Photos by what is in them** | "a cat lying on a laptop", "two people holding a cake", narrowed by the date the photo was taken |
-| 🎯 **Odds and reasons** | Every candidate shows how likely it is to be right and why; candidates stay available across pages, and you make the final call |
-| 🧠 **Learns you** | Remembers what you picked and what you marked "✘ not this", so results fit you better over time. You can review and erase what it learned |
-| 🙅 **Says "not here"** | If no file fits what you remember, it tells you, and still shows the closest candidates |
-| 🗂️ **Your files, whole PC** | Skips system, program and cache folders and indexes only what people create or receive, starting with Desktop and Downloads, so you can search within minutes |
-| 🔒 **Everything stays local** | File contents and questions never leave your PC. The search page is password-protected |
-| 💻 **No GPU required** | Picks the right setup for your hardware automatically |
+- Reads content, time, people and actions in a question together, including phrases such as "last August", "during winter break", "edited before the meeting" or "the one Mr. Kim sent".
+- Finds photos by what is in them ("a cat lying on a laptop") and narrows them by the date they were taken. Requires a GPU.
+- Shows how likely each candidate is and why. You make the final choice; findr remembers what you picked and what you marked as wrong, and uses it next time. You can review and erase what it has learned.
+- Indexes the whole PC but skips system, program and cache folders. Desktop and Downloads come first, so search is usable within minutes.
+- Switches to a lighter setup automatically on PCs without a GPU.
 
-Supported formats: PDF · HWP · HWPX · DOC · DOCX · XLSX · PPTX · TXT · Markdown · source code · photos (JPG · PNG · WEBP, …). Other files are found by name, folder and date.
+Readable formats: PDF, HWP, HWPX, DOC, DOCX, XLSX, PPTX, TXT, Markdown, source code and photos (JPG, PNG, WEBP and others). Other files are found by name, folder and date.
 
 ## Performance
 
-| Measurement | Result |
-|---|---|
-| 6 unseen synthetic PCs, 288 questions (ordinary PCs with no activity history) | **76% top-1**, 90% top-3 |
-| A real personal PC, 45 unseen questions | **84% top-1** |
-| Photo search (240 unseen photos mixed with documents) | **85% top-1**; document results unchanged with photo search on |
-| Response time (GPU PC) | about 0.3 s median |
-| First index (PC with 2,100 documents, GPU) | names searchable in ~1 min, contents in ~2.5 min |
+Measured during development on questions that were never used for tuning. Results depend on the PC and its files.
 
-> Development measurements; results vary with hardware and files. All numbers come from questions that were never used for tuning.
+| Condition | Result |
+|---|---|
+| 6 unseen synthetic PCs, 288 questions, no activity history | 76% top-1, 90% top-3 |
+| A real personal PC, 45 unseen questions | 84% top-1 |
+| 240 photos mixed with documents, 47 photo questions | 85% top-1 (document results unchanged) |
+| Response time on a GPU PC | about 0.3 s median |
+| First index, 2,100 documents, GPU PC | names searchable after ~1 min, contents after ~2.5 min |
 
 ## Installation
 
-**Requirements:** git, an internet connection (first install only), about 10 GB of free disk space. The installer sets up Python by itself.
+You need git and about 10 GB of free disk space. The installer sets up its own Python, so there is no need to install one first. The internet is used only to download models on the first run.
 
-<details open>
-<summary><b>Windows</b></summary>
+Windows (PowerShell):
 
 ```powershell
 git clone https://github.com/quantumaikr/findr
 cd findr
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
-</details>
 
-<details>
-<summary><b>macOS · Linux</b></summary>
+macOS, Linux:
 
 ```bash
 git clone https://github.com/quantumaikr/findr && cd findr
 bash install.sh
 ```
-</details>
 
-The installer creates a dedicated Python environment, detects your GPU, and downloads the matching setup and models. No sign-in is needed.
+The script creates a dedicated Python environment, checks for a GPU and downloads the matching models. No sign-in is required.
 
 ## Usage
 
-```bash
-findr index          # index your own files across the PC (first run; later runs pick up changes only)
-findr serve          # search page → http://127.0.0.1:8096
+Run `.\findr` on Windows or `./findr.sh` on macOS and Linux, from the repository folder.
+
+```
+findr index                        index your own files across the PC (later runs pick up changes only)
+findr index D:\docs E:\photos      index only these folders
+findr serve                        open the search page (http://127.0.0.1:8096)
+findr ask "report I edited last week"   search from the terminal
+findr setup                        re-download models or change the setup (--lite, --photo)
+findr doctor                       check the installation and the index
 ```
 
-| Command | What it does |
-|---|---|
-| `findr index` | Index your files across the PC. You can search while it runs |
-| `findr index D:\docs E:\photos` | Index only the folders you choose |
-| `findr serve` | Open the search page. The first run creates a password and shows it |
-| `findr ask "report I edited last week"` | Search straight from the terminal |
-| `findr setup` | Re-download models or change the setup (`--lite`, `--photo`) |
-| `findr doctor` | Check the installation and index |
+You can search while indexing is still running. The search page is password-protected; `findr serve` creates a password on its first run and prints it. Any user name works.
 
-> Run it as `.\findr` (Windows) or `./findr.sh` (macOS · Linux) from the repository folder.
-
-## Setup by hardware
+## Differences by hardware
 
 | | NVIDIA GPU | Apple silicon Mac | No GPU |
-|---|:---:|:---:|:---:|
-| Content (meaning) search | ● high accuracy | ● high accuracy | ● lightweight |
-| Side-by-side candidate check | ● | ● | – |
-| Photo content search | ● (10 GB+ GPU memory) | name & date | name & date |
-| Model download | ~5 GB (+7 GB for photos) | ~5 GB | ~2 GB |
+|---|---|---|---|
+| Content search | high accuracy | high accuracy | lightweight |
+| Candidate comparison step | on | on | skipped |
+| Photo content search | on (10 GB+ GPU memory) | name and date only | name and date only |
+| Model download | about 5 GB, about 12 GB with photos | about 5 GB | about 2 GB |
 
-## Privacy and data
+## Data and privacy
 
-- File contents, questions and search history **never leave your PC**. The internet is used only to download models during setup.
-- Everything findr creates lives in one folder: `%LOCALAPPDATA%\findr` on Windows, `~/.findr` on macOS and Linux. Delete it and findr leaves nothing behind.
-- Files are **only read, never changed**. Sensitive files such as passwords, keys and certificates are not indexed.
-- On a shared PC, only the **current user's folders** are indexed.
+File contents, questions and search history are never sent off the PC. Everything findr creates is kept in one folder, `%LOCALAPPDATA%\findr` on Windows and `~/.findr` on macOS and Linux; deleting it removes all of it. Searched files are only read, never modified. Passwords, certificates and key files are not indexed. On a shared PC only the signed-in user's folders are indexed.
 
 ## Known limitations
 
-- History such as "who sent it" or "when it was printed" can be checked only when the PC keeps such records. Without them, findr searches by content and tells you so.
-- With thousands of photos, a broad request like "donut photo" can match many pictures. Adding a time ("last spring") makes it much more precise.
-- On PCs without a GPU, the precise comparison step is slower and answers may take 1–2 seconds.
+- History such as who sent a file or when it was printed can only be checked if the PC keeps such records. Without them findr searches by content and notes that the history could not be confirmed.
+- With thousands of photos, a broad request such as "donut photo" can match many pictures. Adding a time ("last spring") makes results much more precise.
+- On PCs without a GPU the precise re-comparison step is slower, so answers can take 1–2 seconds.
 
 ## License
 
-Apache License 2.0. Downloaded models follow the licenses of their publishers.
-Please report security issues privately as described in [SECURITY.md](SECURITY.md). Changes are listed in the [CHANGELOG](CHANGELOG.md).
+Apache License 2.0. Models downloaded during setup follow their publishers' licenses. Report security issues as described in [SECURITY.md](SECURITY.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
