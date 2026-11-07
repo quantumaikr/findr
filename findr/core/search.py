@@ -370,7 +370,7 @@ class Finder:
         import unicodedata as _ud
         self.con.create_function("nfc", 1, lambda s: _ud.normalize("NFC", s) if s else s, deterministic=True)
         self.con.execute("CREATE TABLE IF NOT EXISTS cards(file INTEGER PRIMARY KEY, outline TEXT, summary TEXT, done INT DEFAULT 0)")
-        self._dv = self.con.execute("PRAGMA data_version").fetchone()[0]   # read before loading: a commit during the load is still seen
+        self._dv = self.con.execute("PRAGMA data_version").fetchone()[0]   # read before loading: a commit during the load is still seen (#21)
         rows = self.con.execute("SELECT c.id, c.emb FROM chunks c WHERE c.emb IS NOT NULL").fetchall()
         self.ids = np.array([r[0] for r in rows], dtype=np.int64)   # a fresh index may have no vectors yet (words only)
         self.M = np.stack([np.frombuffer(r[1], np.float16) for r in rows]).astype(np.float32) if rows else np.zeros((0, 1024), np.float32)
@@ -397,7 +397,7 @@ class Finder:
         self._seen_at = now
         dv = self.con.execute("PRAGMA data_version").fetchone()[0]   # changes only when another connection (the indexer) commits
         if dv == getattr(self, "_dv", None):
-            return   # nothing new: skip the count below, a full scan of chunks (~25 s on a 5 GB index, every minute)
+            return   # nothing new: skip the count below, a full scan of chunks (~25 s on a 5 GB index, every minute) (#21)
         self._dv = dv
         n = self.con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL").fetchone()[0]
         top = self.con.execute("SELECT max(id) FROM chunks").fetchone()[0] or 0

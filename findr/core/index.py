@@ -418,19 +418,72 @@ _OCR = None
 OCR_SIDE = int(os.environ.get("FINDR_OCR_SIDE") or 2400)   # longest side of a page image given to OCR (pixels)
 
 
+_ENGINE = None
+
+
 def ocr_engine():
-    """'vision' (macOS built-in, Korean in accurate mode) or 'easyocr'. FINDR_OCR_ENGINE overrides.
-    On an M3, 6 Korean slide pages: Vision 0.6 s/page, EasyOCR on the Apple GPU 4.3 s, on the CPU 22.8 s; Vision also misread less."""
+    """the text recognizer for this system: 'vision' (macOS built-in, Korean in accurate mode), 'windows' (Windows' own OCR,
+    when its Korean recognizer is installed), else 'easyocr' (NVIDIA or Apple GPU, or the CPU). FINDR_OCR_ENGINE overrides.
+    On an M3, 6 Korean slide pages: Vision 0.6 s/page, EasyOCR on the Apple GPU 4.3 s, on the CPU 22.8 s; Vision also misread less.
+    On 12 synthetic Korean/English A4 pages, 4 CPU cores: EasyOCR 96% of characters at 14.6 s/page."""
+    global _ENGINE
+    if _ENGINE:
+        return _ENGINE
     want = (os.environ.get("FINDR_OCR_ENGINE") or "").lower()
-    if want in ("vision", "easyocr"):
-        return want
+    if want in ("vision", "windows", "easyocr"):
+        _ENGINE = want; return want
+    _ENGINE = "easyocr"
     if sys.platform == "darwin":
         try:
             import Vision  # noqa: F401  (pyobjc-framework-Vision)
-            return "vision"
+            _ENGINE = "vision"
         except ImportError:
             pass
-    return "easyocr"
+    elif sys.platform == "win32" and _windows_ocr() is not None:
+        _ENGINE = "windows"
+    return _ENGINE
+
+
+_WIN = []
+
+
+def _windows_ocr():
+    """Windows' own recognizer for Korean (Windows 10/11 with the Korean OCR feature; Korean Windows has it), or None.
+    Without it: Settings > Time & language > Language > Korean > Optional features, or
+    Add-WindowsCapability -Online -Name "Language.OCR~~~ko-KR~0.0.1.0" (administrator)."""
+    if not _WIN:
+        eng = None
+        try:
+            from winrt.windows.globalization import Language
+            from winrt.windows.media.ocr import OcrEngine
+            eng = OcrEngine.try_create_from_language(Language("ko")) if OcrEngine.is_language_supported(Language("ko")) else None
+        except Exception:
+            eng = None
+        _WIN.append(eng)
+    return _WIN[0]
+
+
+def _windows_lines(img):
+    """Windows OCR (Korean recognizer; it also reads Latin letters and digits), lines top to bottom"""
+    import asyncio
+    import numpy as np
+    from PIL import Image
+    from winrt.windows.graphics.imaging import BitmapPixelFormat, SoftwareBitmap
+    from winrt.windows.storage.streams import DataWriter
+    eng = _windows_ocr()
+    im = Image.fromarray(img) if not isinstance(img, (str, Path)) else Image.open(img)
+    im = im.convert("RGB")
+    side = max(1, int(getattr(eng, "max_image_dimension", 0) or 2600))   # larger images are refused
+    if max(im.size) > side:
+        im.thumbnail((side, side))
+    a = np.asarray(im.convert("RGBA"))[..., [2, 1, 0, 3]].copy()   # BGRA, as the recognizer takes it
+    w = DataWriter(); w.write_bytes(a.tobytes())
+    bmp = SoftwareBitmap.create_copy_from_buffer(w.detach_buffer(), BitmapPixelFormat.BGRA8, im.width, im.height)
+
+    async def go():
+        return await eng.recognize_async(bmp)
+    res = asyncio.run(go())
+    return [ln.text for ln in res.lines if ln.text.strip()]
 
 
 def ocr_reader():
@@ -476,8 +529,10 @@ def ocr_lines(img):
     try:
         if ocr_engine() == "vision":
             return _vision_lines(img)
+        if ocr_engine() == "windows":
+            return _windows_lines(img)
     except Exception:
-        pass   # Vision failed on this image: EasyOCR below
+        pass   # the system recognizer failed on this image: EasyOCR below
     try:
         return [t for t in ocr_reader().readtext(img, detail=0, paragraph=True) if t.strip()]
     except Exception:
@@ -531,7 +586,7 @@ def ocr_wave(con, root, first_pages=None, deep_pages=50):
     First pass: the first OCR_FIRST_PAGES pages of a PDF (files.ocr = 3 when pages are left); a deep run reads the rest.
     A copy of a file already read gets that file's text instead of a second OCR."""
     first_pages = first_pages or OCR_FIRST_PAGES
-    if ocr_engine() != "vision":
+    if ocr_engine() == "easyocr":
         try:
             import easyocr  # noqa: F401
         except ImportError:

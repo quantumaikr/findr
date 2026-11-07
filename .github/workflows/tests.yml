@@ -36,6 +36,13 @@ jobs:
           fi
           uv pip install --python .venv -e . pytest
 
+      - name: Windows Korean text recognition (as on Korean Windows; findr then uses Windows' own OCR)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Add-WindowsCapability -Online -Name "Language.OCR~~~ko-KR~0.0.1.0" | Out-Null
+          Get-WindowsCapability -Online -Name "Language.OCR~~~ko-KR*" | Select-Object Name, State
+
       - name: Model cache
         uses: actions/cache@v4
         with:
@@ -46,4 +53,4 @@ jobs:
         shell: bash
         run: |
           PY=.venv/bin/python; [ -f .venv/Scripts/python.exe ] && PY=.venv/Scripts/python.exe
-          "$PY" -m pytest -q -rs tests
+          "$PY" -m pytest -q -rs -s tests
