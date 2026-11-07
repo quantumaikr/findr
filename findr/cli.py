@@ -170,8 +170,9 @@ def cmd_serve(a):
         except OSError:
             pass
     url = f"http://127.0.0.1:{a.port}"
-    if a.app:   # the desktop app reads the key from the data folder itself; it only needs to know the page is up
-        print("FINDR_APP_READY " + json.dumps({"port": a.port, "features": side}, ensure_ascii=False), flush=True)
+    if a.app:   # the desktop app reads the key from the data folder itself; it only needs to know the page is up.
+        # said by the engine once its socket accepts connections (said earlier, a slow PC showed an empty page)
+        os.environ["FINDR_READY_LINE"] = "FINDR_APP_READY " + json.dumps({"port": a.port, "features": side}, ensure_ascii=False)
     else:
         print(f"\nfindr 검색 화면: {url}\n  로그인: 사용자 이름은 아무거나, 비밀번호는 {pw.read_text().strip()}   (비밀번호 파일: {pw})")
         print(f"  함께 켜진 기능: {', '.join(side) or '기본 검색만'}   |  끝내려면 Ctrl+C")

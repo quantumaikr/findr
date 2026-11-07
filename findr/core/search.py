@@ -1575,7 +1575,10 @@ def serve(f, port):
         pf.write_text(secrets.token_urlsafe(12)); pf.chmod(0o600)
     PASSWORD = pf.read_text().strip()
     print(f"FINDR_SERVE http://localhost:{port}", flush=True)
-    ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), H)
+    if os.environ.get("FINDR_READY_LINE"):
+        print(os.environ["FINDR_READY_LINE"], flush=True)
+    httpd.serve_forever()
 
 
 def main():
