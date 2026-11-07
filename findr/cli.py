@@ -199,9 +199,9 @@ def cmd_roots(a):
     return 0
 
 
-def _start(name, cmd, log):
+def _start(name, cmd, log, env=None):
     f = open(paths.LOGS / log, "w")
-    p = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+    p = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env)
     atexit.register(lambda: p.poll() is None and p.terminate())
     return p
 
@@ -227,11 +227,11 @@ def cmd_serve(a):
     qu = sorted((paths.MODELS / "qu").glob("*.gguf"))
     if ls and qu and not a.no_llm:
         _start("qu", [ls, "-m", str(qu[0]), "--port", str(PORTS["qu"]), "--host", "127.0.0.1", "-ngl", "99", "-np", "4", "-c", "4096",
-                      "--temp", "0", "--cache-ram", "512"], "qu_server.log"); side.append("질문 이해")
+                      "--temp", "0", "--cache-ram", "512"], "qu_server.log", models.llama_env()); side.append("질문 이해")
     ck = sorted((paths.MODELS / "checker").glob("*.gguf"))
     if ls and ck and models.checker_ok(dev, gb) and not a.no_llm:
         _start("checker", [ls, "-m", str(ck[0]), "--jinja", "-ngl", "99", "-c", "16384", "-np", "4", "--port", str(PORTS["checker"]),
-                           "--host", "127.0.0.1", "--no-webui"], "checker.log"); side.append("나란히 비교")
+                           "--host", "127.0.0.1", "--no-webui"], "checker.log", models.llama_env()); side.append("나란히 비교")
     else:   # no checker on this PC (or downloaded earlier on a 16 GB Mac): the page skips its second pass
         os.environ.setdefault("FINDR_REFINE", "off")
     photo_url = ""
@@ -344,6 +344,13 @@ def cmd_doctor(a):
         ox = (paths.MODELS / "rank" / "model_int8.onnx").exists()
         print(f"  {'✓' if ox or (paths.MODELS / 'rank' / 'model.safetensors').exists() else '✗'} 재정렬: {'가벼운 8비트 (CPU용)' if ox else '전체 정밀도'}")
     print(f"  {'✓' if models.llama_server() else '✗'} llama-server (없으면 질문을 규칙으로 읽음)")
+    if dev == "cuda" and models.llama_server():   # a CUDA build that finds no GPU still runs, ~5x slower, and says nothing
+        try:
+            out = subprocess.run([models.llama_server(), "--list-devices"], capture_output=True, text=True, timeout=60, env=models.llama_env()).stdout
+        except Exception:
+            out = ""
+        gpu = "CUDA" in out
+        print(f"  {'✓' if gpu else '✗'} llama-server 장치: {'GPU' if gpu else 'CPU (GPU를 못 찾음: 질문 이해가 느려짐)'}")
     miss = _missing_deps()
     if miss:   # #31: an update by `git pull` does not install what was added since
         print(f"  ✗ 빠진 구성 요소 {len(miss)}개: {', '.join(miss)}")
