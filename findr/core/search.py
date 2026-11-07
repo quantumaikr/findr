@@ -593,6 +593,27 @@ class Finder:
                  "kind": {1: "문서·코드", 2: "라이브러리", 3: "이름만"}.get(r[4], ""), "snippet": (r[6] or "")[:160], "score": 0, "fid": r[5]}
                 for f in fids for r in [rows.get(f)] if r]
 
+    def version_first(self, q, res, cap=50, latest=False):
+        """version_pick over the whole family, not only the versions that happened to be among the candidates
+        (v2..v7 in one folder, but only v3 and v4 retrieved: '바로 전 판' must be v6)"""
+        n0 = len(res)
+        words = [w for w in re.findall(r"[0-9A-Za-z가-힣_]{2,}", q) if w not in _QSTOP]
+        if words:   # the question names the document (H3Lab 기술사업계획서): files whose names hold every word, even if not retrieved
+            have = {x.get("fid") for x in res}
+            sql = "SELECT id FROM files WHERE tier IN (1,3) AND " + " AND ".join(["nfc(name) LIKE ?"] * len(words)) + " LIMIT 50"
+            named = [fid for (fid,) in self.con.execute(sql, [f"%{w}%" for w in words]) if fid not in have]
+            res = res + self.files_out(named)
+        key = version_family(q, res, top=len(res))
+        if key is None:
+            return res[:n0]
+        folder, _ = key
+        have = {x.get("fid") for x in res}
+        pre = folder.rstrip("/") + "/"
+        sib = [fid for fid, path in self.con.execute("SELECT id, path FROM files WHERE nfc(path) LIKE ?", (pre + "%",))
+               if fid not in have and family({"path": path}) == key]   # family() compares the folder too
+        res = res + self.files_out(sib[:cap])
+        return version_pick(q, res, top=len(res), key=key, latest=latest)[:n0]   # as many results as before: the family goes first
+
     def recent(self, p, k, t0):
         cond, args = ["f.tier IN (1,3)"], []
         if p["exts"]:
@@ -800,8 +821,6 @@ class Finder:
                             r["hard_none"] = ecs[0]["text"]
                     elif ecs:   # (nothing left after dropping a soft date: no history judgement)
                         r["hard_none"] = ecs[0]["text"]
-            if rer == "ce" and OLDQ.search(q):
-                r["results"] = older_sibling_first(r["results"])
             if rer == "ce":
                 lit = self.literal_files(p.get("text") or q)
                 if lit:
@@ -809,6 +828,13 @@ class Finder:
                     extra = [f_ for f_ in lit if f_ not in {x["fid"] for x in have}][:max(0, k - len(have))]
                     rest_ = [x for x in r["results"] if x["fid"] not in lit]
                     r["results"] = (have + self.files_out(extra) + rest_)[:k]; r["literal"] = len(lit)
+                # version questions last: a page that quotes the question ('…최종본이 아닙니다') must not undo the version choice
+                if PREVQ.search(q):   # "최종본 말고 그 직전 판": the version right before the latest
+                    r["results"] = self.version_first(q, r["results"])
+                elif LATESTQ.search(q):   # "H3Lab 기술사업계획서 최종본": the newest version of the named document
+                    r["results"] = self.version_first(q, r["results"], latest=True)
+                elif OLDQ.search(q):
+                    r["results"] = older_sibling_first(r["results"])
                 ces = sorted((x.get("ce") or 0 for x in r["results"]), reverse=True) + [0, 0]
                 unchecked = bool(r.get("_cq")) and not r.get("episodic_ok") and not r.get("hard_none") and not r.get("agree")
                 gate_text = r["_cq"] if (unchecked and os.environ.get("GATE_CONTENT", "0") == "1") else (p.get("text") or q)
@@ -1001,7 +1027,8 @@ VERTAG = re.compile(r"(v\d+|ver\d+|old|new|final|최종|초안|수정|코멘트�
 
 def family(x):
     """folder + name without version marks: ch3_v2_코멘트반영.tex and ch3_v3.tex are one family"""
-    path = x["path"].replace("\\", "/"); name = re.sub(r"\.[^.]+$", "", path.rsplit("/", 1)[-1].lower())
+    import unicodedata as _ud   # macOS indexes made before #12 hold decomposed (NFD) names; questions are NFC
+    path = _ud.normalize("NFC", x["path"].replace("\\", "/")); name = re.sub(r"\.[^.]+$", "", path.rsplit("/", 1)[-1].lower())
     return path.rsplit("/", 1)[0], re.sub(r"[_\-\s.]+", "", VERTAG.sub("", name))
 
 
@@ -1015,6 +1042,62 @@ def older_sibling_first(res):
         return res
     j = min(sib, key=lambda i: res[i].get("date") or "")
     return [res[j]] + [x for i, x in enumerate(res) if i != j]
+
+
+# "the one right before the latest": 최종본 말고 그 직전 판, 마지막 거 바로 전, 직전 버전
+LATESTQ = re.compile(r"최종\s*(?:본|판|버전)|최신\s*(?:본|판|버전)|마지막\s*(?:본|판|버전)|final", re.I)   # 'the newest one' (unless PREVQ)
+PREVQ = re.compile(r"직전|바로\s*(?:앞|전)|(?:최종|마지막|최신)\S*\s*(?:말고|빼고|아닌|이전|전)", re.I)
+_VERNUM = re.compile(r"(?:^|[_\-\s.(])v(?:er)?\s*(\d+)|\((\d+)\)", re.I)
+_QSTOP = {"최종본", "최종", "말고", "빼고", "직전", "그", "판", "버전", "바로", "전", "이전", "마지막", "최신", "파일", "문서", "아닌", "거", "것"}
+
+
+def _version_key(x):
+    """order inside one family: an explicit version number (v3, ver2, (2)) first, then the file's date"""
+    name = x["path"].replace("\\", "/").rsplit("/", 1)[-1]
+    nums = [int(a or b) for a, b in _VERNUM.findall(name)]
+    return (max(nums) if nums else -1, x.get("date") or "")
+
+
+def _families(res, top):
+    fams = {}
+    for i, x in enumerate(res[:top]):
+        d, s = family(x)
+        if s:
+            fams.setdefault((d, s), []).append(i)
+    return fams
+
+
+def version_family(q, res, top=30):
+    """(folder, stem) of the document a version question is about, or None. Chosen by the words of the question found in
+    the file names, not by whatever ranked first: a file whose text says '최종본이 아닙니다' can outrank every version of the
+    document that was asked for. Without such words, #1's family when it has 2+ members among the candidates."""
+    words = [w.lower() for w in re.findall(r"[0-9A-Za-z가-힣_]{2,}", q) if w not in _QSTOP]
+    fams = _families(res, top)
+    named = [k for k in fams if any(w in k[1] for w in words)]
+    if named:   # most question words in the name (H3Lab + 기술사업계획서 over H3Lab alone), then a family named exactly by
+        # a word (doc1) before one that only contains it (make_doc1_v3.py), then rank
+        return min(named, key=lambda k: (-sum(w in k[1] for w in words), k[1] not in words, fams[k][0]))
+    return next((k for k, v in fams.items() if 0 in v and len(v) >= 2), None)
+
+
+def version_pick(q, res, top=30, key=None, latest=False):
+    """the question asks for the version right before the latest (PREVQ). Within the family (same folder, same name
+    without version marks) the second newest goes first, by version number, then date. Nothing changes without a family of 2+."""
+    if len(res) < 2:
+        return res
+    key = key or version_family(q, res, top)
+    fams = _families(res, top)
+    pick = key if key in fams and len(fams[key]) >= 2 else None
+    if pick is None:
+        return res
+    members = sorted(fams[pick], key=lambda i: _version_key(res[i]))
+    j = members[-1] if latest else members[-2]   # the newest, or the one before it
+    order = [j] + [i for i in reversed(members) if i != j]   # then the rest of the family, newest first
+    out = [dict(res[i]) for i in order] + [x for i, x in enumerate(res) if i not in set(order)]
+    ces = [x.get("ce") for x in res[:top] if x.get("ce") is not None]
+    if ces:   # the shown chance follows the ranker score: the chosen version takes the best one, so #1 is not shown at 1%
+        out[0]["ce"] = max(ces)
+    return out
 
 
 ORGQ = re.compile(r"([가-힣A-Za-z0-9]{2,}?(?:지방법원|고등법원|가정법원|노동위원회|테크|정보통신|정보|전자|모빌리티|고등학교|중학교|대학교|병원|은행|협회|재단))")
@@ -1297,6 +1380,23 @@ def personal():
     return _PM
 
 
+def indexer_alive(p):
+    """progress.json still describes a running indexer. A stopped or killed one leaves its last line behind.
+    POSIX: the recorded pid must exist (signal 0 only checks). Windows: os.kill(pid, 0) would end the process,
+    so there only the age of the record is used, as the page already does (15 min)."""
+    if not p.get("stage") or p.get("stage") == "done":
+        return True   # nothing to hide; the page decides
+    pid = p.get("pid")
+    if pid and os.name != "nt":
+        try:
+            os.kill(int(pid), 0)
+        except ProcessLookupError:
+            return False
+        except (PermissionError, OSError, ValueError):
+            pass
+    return True
+
+
 def add_probs(res):
     """calibrated chance that each shown candidate is the wanted file (stage 1, fit on tuning sets), plus short reasons.
     The person makes the final call, so 'not here' is never final: candidates stay visible with their odds."""
@@ -1381,7 +1481,9 @@ def serve(f, port):
                     return
                 try:
                     body_ = (Path(os.environ.get("FINDR_DATA") or Path.home() / ".findr") / "progress.json").read_bytes()
-                except OSError:
+                    if not indexer_alive(json.loads(body_)):
+                        body_ = b"{}"   # the indexer was stopped: no '색인 진행 중' banner left behind
+                except (OSError, ValueError):
                     body_ = b"{}"
                 return self.reply(200, body_, "application/json; charset=utf-8")
             if urlparse(self.path).path == "/auth":   # the desktop app opens the page once with its key; a cookie keeps it signed in
