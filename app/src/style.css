@@ -73,3 +73,6 @@ pre { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 12px
 .tip p { margin: 4px 0 0; font-weight: 550; }
 .auto { margin-top: 12px; } button.link { border: 0; background: none; padding: 0 0 0 4px; color: var(--acc); text-decoration: underline; font-size: 13.5px; }
 @media (prefers-reduced-motion: reduce) { .ladder li.now .ic { animation: none; } .bar > div { transition: none; } }
+
+/* settings: AI tools */
+.mcp { margin-top: 10px; } .mcp pre { margin: 4px 0 6px; white-space: pre-wrap; } .mcp button { font-size: 13px; padding: 5px 12px; }

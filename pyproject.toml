@@ -32,7 +32,8 @@ dependencies = [
   "winrt-Windows.Graphics.Imaging>=2.0; sys_platform == 'win32'",
   "winrt-Windows.Storage.Streams>=2.0; sys_platform == 'win32'",
   "winrt-Windows.Foundation>=2.0; sys_platform == 'win32'",
-  "truststore>=0.9",            # system certificates (company networks)
+  "truststore>=0.9",
+  "mcp>=1.2",                   # AI tools on this PC find files through findr (findr mcp)            # system certificates (company networks)
   "accelerate>=1.0",
 ]
 
