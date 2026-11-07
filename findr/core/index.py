@@ -13,6 +13,7 @@ import json
 import os
 import re
 import sqlite3
+import stat as _stat
 import subprocess
 import sys
 import time
@@ -231,7 +232,9 @@ def main():
                 dns[:] = []; continue   # an installed application bundle (ships its own Python): not the user's files
             dns[:] = [d for d in dns if d not in (SKIP_DIR if a.with_libs else SKIP_DIR | LIB_DIRS)]
             if os.environ.get("FINDR_SCOPE") == "user":   # whole-PC mode: no system, program, cache or library folders
-                from scope import skip_dir
+                from scope import skip_dir, app_profile
+                if app_profile(fns):
+                    dns[:] = []; continue   # an app's embedded-browser profile (CapCut's CEF folder in ~/Movies)
                 rel = "/" if Path(dp) == root else ""
                 dns[:] = [d for d in dns if not skip_dir(rel, d)]
             for fn in fns:
@@ -242,6 +245,8 @@ def main():
                     st = p.stat()
                 except OSError:
                     continue
+                if not _stat.S_ISREG(st.st_mode):
+                    continue   # sockets, pipes, devices: nothing to read (CEF's SingletonSocket failed here)
                 s = p.as_posix(); seen.add(s)
                 if s in known and known[s][0] == st.st_size and abs(known[s][1] - st.st_mtime) < 1 and known[s][3] == tier(p):
                     continue   # unchanged (a changed tier rule re-reads the file)

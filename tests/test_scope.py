@@ -55,3 +55,30 @@ def test_real_roots_run(monkeypatch):
     """on this runner's real home and drives: no crash, and only existing folders"""
     rs = scope.user_roots()
     assert all(p.is_dir() for _, _, p in rs)
+
+
+def test_app_browser_profile_marker():
+    assert scope.app_profile(["SingletonLock", "SingletonSocket", "cef_log.log"])
+    assert not scope.app_profile(["Local State.txt", "회의록.docx"])   # one look-alike name is not enough
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="special files (FIFO) on macOS / Linux")
+def test_scan_skips_app_profile_and_special_files(tmp_path):
+    """CapCut keeps a Chromium (CEF) profile in ~/Movies; its files and its socket are not the person's"""
+    import sqlite3, subprocess
+    movies = tmp_path / "Movies"
+    proj = movies / "CapCut" / "User Data" / "Projects"; proj.mkdir(parents=True)
+    (proj / "여행 영상 편집.txt").write_text("제주 여행 브이로그 컷 편집 메모")
+    cef = movies / "CapCut" / "User Data" / "CEF"; (cef / "Dictionaries").mkdir(parents=True)
+    for n in ("SingletonLock", "SingletonCookie", "LocalPrefs.json"):
+        (cef / n).write_text("x")
+    (cef / "Dictionaries" / "en.bdic").write_text("x")
+    os.mkfifo(tmp_path / "s")   # a special file next to real files (like CEF's SingletonSocket); reading it would block
+    db = tmp_path / "i.db"
+    env = {**os.environ, "FINDR_SCOPE": "user", "FINDR_OCR": "0"}
+    r = subprocess.run([sys.executable, str(scope.Path(scope.__file__).with_name("index.py")), "--root", str(movies), str(tmp_path),
+                        "--db", str(db), "--no-embed"], env=env, capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr[-500:]
+    names = {n for (n,) in sqlite3.connect(db).execute("SELECT name FROM files")}
+    assert "여행 영상 편집.txt" in names
+    assert not names & {"SingletonLock", "SingletonCookie", "LocalPrefs.json", "en.bdic", "s"}
