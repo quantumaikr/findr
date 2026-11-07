@@ -36,10 +36,14 @@ class EG2:
         import os
         device = pick_device(device)
         from sentence_transformers import SentenceTransformer
-        self.st = SentenceTransformer(PATH, device=device); self.st.max_seq_length = max_len; self.dev = device
+        # Apple GPU: float32 (M1 has no bfloat16 hardware, and float16 overflows in this model)
+        kw = {"model_kwargs": {"torch_dtype": torch.float32}} if device == "mps" else {}
+        self.st = SentenceTransformer(PATH, device=device, **kw); self.st.max_seq_length = max_len; self.dev = device
+        self.bs = int(os.environ.get("FINDR_BATCH") or (16 if device == "mps" else 64))
 
     @torch.no_grad()
-    def emb(self, texts, bs=64, query=True):
+    def emb(self, texts, bs=None, query=True):
+        bs = bs or getattr(self, "bs", 64)
         texts = [_SAFE.sub(r"< \1 >", t) for t in texts]
         fn = self.st.encode_query if query else self.st.encode_document
         return fn(texts, batch_size=bs, normalize_embeddings=True, convert_to_tensor=True).float()

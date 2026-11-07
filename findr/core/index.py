@@ -622,7 +622,7 @@ def drop(con, fid):
 
 def embed(con, model):
     Enc = None
-    from enc_eg2 import EG2, encoder_of
+    from enc_eg2 import EG2, SmallEnc, encoder_of
     import torch
     from enc_eg2 import make_encoder
     con.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
@@ -642,14 +642,20 @@ def embed(con, model):
     for cid, t, p in rows:
         groups.setdefault(f"{label(Path(p))}\n{t}"[:1200], []).append(cid)
     uniq = list(groups.items())
-    t0 = time.time()
+    t0 = last = time.time(); warned = False
     for i in range(0, len(uniq), 256):
         b = uniq[i:i + 256]
         with torch.no_grad():
             v = emb512(enc, [k for k, _ in b]).cpu().numpy().astype(np.float16)
         con.executemany("UPDATE chunks SET emb=? WHERE id=?", [(x.tobytes(), cid) for x, (_, cids) in zip(v, b) for cid in cids])
-        if i % 25600 == 0:
-            con.commit(); print(f"  embedded {i + len(b)}/{len(uniq)} {time.time() - t0:.0f}s", flush=True)
+        done_ = i + len(b)
+        if done_ % 2560 < 256 or time.time() - last > 30 or done_ == len(uniq):   # saved and reported often: progress is visible
+            con.commit(); last = time.time()
+            rate = done_ / max(last - t0, 1e-6); left = (len(uniq) - done_) / max(rate, 1e-6)
+            print(f"  embedded {done_}/{len(uniq)} {last - t0:.0f}s | {rate:.0f} pieces/s | about {left / 60:.0f} min left", flush=True)
+            if not warned and done_ >= 1024 and left > 6 * 3600 and isinstance(enc, EG2) and not isinstance(enc, SmallEnc):
+                warned = True
+                print("FINDR_SLOW 이 PC에서는 큰 모델이 느립니다. 작은 모델로 바꾸면 훨씬 빨라집니다:  findr setup --lite", flush=True)
     con.commit(); print(f"FINDR_EMBED {len(rows)} chunks {time.time() - t0:.0f}s (computed {len(uniq)}, identical skipped {len(rows) - len(uniq)}"
                         + (f", later pieces left for a deep run {later})" if later else ")"))
 

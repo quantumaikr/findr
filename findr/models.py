@@ -52,23 +52,29 @@ def plan(photo=None, lite=False):
 
 
 def big_ok():
-    """the large meaning model on this device: on an Apple GPU it is tried once (a short text, timed); if it fails or is
-    very slow, the small model is used instead. The answer is kept in the data folder."""
+    """the large meaning model on this device. On an Apple GPU it is measured once on real-length pieces (after the first,
+    slow, kernel-compiling batch); under FINDR_MIN_RATE pieces/s (default 30) the small model is used. Kept in the data folder."""
     dev, _ = gpu()
     if dev != "mps":
         return True
     mark = paths.HOME / "device_check.json"
     if mark.exists():
-        return json.loads(mark.read_text()).get("big_ok", False)
-    ok = False
+        old = json.loads(mark.read_text())
+        if old.get("v") == 2:
+            return old.get("big_ok", False)
+    ok, rate = False, 0.0
     try:
         import time
         import enc_eg2
-        e = enc_eg2.EG2("mps"); e.emb(["시험 문장입니다."] * 4)   # first call loads kernels
-        t = time.time(); e.emb(["회의 전에 고친 견적서를 찾아 줘"] * 16); ok = time.time() - t < 5
+        print("  Apple GPU에서 큰 모델 속도를 재는 중입니다 (처음 한 번, 몇 분 걸릴 수 있음) ...", flush=True)
+        piece = ("회의 전에 고친 견적서 | 영업/2025/고객사\n" + "스마트센서 게이트웨이 납품 일정과 단가 조건을 정리했습니다. " * 30)[:1200]
+        e = enc_eg2.EG2("mps"); e.emb([piece] * e.bs, query=False)   # compiles the GPU kernels
+        n = e.bs * 4; t = time.time(); e.emb([piece] * n, query=False); rate = n / max(time.time() - t, 1e-6)
+        ok = rate >= float(os.environ.get("FINDR_MIN_RATE") or 30)
     except Exception:
         ok = False
-    mark.write_text(json.dumps({"device": dev, "big_ok": ok}))
+    mark.write_text(json.dumps({"v": 2, "device": dev, "big_ok": ok, "pieces_per_s": round(rate, 1)}))
+    print(f"  큰 모델 속도: 초당 {rate:.0f}조각 → {'큰 모델 사용' if ok else '작은 모델로 전환 (더 빠름)'}", flush=True)
     return ok
 
 
