@@ -1,7 +1,7 @@
 # 현장에서 배운 것
 
 실제 PC에 findr를 설치해 색인하고 검색하면서 찾은 문제에서 나온 원칙입니다. 처음 기록은 2026-11-08의 Apple M3 Mac, 홈 폴더 전체 약 5만 6천 개 파일입니다.
-각 원칙은 한 줄 규칙, 실제로 겪은 일(이슈·PR 번호), 지키는지 확인하는 방법 순서로 적었습니다. PR을 올릴 때의 점검표는 [.github/pull_request_template.md](../.github/pull_request_template.md)에 있습니다.
+각 원칙은 한 줄 규칙, 실제로 겪은 일(이슈·PR 번호), 지키는지 확인하는 방법 순서로 적었습니다. PR을 올릴 때의 점검표는 [.github/pull_request_template.md](../.github/pull_request_template.md)에 있습니다. 시험하는 순서와 도구, 증상으로 찾는 표는 [FIELD_TESTING.md](FIELD_TESTING.md)에 있습니다.
 
 ## 1. 장치는 셋이다: NVIDIA, Apple GPU, CPU
 **규칙:** 장치를 고르는 코드는 `cuda` / `mps` / `cpu`를 모두 다룬다. `torch.cuda.is_available()` 하나로 GPU 여부를 판단하지 않는다.
