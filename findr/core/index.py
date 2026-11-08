@@ -383,9 +383,17 @@ def main():
         from scope import own_dirs
     except ImportError:
         from .scope import own_dirs
-    for d in own_dirs():
+    try:
+        from scope import is_findr_checkout
+    except ImportError:
+        from .scope import is_findr_checkout
+    # other copies of findr already in the index (a second clone, an older install, a worktree: #119), found by their
+    # pyproject.toml rows; like the running checkout, they leave unless a chosen root is one of them or lies inside one
+    copies = {Path(raw).parent for (raw,) in con.execute("SELECT path FROM files WHERE name='pyproject.toml'") if is_findr_checkout(Path(raw).parent)}
+    in_root = lambda k: any(key(Path(r).resolve().as_posix()).rstrip("/") in (k,) or key(Path(r).resolve().as_posix()).startswith(k + "/") for r in roots)
+    for d in [*own_dirs(), *copies]:
         k = key(d.as_posix()).rstrip("/")
-        if not any(key(Path(r).resolve().as_posix()).rstrip("/") in (k,) or key(Path(r).resolve().as_posix()).startswith(k + "/") for r in roots):
+        if not in_root(k):
             excl.add(k)
     if excl:   # folders this PC chose not to search (exclude.txt): files already indexed under them leave the index
         ids = [i for i, raw in con.execute("SELECT id, path FROM files") if (s := key(raw)) in excl or any(s.startswith(x + "/") for x in excl)]
@@ -433,6 +441,8 @@ def main():
                 dns[:] = [d for d in dns if not skip_dir(rel, d)]
             if excl:
                 dns[:] = [d for d in dns if key((Path(dp) / d).as_posix()) not in excl]
+            # a copy of findr met during the walk (#119): only folders holding a pyproject.toml are looked at, which is rare
+            dns[:] = [d for d in dns if not (os.path.isfile(os.path.join(dpl, d, "pyproject.toml")) and is_findr_checkout(Path(dp) / d))]
             for fn in fns:
                 if not a.with_libs and JUNK.search(fn):
                     continue
