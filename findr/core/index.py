@@ -331,6 +331,7 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="read content of at most N pending files in this run (0 = no limit)")
     ap.add_argument("--upgrade", default="", help="move the meaning vectors to this encoder in idle time (no scan), then switch")
     ap.add_argument("--minutes", type=float, default=50, help="--upgrade: stop after N minutes (the next idle run continues)")
+    ap.add_argument("--names-only", action="store_true", help="register new and changed files by name only (on battery); content waits for the next full run")
     a = ap.parse_args()
     roots = [Path(r) for r in a.root]; Path(a.db).expanduser().parent.mkdir(parents=True, exist_ok=True)
     if not one_indexer(a.db):
@@ -347,6 +348,7 @@ def main():
       CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(name, path, text, content='', contentless_delete=1, tokenize='trigram');
       CREATE INDEX IF NOT EXISTS ch_file ON chunks(file);
       CREATE INDEX IF NOT EXISTS ch_n ON chunks(n, file);
+      CREATE INDEX IF NOT EXISTS ch_noemb ON chunks(n, file) WHERE emb IS NULL;   -- what embed() looks for: no full pass over vectors
       CREATE TABLE IF NOT EXISTS cards(file INTEGER PRIMARY KEY, outline TEXT, summary TEXT, done INT DEFAULT 0);""")
     if "pending" not in [r[1] for r in con.execute("PRAGMA table_info(files)")]:
         con.execute("ALTER TABLE files ADD COLUMN pending INT DEFAULT 0")
@@ -479,6 +481,8 @@ def main():
     _P["files"] = con.execute("SELECT count(*) FROM files WHERE tier>0").fetchone()[0]
     if not a.no_embed:   # stage 1b: a meaning vector from each file's name and folders (natural-language search on names)
         print("FINDR_STAGE namevec", flush=True); embed(con, a.model, names_only=True)
+    if a.names_only:   # 2026-11-08 (#106): on battery the app still shows new files by name; their content stays pending
+        progress("done", 1, 1); print("FINDR_STAGE done (names only)", flush=True); return
     print("FINDR_STAGE content", flush=True)
     for k, root in enumerate(roots):   # stage 2: content, the folders people look in first
         progress("content", k, len(roots)); read_wave(con, root, a)
@@ -992,7 +996,8 @@ def remask(con):
     pat = hashlib.sha1((KEYLIKE.pattern + "|" + "|".join(KEYLIKE_HINTS)).encode()).hexdigest()[:16]
     seen = con.execute("SELECT value FROM meta WHERE key='mask_pattern'").fetchone()
     w = " OR ".join(["c.text LIKE ?"] * len(KEYLIKE_HINTS))
-    src = "chunks c" if not seen or seen[0] != pat else "mask_todo t JOIN chunks c ON c.id = t.id"
+    # CROSS JOIN keeps mask_todo outer: with a plain JOIN SQLite scanned every chunk (2.6 GB, ~5 s) to find an empty todo list
+    src = "chunks c" if not seen or seen[0] != pat else "mask_todo t CROSS JOIN chunks c ON c.id = t.id"
     rows = con.execute(f"SELECT c.id, c.file, c.text FROM {src} WHERE {w}", [f"%{h}%" for h in KEYLIKE_HINTS]).fetchall()
     for cid, fid, txt in rows:
         if txt and KEYLIKE.search(txt):
@@ -1275,19 +1280,56 @@ def drop(con, fid):
         pass
 
 
+class EngineEncoder:
+    """document vectors from the search engine already running on this PC (POST /embed): the model stays in one process.
+    The indexer's own copy (torch and the model) was 1.7 of its 1.75 GB, and next to the engine's 2.7 GB it went past what
+    an 8 GB laptop leaves: the OS killed the engine (3 GB reproduction). Used when the engine holds the same encoder;
+    FINDR_EMBED_VIA=local turns it off, and any failure falls back to the indexer's own copy."""
+    STEP = 32
+
+    def __init__(self, url, pw, name):
+        self.url, self.name = url, name
+        import base64
+        self.hdr = {"Authorization": "Basic " + base64.b64encode(f"index:{pw}".encode()).decode(), "X-Findr": "1",
+                    "Content-Type": "application/json"}
+
+    @classmethod
+    def connect(cls, name):
+        if os.environ.get("FINDR_EMBED_VIA", "auto") == "local" or not name:
+            return None
+        d = os.environ.get("FINDR_DATA")
+        try:
+            pw = Path(d, ".password").read_text().strip() if d else ""
+        except OSError:
+            return None
+        e = cls(f"http://127.0.0.1:{os.environ.get('FINDR_APP_PORT') or 8096}", pw, name)
+        try:
+            e.vectors(["준비"])
+            return e
+        except Exception:   # noqa: BLE001  (no engine, another encoder, an old engine without /embed)
+            return None
+
+    def vectors(self, texts):
+        import base64
+        import urllib.request
+        out = []
+        for i in range(0, len(texts), self.STEP):
+            req = urllib.request.Request(self.url + "/embed", json.dumps({"encoder": self.name, "texts": texts[i:i + self.STEP]}).encode(),
+                                         self.hdr)
+            r = json.loads(urllib.request.urlopen(req, timeout=300).read())
+            out.append(np.frombuffer(base64.b64decode(r["vecs"]), np.float16).reshape(-1, r["dim"]))
+        return np.concatenate(out) if out else np.zeros((0, 1), np.float16)
+
+
+def _meta_encoder(con):
+    r = con.execute("SELECT value FROM meta WHERE key='encoder'").fetchone()
+    return r[0] if r else None
+
+
 def embed(con, model, names_only=False):
-    Enc = None
-    from enc_eg2 import EG2, SmallEnc, encoder_of
-    import torch
-    from enc_eg2 import make_encoder
     con.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
     if model in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and not con.execute("SELECT 1 FROM chunks WHERE emb IS NOT NULL LIMIT 1").fetchone():
         con.execute("INSERT OR REPLACE INTO meta VALUES('encoder', ?)", (model,)); con.commit()   # a new index records its encoder
-    enc = make_encoder(encoder_of(con)) if encoder_of(con) in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") else Enc(model)   # same encoder as the vectors already stored
-    if not isinstance(enc, EG2):
-        enc.tok.model_max_length = 512
-    if os.environ.get("FINDR_THREADS"):   # background indexing: leave CPU cores for the person's own work
-        torch.set_num_threads(max(1, int(os.environ["FINDR_THREADS"])))
     cap = int(os.environ.get("FINDR_FIRST_PIECES") or 0)   # first pass on a large PC: each file's opening pieces only
     if names_only:   # every file's name and folders, content or not (a file read later gets new pieces and vectors)
         rows = con.execute("""SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
@@ -1298,6 +1340,42 @@ def embed(con, model, names_only=False):
                           ORDER BY (c.n > 1), f.mtime DESC, c.n""").fetchall()   # every file's opening pieces first, newest first
     later = con.execute("SELECT count(*) FROM chunks c JOIN files f ON f.id=c.file WHERE c.emb IS NULL AND f.tier>0 "
                         "AND COALESCE(f.pending,0) IN (0,2) AND c.n >= ?", (cap,)).fetchone()[0] if cap > 0 and not names_only else 0
+    if not rows:   # nothing to embed: no encoder load (three loads cost ~7 s per run with nothing new)
+        con.commit(); print(f"FINDR_EMBED 0 chunks 0s (computed 0, identical skipped 0" + (f", later pieces left for a deep run {later})" if later else ")"))
+        return
+    name = _meta_encoder(con)
+    eng = EngineEncoder.connect(name) if name in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") else None
+    enc = None
+
+    def local():
+        """the indexer's own copy of the encoder (no engine, or the engine went away)"""
+        from enc_eg2 import EG2, make_encoder
+        import torch
+        e = make_encoder(name) if name in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") else None
+        if e is None:
+            raise RuntimeError(f"no encoder for {name}")
+        if not isinstance(e, EG2):
+            e.tok.model_max_length = 512
+        if os.environ.get("FINDR_THREADS"):   # background indexing: leave CPU cores for the person's own work
+            torch.set_num_threads(max(1, int(os.environ["FINDR_THREADS"])))
+        return e
+
+    def vecs(texts):
+        nonlocal eng, enc
+        if eng is not None:
+            try:
+                return eng.vectors(texts)
+            except Exception as e:   # noqa: BLE001  (the engine stopped or was restarted): carry on with our own copy
+                print(f"FINDR_EMBED engine gone ({type(e).__name__}): this run computes its own vectors", flush=True); eng = None
+        if enc is None:
+            enc = local()
+        import torch
+        with torch.no_grad():
+            return emb512(enc, texts).cpu().numpy().astype(np.float16)
+
+    if eng is None:
+        enc = local()
+    print(f"FINDR_EMBED_VIA {'engine' if eng is not None else 'local'} ({name})", flush=True)
     # identical inputs (a copied file, repeated boilerplate under the same name) are computed once
     groups = {}
     for cid, t, p in rows:
@@ -1307,8 +1385,7 @@ def embed(con, model, names_only=False):
     for i in range(0, len(uniq), 256):
         pause_wait()
         b = uniq[i:i + 256]
-        with torch.no_grad():
-            v = emb512(enc, [k for k, _ in b]).cpu().numpy().astype(np.float16)
+        v = vecs([k for k, _ in b])
         con.executemany("UPDATE chunks SET emb=?, emb2=NULL WHERE id=?", [(x.tobytes(), cid) for x, (_, cids) in zip(v, b) for cid in cids])   # changed text: its side vector is stale
         done_ = i + len(b)
         if done_ % 2560 < 256 or time.time() - last > 30 or done_ == len(uniq):   # saved and reported often: progress is visible
@@ -1316,11 +1393,44 @@ def embed(con, model, names_only=False):
             rate = done_ / max(last - t0, 1e-6); left = (len(uniq) - done_) / max(rate, 1e-6)
             print(f"  embedded {done_}/{len(uniq)} {last - t0:.0f}s | {rate:.0f} pieces/s | about {left / 60:.0f} min left", flush=True)
             progress("namevec" if names_only else "meaning", done_, len(uniq), minutes_left=round(left / 60))
-            if not warned and done_ >= 1024 and left > 6 * 3600 and isinstance(enc, EG2) and not isinstance(enc, SmallEnc):
+            if not warned and done_ >= 1024 and left > 6 * 3600 and name == "embeddinggemma-2":
                 warned = True
                 print("FINDR_SLOW 이 PC에서는 큰 모델이 느립니다. 작은 모델로 바꾸면 훨씬 빨라집니다:  findr setup --lite", flush=True)
     con.commit(); print(f"FINDR_EMBED {len(rows)} chunks {time.time() - t0:.0f}s (computed {len(uniq)}, identical skipped {len(rows) - len(uniq)}"
                         + (f", later pieces left for a deep run {later})" if later else ")"))
+
+
+def user_idle_seconds():
+    """seconds since the person last used the keyboard or mouse; None when this PC cannot tell"""
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class LII(ctypes.Structure):
+                _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+            li = LII(); li.cbSize = ctypes.sizeof(LII)
+            if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(li)):
+                return None
+            return ((ctypes.windll.kernel32.GetTickCount() - li.dwTime) & 0xFFFFFFFF) / 1000
+        if sys.platform == "darwin":
+            out = subprocess.run(["ioreg", "-c", "IOHIDSystem"], capture_output=True, text=True, timeout=5).stdout
+            m = re.search(r'"HIDIdleTime" = (\d+)', out)
+            return int(m.group(1)) / 1e9 if m else None
+        out = subprocess.run(["xprintidle"], capture_output=True, text=True, timeout=5).stdout.strip()
+        return int(out) / 1000 if out.isdigit() else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+LOOK_EVERY = 5   # seconds between looks at the keyboard and mouse during an idle-time run
+
+
+def person_is_back(within):
+    """the app's idle-time runs give the PC back: true when the keyboard or mouse was used in the last `within` seconds"""
+    if not within:
+        return False
+    idle = user_idle_seconds()
+    return idle is not None and idle < within
 
 
 def upgrade(con, target, minutes=50, bs=None):
@@ -1346,22 +1456,35 @@ def upgrade(con, target, minutes=50, bs=None):
         enc.bs = int(os.environ.get("FINDR_BATCH") or 8)   # small batches on the CPU: memory stays low, each run stops on time
     t0 = time.time(); stop = t0 + minutes * 60; did = 0
     total = con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL").fetchone()[0]
+    # the app's idle-time run stops when the person comes back (FINDR_STOP_ON_INPUT = seconds of recent input that count):
+    # on an 8 GB laptop a 10-minute run kept 2.7 GB and half the cores while the person searched. Smaller steps so it notices soon.
+    back = float(os.environ.get("FINDR_STOP_ON_INPUT") or 0)
+    step = 16 if back else 64
+    last = {k: v for k, v in _last_upgrade().items() if k in ("rate", "hours_left")}   # read now: progress below rewrites the file
+    looked = 0.0
     while True:
         rows = con.execute("""SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
-                              WHERE c.emb IS NOT NULL AND c.emb2 IS NULL ORDER BY (c.n > 1), f.mtime DESC, c.n LIMIT 64""").fetchall()
+                              WHERE c.emb IS NOT NULL AND c.emb2 IS NULL ORDER BY (c.n > 1), f.mtime DESC, c.n LIMIT ?""", (step,)).fetchall()
         if not rows:
             break
-        if time.time() > stop:
+        returned = False
+        if back and time.time() - looked >= LOOK_EVERY:   # not every step: on a fast GPU 16 pieces take a fraction of a second
+            looked = time.time(); returned = person_is_back(back)
+        if time.time() > stop or returned:
             left = con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL AND emb2 IS NULL").fetchone()[0]
             rate = did / max(time.time() - t0, 1e-6)
+            if returned:   # a run cut short (often while the model was still loading) says nothing about the speed: keep the
+                # last run's estimate. Measured here, 0 pieces would read as 'thousands of hours' and turn the upgrade off for good
+                print(f"FINDR_UPGRADE paused {total - left}/{total} | the person is back after {did} pieces", flush=True)
+                progress_upgrade(target, total - left, total, back=True, **last); return 2
             print(f"FINDR_UPGRADE paused {total - left}/{total} | {rate:.1f} pieces/s | about {left / max(rate, 1e-6) / 3600:.1f} h of idle time left", flush=True)
             progress_upgrade(target, total - left, total, rate=round(rate, 2), hours_left=round(left / max(rate, 1e-6) / 3600, 1)); return 2
         with torch.no_grad():
             v = emb512(enc, [f"{label(Path(p))}\n{t}"[:1200] for _, t, p in rows]).cpu().numpy().astype(np.float16)
         con.executemany("UPDATE chunks SET emb2=? WHERE id=?", [(x.tobytes(), cid) for x, (cid, _, _) in zip(v, rows)])
         con.commit(); did += len(rows)
-        if did % 640 < 64:
-            progress_upgrade(target, total - con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL AND emb2 IS NULL").fetchone()[0], total)
+        if did % 640 < step:
+            progress_upgrade(target, total - con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL AND emb2 IS NULL").fetchone()[0], total, **last)
     with con:   # every vector has its counterpart: switch at once (search reloads when the recorded encoder changes)
         con.execute("UPDATE chunks SET emb=emb2 WHERE emb IS NOT NULL")
         con.execute("UPDATE chunks SET emb2=NULL")
@@ -1370,6 +1493,14 @@ def upgrade(con, target, minutes=50, bs=None):
     progress_upgrade(target, total, total, switched=True)
     print(f"FINDR_UPGRADE switched to {target}: {total} vectors in {time.time() - t0:.0f}s this run", flush=True)
     return 0
+
+
+def _last_upgrade():
+    d = os.environ.get("FINDR_DATA")
+    try:
+        return json.loads(Path(d, "upgrade.json").read_text(encoding="utf-8")) if d else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def progress_upgrade(target, done, total, **kw):

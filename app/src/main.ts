@@ -275,7 +275,7 @@ async function settings(s: AppState) {
     <h2>색인</h2>
     <div class="card"><p>새로 생기거나 바뀐 파일만 다시 읽습니다.</p>
       <div class="actions" style="margin-top:6px"><button class="primary" id="re">바뀐 파일 반영</button><button id="fold">폴더 바꾸기</button></div>
-      <p class="muted" style="margin:14px 0 6px">findr가 열려 있는 동안 바뀐 파일은 한 시간마다, 긴 문서의 뒷부분은 처음 한 번 낮은 우선순위로 알아서 반영합니다.
+      <p class="muted" style="margin:14px 0 6px">findr가 열려 있는 동안 바뀐 파일은 10분마다(배터리일 때는 이름만), 긴 문서의 뒷부분은 처음 한 번 낮은 우선순위로 알아서 반영합니다.
         지금 바로 하고 싶을 때만 아래를 누르세요.</p>
       <div class="actions" style="margin-top:0"><button id="deep">깊은 내용까지 계산</button></div></div>
     <div id="upg"></div>

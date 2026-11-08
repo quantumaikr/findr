@@ -25,7 +25,7 @@ def env(home):
 
 
 def findr(home, *args, timeout=1800):
-    r = subprocess.run([sys.executable, "-m", "findr", *args], env=env(home), capture_output=True, text=True, timeout=timeout, cwd=str(ROOT))
+    r = subprocess.run([sys.executable, "-m", "findr", *args], env=env(home), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=str(ROOT))
     return r.returncode, r.stdout + r.stderr
 
 
@@ -61,7 +61,7 @@ def test_doctor_loads_torch(world):   # #3: a broken compute library must be vis
 def test_search_before_meaning_vectors(world):   # #9: names and words answer while meaning is not computed yet
     home, docs = world
     r = subprocess.run([sys.executable, str(CORE / "index.py"), "--root", str(docs), "--db", str(home / "index.db"),
-                        "--model", "e5-small", "--no-embed"], env=env(home), capture_output=True, text=True, cwd=str(CORE), timeout=600)
+                        "--model", "e5-small", "--no-embed"], env=env(home), capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(CORE), timeout=600)
     assert r.returncode == 0, r.stderr[-2000:]
     rc, out = findr(home, "ask", "스마트센서 견적서")
     assert rc == 0 and "Traceback" not in out, out[-2000:]
@@ -87,7 +87,7 @@ def test_search_page(world):   # the app's page: sign-in, search, progress (#7: 
     with socket.socket() as so:   # a free port: a page left over from another run must not answer for this one
         so.bind(("127.0.0.1", 0)); port = so.getsockname()[1]
     p = subprocess.Popen([sys.executable, "-m", "findr", "serve", "--app", "--no-browser", "--no-photo", "--no-llm", "--port", str(port)],
-                         env=env(home), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=str(ROOT))
+                         env=env(home), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", cwd=str(ROOT))
     try:
         t = time.time(); ready = False
         while time.time() - t < 600:
@@ -119,6 +119,12 @@ def test_search_page(world):   # the app's page: sign-in, search, progress (#7: 
         r = json.loads(op.open(base + "/api?" + urllib.parse.urlencode({"q": "스마트센서 견적서"}), timeout=300).read())
         assert r["results"] and "견적서_스마트센서" in r["results"][0]["name"], r.get("results", [])[:2]
         assert isinstance(json.loads(op.open(base + "/progress", timeout=30).read()), dict)
+        # #106 '지금 반영': the page asks, the app's refresher sees the file; /progress says so and when files last came in
+        rq = urllib.request.Request(base + "/refresh", data=b"", method="POST", headers={"X-Findr": "1"})
+        assert json.loads(op.open(rq, timeout=30).read())["ok"] and (home / "refresh_now").exists()
+        (home / "last_refresh").write_text("1700000000")
+        pg = json.loads(op.open(base + "/progress", timeout=30).read())
+        assert pg["app"] and pg["refresh_asked"] and pg["last_refresh"] == 1700000000, pg
     finally:
         p.terminate()
         try:

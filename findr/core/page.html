@@ -77,7 +77,7 @@ mark{background:var(--mark);color:inherit;border-radius:3px;padding:0 1px}
 .ixp .ic{font-size:12px;line-height:20px;text-align:center;color:var(--faint)}.ixp li.done .ic{color:var(--good)}.ixp li.now .ic{color:var(--acc);animation:ixb 1.4s ease-in-out infinite}
 .ixl{font-size:13.5px;font-weight:550}.ixp li.wait .ixl{color:var(--mut);font-weight:500}.ixv{font-size:11.5px;color:var(--faint);line-height:20px}.ixp li.done .ixv{color:var(--good)}.ixp li.now .ixv{color:var(--acc)}
 .ixs{font-size:11.5px;color:var(--mut);margin-top:2px}.ixb{height:4px;border-radius:2px;background:var(--line);margin-top:6px;overflow:hidden}.ixb i{display:block;height:100%;background:var(--acc);transition:width .5s ease}
-.ixa{display:flex;align-items:center;gap:10px;margin-top:12px}.ixpause{border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:5px 12px;font-size:12.5px}
+.ixa{display:flex;align-items:center;gap:10px;margin-top:12px}.ixpause,.ixnow{border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:5px 12px;font-size:12.5px}
 .ixnote{background:var(--acc2);border-radius:8px;padding:8px 12px;font-size:12.5px;margin:0 0 10px}.ixmore{border:0;background:none;color:var(--acc);font-size:12.5px;padding:0 0 0 4px;text-decoration:underline}
 @keyframes ixb{50%{opacity:.35}}@media (prefers-reduced-motion:reduce){.ixp li.now .ic{animation:none}.ixb i{transition:none}}
 </style></head><body>
@@ -225,6 +225,7 @@ if(!APP)fetch('/canopen').then(r=>r.json()).then(j=>{LOCAL=!!j.local;if(LOCAL&&l
  document.body.appendChild(pan);
  let P={},active=false,wasActive=false,doneAt=0,timer=null;
  window.__ix=()=>({active,P});
+ const hm=t=>{const d=new Date(t*1000);return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')};
  const mins=m=>m==null?'':m<1?'1분 안에 끝나요':`약 ${m}분 남았어요`;
  function now(){const k=ST.find(s=>(P.stages||{})[s[0]]==='now');return k||ST.find(s=>s[0]===P.stage)}
  function pct(){const sg=P.stages||{};let d=0;ST.forEach(s=>{if(sg[s[0]]==='done'||sg[s[0]]==='later')d+=1});
@@ -244,19 +245,24 @@ if(!APP)fetch('/canopen').then(r=>r.json()).then(j=>{LOCAL=!!j.local;if(LOCAL&&l
   pan.innerHTML=`<div class="ixh"><div><h3>${active?(P.paused?'잠시 멈췄어요':'내 파일을 살펴보는 중'):'모두 준비됐어요'}</h3>
    <div class="ixsub">${files}이 PC 안에서만 처리해요</div></div><button class="ixx" aria-label="닫기">✕</button></div>
    <p class="ixn">${active?'지금도 검색할 수 있어요. 새로 읽은 내용은 곧 결과에 들어가요.':'처음부터 끝까지 살펴봤어요. 바뀐 파일은 알아서 다시 읽어요.'}</p>
-   <ol>${rows}</ol>
+   ${active||Object.keys(sg).length?`<ol>${rows}</ol>`:''}
+   ${!active&&P.app?`<div class="ixa"><button class="ixnow" ${P.refresh_asked?'disabled':''}>${P.refresh_asked?'곧 시작해요…':'지금 반영'}</button><span class="ixsub">${P.last_refresh?'마지막 반영 '+hm(P.last_refresh)+' · ':''}새 파일은 10분마다 알아서 들어와요</span></div>`:''}
    ${active?`<div class="ixa"><button class="ixpause">${P.paused?'이어서 하기':'잠시 멈추기'}</button><span class="ixsub">${P.paused?'1시간 뒤에는 저절로 이어서 해요':'PC가 느려지면 멈춰 두세요'}</span></div>`:''}`;
  }
  async function tick(){clearTimeout(timer);
   try{const q=await (await fetch('/progress')).json();
    const fresh=q.stage&&q.stage!=='done'&&Date.now()/1000-q.t<900;
-   if(fresh){P=q;active=true;wasActive=true}else{if(active){doneAt=Date.now();P.stages=Object.fromEntries(ST.map(s=>[s[0],(P.stages||{})[s[0]]==='later'?'later':'done']))}active=false}
-   chip.hidden=!active&&!(wasActive&&Date.now()-doneAt<10000)&&pan.hidden; render()}catch(e){}
+   if(fresh){P=q;active=true;wasActive=true}else{if(active){doneAt=Date.now();P.stages=Object.fromEntries(ST.map(s=>[s[0],(P.stages||{})[s[0]]==='later'?'later':'done']))}active=false;
+    P.app=q.app;P.last_refresh=q.last_refresh;P.refresh_asked=q.refresh_asked}
+   chip.hidden=!active&&!P.app&&!(wasActive&&Date.now()-doneAt<10000)&&pan.hidden; render()}catch(e){}
   timer=setTimeout(tick,pan.hidden?5000:1500)}
  function open_(){pan.hidden=false;render();tick();pan.querySelector('.ixx')?.focus()}
  function close_(){pan.hidden=true;chip.focus();tick()}
  chip.onclick=()=>pan.hidden?open_():close_();
  pan.addEventListener('click',async e=>{if(e.target.closest('.ixx'))return close_();
+  if(e.target.closest('.ixnow')){e.target.disabled=true;
+   await fetch('/refresh',{method:'POST',headers:{'X-Findr':'1'}}).catch(()=>{});
+   P.refresh_asked=true;render();setTimeout(tick,1500);return}
   if(e.target.closest('.ixpause')){e.target.disabled=true;
    await fetch('/pause',{method:'POST',headers:{'X-Findr':'1','Content-Type':'application/json'},body:JSON.stringify({on:!P.paused})}).catch(()=>{});
    P.paused=!P.paused;render();setTimeout(tick,800)}});

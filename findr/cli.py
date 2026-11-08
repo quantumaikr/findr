@@ -48,6 +48,8 @@ def cmd_setup(a):
         lite.unlink(missing_ok=True)
     print(f"findr {__version__} 설치 | 장치: {dev}{f' ({gb:.0f}GB)' if gb else ''} | 데이터 폴더: {paths.HOME}")
     print("  받을 모델:", ", ".join(want))
+    if _disk_short(want, a.token):
+        return 5   # not enough room: nothing downloaded (1 is a failed download, 3/4 belong to the upgrade)
     try:
         models.pull(want, token=a.token)
     except Exception as e:
@@ -77,6 +79,41 @@ def cmd_setup(a):
         print(f"  글자 인식 모델을 받지 못했습니다 ({type(e).__name__}): 스캔 문서는 이름으로만 찾습니다.")
     print("\n완료. 다음:  findr index   (PC 전체의 내 파일)   →   findr serve")
     return 0
+
+
+def _disk_short(want, token=None):
+    """before any download: how much is new, how much room the drive has; True (and what to do) when it would not fit.
+    Nothing new to fetch (an update): no check, so a nearly full drive never blocks an update"""
+    plan_ = models.download_plan(want, token=token)
+    have_ = [f for f in want if f not in {f_ for f_, _, _ in plan_}]
+    need = sum(b for _, b, _ in plan_)
+    if have_:
+        print("  이미 있음:", ", ".join(have_))
+    if not plan_:
+        return False
+    est = "" if all(x for _, _, x in plan_) else " (일부는 추정치)"
+    size = lambda b: f"{b / 1e9:.1f}GB" if b >= 1e8 else f"{max(b, 1e6) / 1e6:.0f}MB"
+    print(f"  새로 받을 용량: 약 {need / 1e9:.1f}GB{est} — " + ", ".join(f"{f} {size(b)}" for f, b, _ in plan_))
+    print(f"  디스크 여유: {models.disk_free() / 1e9:.1f}GB (모델 폴더: {paths.MODELS})"
+          + ("" if models.disk_free(paths.HOME) == models.disk_free() else f", {models.disk_free(paths.HOME) / 1e9:.1f}GB (데이터 폴더: {paths.HOME})"))
+    short = models.room_check(need)   # the download on the models' drive, a first index on the data folder's drive
+    if not short or os.environ.get("FINDR_SKIP_DISK_CHECK") == "1":
+        return False
+    print()
+    for what, p, free, need_ in short:
+        print(f"  디스크 공간이 모자랍니다 ({what}: {p}): 여유 {free / 1e9:.1f}GB, 필요 약 {need_ / 1e9:.1f}GB")
+    print("  공간을 비우거나, 아래 중 하나로 다시 실행해 주세요.")
+    whats = {w[0] for w in short}
+    if whats & {"모델", "모델과 색인"}:   # the models do not fit: fewer of them, or another drive for them
+        small = models.plan(photo=False, lite=True)[2]
+        if [f for f in want if f not in small]:   # only where --lite fetches less (a Mac or a CPU PC already gets the small set)
+            print(f"  - 작은 모델만:  findr setup --lite   (빠지는 것: {', '.join(f for f in want if f not in small)})")
+        print("  - 모델을 다른 드라이브에:  FINDR_MODELS=<여유 있는 폴더> findr setup")
+    if whats & {"색인", "모델과 색인"}:   # the index will not fit where the data folder is: the data folder elsewhere
+        print("  - 데이터 폴더(색인)를 다른 드라이브에:  FINDR_HOME=<여유 있는 폴더> findr setup")
+    w = short[0]
+    print(f"  디스크 공간이 모자라 받지 않았습니다 ({w[0]} 드라이브 여유 {w[2] / 1e9:.1f}GB, 필요 약 {w[3] / 1e9:.1f}GB).")
+    return True
 
 
 FIRST_PIECES = 8   # first pass: meaning vectors for each file's opening pieces; the rest are found by words until a deep run
@@ -131,7 +168,7 @@ def cmd_index(a):
     print(f"색인: 폴더 {len(a.paths)}개 (이름 → 내용 → 의미 순서, 모든 폴더 함께)", flush=True)
     # absolute: the indexer runs in findr/core, so `findr index .` indexed findr itself and the next run crashed on its paths
     return subprocess.call([sys.executable, str(core / "index.py"), "--root", *[os.path.abspath(Path(p).expanduser()) for p in a.paths],
-                            "--db", str(a.db), "--model", enc], env=env, cwd=str(core))
+                            "--db", str(a.db), "--model", enc, *(["--names-only"] if a.names_only else [])], env=env, cwd=str(core))
 
 
 UPGRADE_TO = "embeddinggemma-2"
@@ -293,6 +330,8 @@ def cmd_serve(a):
         except OSError:
             pass
     url = f"http://127.0.0.1:{a.port}"
+    if a.app:
+        os.environ["FINDR_APP"] = "1"   # the page shows "지금 반영" only when the app's refresher is there to answer it
     if a.app:   # the desktop app reads the key from the data folder itself; it only needs to know the page is up.
         # said by the engine once its socket accepts connections (said earlier, a slow PC showed an empty page)
         os.environ["FINDR_READY_LINE"] = "FINDR_APP_READY " + json.dumps({"port": a.port, "features": side}, ensure_ascii=False)
@@ -400,6 +439,12 @@ def cmd_doctor(a):
         print(f"  ✗ 연산 라이브러리를 불러오지 못함: {type(e).__name__}: {str(e)[:160]}")
         if os.name == "nt":
             print("    → Visual C++ 런타임 업데이트: winget install Microsoft.VCRedist.2015+.x64")
+    try:   # the comfort tier the resource manager starts from (what this PC has)
+        sys.path.insert(0, str(paths.CORE)); import governor
+        pr = governor.profile(dev, gb)
+        print(f"  ✓ 이 PC에 맞춘 등급: {pr['tier_ko']} ({', '.join(pr['reasons'])})")
+    except Exception:   # noqa: BLE001
+        pass
     for w in want:
         print(f"  {'✓' if models.have(w) else '✗'} 모델 {w}")
     used = _index_encoder()   # the list above is what this PC may have; the index says which meaning model it really uses
@@ -477,6 +522,7 @@ def main(argv=None):
     s.set_defaults(fn=cmd_setup)
     s = sub.add_parser("index", help="색인 (폴더를 주지 않으면 PC 전체의 내 파일)"); s.add_argument("paths", nargs="*")
     s.add_argument("--deep", action="store_true", help="긴 문서의 뒷부분까지 의미 계산 (오래 걸림, 쉬는 시간에 권장)")
+    s.add_argument("--names-only", action="store_true", help="새 파일을 이름으로만 반영 (내용은 다음 색인 때, 배터리일 때 앱이 씀)")
     s.set_defaults(fn=cmd_index)
     s = sub.add_parser("serve", help="검색 화면 열기"); s.add_argument("--port", type=int, default=8096)
     s.add_argument("--no-browser", action="store_true"); s.add_argument("--no-photo", action="store_true"); s.add_argument("--no-llm", action="store_true")
