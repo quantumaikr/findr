@@ -153,7 +153,7 @@ def parse(q, now=None):
     yr = lambda n: (day0.replace(year=day0.year - n, month=1, day=1), day0.replace(year=day0.year - n + 1, month=1, day=1))
     # calendar years as people say them (TIME_WORDS=1): "작년에 만든 발표자료" read no period at all (real PCs, 11/9)
     years = [(r"재작년", lambda m: yr(2)), (r"작년|지난\s*해|지난해", lambda m: yr(1)), (r"올해|금년|이번\s*해", lambda m: (yr(0)[0], None))] \
-        if os.environ.get("TIME_WORDS", "0") == "1" else []
+        if os.environ.get("TIME_WORDS", "1") == "1" else []
     for pat, f in years + [(r"(\d+)\s*(개월|달)\s*(이내|안에|동안|사이|간)", lambda m: (day0 - D(30.44 * int(m.group(1))), None)),
                    (r"(\d+)\s*(개월|달)\s*전", lambda m: (day0 - D(30.44 * (int(m.group(1)) + 0.5)), day0 - D(30.44 * (int(m.group(1)) - 0.5)))),
                    (r"반년\s*전", lambda m: (day0 - D(30.44 * 7), day0 - D(30.44 * 5))),
@@ -747,7 +747,7 @@ class Finder:
         if not words or not res:
             return res
         # a format the question names holds here too: '강의 자료 pdf' is not the xlsx whose name says 강의자료 (real PC, 11/9)
-        fmt = parse(q)["exts"] if os.environ.get("KIND_GATE", "0") == "1" else set()
+        fmt = parse(q)["exts"] if os.environ.get("KIND_GATE", "1") == "1" else set()
         fits = lambda name: not fmt or os.path.splitext(name or "")[1].lower() in fmt
         key = lambda s: re.sub(r"[\s_\-.()\[\]]+", "", unicodedata.normalize("NFC", s or "").lower())
         if all(w in key(res[0].get("name")) for w in words) and fits(res[0].get("name")):
@@ -1074,7 +1074,7 @@ class Finder:
             r["ms"] = int(1000 * (time.time() - t0))
         if pfut is not None:
             self.photo_merge(q, r, pfut, k, p)
-        if pre_period and os.environ.get("TIME_WORDS", "0") == "1":
+        if pre_period and os.environ.get("TIME_WORDS", "1") == "1":
             # later stages (repair across the whole index, history, cross-language and name passes) bring files from outside
             # the period; on a Mac "작년에 만든 발표자료" ended with ten files of this year while the period held ten (11/9).
             # Files of the period come first: those the stages kept, then the ones they pushed out, then the rest
@@ -1421,8 +1421,8 @@ def collapse_copies(con, res):
 
 def photos_wanted(q, p):
     """the question leaves room for a photo: it names no format other than images, and no kind of document unless it also
-    says photo ('회의 사진', '영수증 찍은 거'). KIND_GATE=1 turns this on (off by default until the real-PC runs agree)"""
-    if os.environ.get("KIND_GATE", "0") != "1":
+    says photo ('회의 사진', '영수증 찍은 거'). On by default since the real-PC sealed sets (11/9: three PCs, none worse); KIND_GATE=0 turns it off"""
+    if os.environ.get("KIND_GATE", "1") != "1":
         return True
     if PHOTO_WORD.search(q):
         return True
@@ -1595,7 +1595,16 @@ def _ce_key(d, q, doc):
 def _ce_score(q, res, d, tok, m, nosumm, top=None):
     import torch
     if nosumm:   # the stage-A reranker was trained on name | folder | opening text
-        docs = [f"{x['name']} | {'/'.join(x['path'].replace(chr(92), '/').split('/')[-3:-1])} | {x.get('head', '')[:700]}" for x in res]
+        # CE_TAIL=1: candidates past the first CE_TAIL_FROM (10) read a shorter opening (CE_TAIL_CHARS, 220). On a Mac the
+        # time is the candidates times their length (M1 Pro alone: 10 x 200 tokens 0.35 s, 10 x 384 0.65 s, 30 x 384 1.9 s;
+        # no shape or fp16 effect, 11/9); the page shows the first ten, and the rest still get scored, more cheaply
+        # on by default on an Apple GPU only (a Mac M1 Pro, 11/9: p50 2.37 -> 1.76 s, the 2 s line met, the known-file answers
+        # and their ranks unchanged, one point lost at rank 5 of a vague task); an NVIDIA GPU scores 30 in a few ms anyway
+        tail_on = os.environ.get("CE_TAIL", "1" if DEVICE == "mps" else "0") == "1"
+        tail_from = int(os.environ.get("CE_TAIL_FROM") or 10) if tail_on else 10 ** 9
+        tail_n = int(os.environ.get("CE_TAIL_CHARS") or 220)
+        docs = [f"{x['name']} | {'/'.join(x['path'].replace(chr(92), '/').split('/')[-3:-1])} | {x.get('head', '')[:700 if i < tail_from else tail_n]}"
+                for i, x in enumerate(res)]
     else:
         docs = [f"{x['name']} | {'/'.join(x['path'].replace(chr(92), '/').split('/')[-3:-1])} | {(x.get('summary') or '')[:200]} {x.get('head', '')[:500]}"
                 for x in res]
@@ -1649,6 +1658,8 @@ def _ce_score(q, res, d, tok, m, nosumm, top=None):
             n = len(sc)
         else:
             sc = run(docs[:n])
+    if getattr(_ST, "d", None) is not None:   # how many candidates the reranker really scored: a Mac's 3 s budget can stop
+        _ST.d["ce_n"] = float(n)               # before 30, and the answer then depends on timing (#74; Mac Air, 11/9)
     if m.device.type == "cpu" and d not in CE_RATE:
         # the rate is measured once (the warm-up's full-size batch) and then kept: learned from each question, it made the
         # number of candidates, and so the answer, depend on the question before (#66: rank 1, then rank 8 a moment later)
@@ -1679,11 +1690,11 @@ def show(p):
             "라이브러리 포함": p["lib"]}
 
 
-def period_first(q, rs):
+def period_first(q, rs, now=None):
     """the period the question names, at the very end (TIME_WORDS=1): a later stage looks for a word of the question across
     the whole index, and on a Mac "작년에 만든 발표자료" brought this month's code files holding the word 작년 (11/9). Files
     saved inside the period keep their order and go first; the rest follow (kept, not dropped)"""
-    p = parse(q)
+    p = parse(q, now=now)
     if not p["since"]:
         return rs
     a, b = p["since"].strftime("%Y-%m-%d %H:%M"), p["until"].strftime("%Y-%m-%d %H:%M") if p["until"] else "9999"
@@ -2119,10 +2130,33 @@ def _stage_timers():
     gc.callbacks.append(on_gc)
 
 
+RESULTS = collections.OrderedDict()   # whole answers by question and state: people ask the same things again (#R0)
+RESULTS_MAX = int(os.environ.get("RESULT_CACHE") or 300)   # 0: off
+RESULTS_LOCK = _th.Lock()   # the server answers on several threads
+
+
+def result_key(f, q, mode, k, prev, pin):
+    """the key of a whole answer, or None (cache off). It holds what can change the answer: the question, the route, how
+    many, the question before, a pinned 'today' and the day itself (relative dates), the index (SQLite data_version moves
+    when the indexer commits), and the personal memory (a choice made since lifts another file). On a Mac a repeated
+    question still took 1.3-1.5 s (only some reranker scores cached); the same answer comes back at once"""
+    if not RESULTS_MAX:
+        return None
+    try:
+        ver = f.con.execute("PRAGMA data_version").fetchone()[0]
+    except Exception:   # noqa: BLE001
+        return None
+    pm = personal()
+    mem = len(getattr(pm, "rows", []) or []) if pm is not None else 0
+    flags = tuple(os.environ.get(x, "") for x in ("KIND_GATE", "DUP_COLLAPSE", "TIME_WORDS", "CE_TAIL", "CE_MATCHED"))
+    return (q, mode, k, prev, pin, dt.date.today().isoformat(), ver, mem, flags)
+
+
 def _slow_line(res, mode, total):
     d = getattr(_ST, "d", None) or {}
-    st = {k: int(v * 1000) for k, v in sorted(d.items(), key=lambda kv: -kv[1]) if v >= 0.01}
-    line = "FINDR_SLOW " + json.dumps({"ms": int(total * 1000), "route": mode, "n": len(res.get("results") or []), "stages": st})
+    st = {k: int(v * 1000) for k, v in sorted(d.items(), key=lambda kv: -kv[1]) if v >= 0.01 and k != "ce_n"}
+    extra = {"ce_n": int(d["ce_n"])} if "ce_n" in d else {}   # a count, not a time
+    line = "FINDR_SLOW " + json.dumps({"ms": int(total * 1000), "route": mode, "n": len(res.get("results") or []), **extra, "stages": st})
     print(line, flush=True)
     try:   # also in the data folder's logs, where the tester guide looks (#67: CLI serve printed it to the terminal only)
         lg = Path(os.environ.get("FINDR_DATA") or (Path.home() / ".findr")) / "logs" / "slow.log"
@@ -2357,7 +2391,16 @@ def serve(f, port):
                 no_facts = mode == "ng" and not _has_facts(f)   # '이해 우선' on an index without work facts: no such table -> 500 (#32)
                 if no_facts:
                     mode = "xce"   # the reranker answers, and route / the /refine cache say so
-                t_req = time.time(); _ST.d = {}
+                t_req = time.time()
+                rkey = result_key(f, q_, mode, k, prev_, self.headers.get("X-Findr-Today"))
+                with RESULTS_LOCK:
+                    hit = RESULTS.get(rkey) if rkey else None
+                    if hit is not None:
+                        RESULTS.move_to_end(rkey)
+                if hit is not None:   # the same question again, nothing changed since: the same answer at once
+                    res = json.loads(hit); res["cached"] = True; res["ms"] = int((time.time() - t_req) * 1000)
+                    return self.reply(200, json.dumps(res, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
+                _ST.d = {}
                 with SEARCH_LOCK:
                   _ST.d["lock_wait"] = time.time() - t_req
                   global EVAL_NOW
@@ -2387,17 +2430,23 @@ def serve(f, port):
                     with SEARCH_LOCK:
                         res = personal().apply(f, q_, res)
                 res = add_probs(res)
-                if res.get("results") and os.environ.get("TIME_WORDS", "0") == "1":
-                    res["results"] = period_first(q_, res["results"])
-                    p_ = parse(q_)
+                if res.get("results") and os.environ.get("TIME_WORDS", "1") == "1":
+                    try:   # the same 'today' the search used (an evaluation pins it; EVAL_NOW is already reset here)
+                        now_ = dt.datetime.fromisoformat(self.headers.get("X-Findr-Today")) if self.headers.get("X-Findr-Today") else None
+                    except ValueError:
+                        now_ = None
+                    res["results"] = period_first(q_, res["results"], now=now_)
+                    p_ = parse(q_, now=now_)
                     if p_["since"] and res["results"] and not (p_["since"].strftime("%Y-%m-%d %H:%M") <= (res["results"][0].get("date") or "")
                                                                < (p_["until"].strftime("%Y-%m-%d %H:%M") if p_["until"] else "9999")):
-                        # nothing saved in that period: say so (a Mac with no files from last year showed other years silently)
-                        res["note"] = "말씀하신 기간에 저장된 파일은 없습니다. 다른 시기의 비슷한 파일을 보여 드립니다."
-                if os.environ.get("DUP_COLLAPSE", "0") == "1":
+                        # nothing of that period among the answers: said as information beside the list, not as 'nothing here'
+                        # (a Mac with no files from last year showed other years silently; a note counted as 'none' at the gate)
+                        msg_ = "말씀하신 기간의 파일은 찾지 못해, 다른 시기의 비슷한 파일을 보여 드려요."
+                        res["info"] = (res["info"] + " " + msg_) if res.get("info") else msg_
+                if os.environ.get("DUP_COLLAPSE", "1") == "1":
                     with SEARCH_LOCK:
                         res = collapse_copies(f.con, res)
-                if res.get("results") and os.environ.get("KIND_GATE", "0") == "1":
+                if res.get("results") and os.environ.get("KIND_GATE", "1") == "1":
                     res["results"] = format_first(q_, res["results"])
                 # the page's '서버' time: the whole request, not the search alone (a Mac page showed 서버 3.4 s · 화면 7.1 s and
                 # the rest had no name: the index refresh check before the search and the steps after it were left out)
@@ -2409,6 +2458,11 @@ def serve(f, port):
                     _LAST.clear()
                 _LAST[(q_, mode)] = res
                 body = json.dumps(res, ensure_ascii=False, default=str).encode()
+                if rkey:
+                    with RESULTS_LOCK:
+                        RESULTS[rkey] = body
+                        while len(RESULTS) > RESULTS_MAX:
+                            RESULTS.popitem(last=False)
                 ct = "application/json; charset=utf-8"
             elif u.path == "/explore":
                 body = (Path(__file__).with_name("explore.html")).read_bytes(); ct = "text/html; charset=utf-8"
