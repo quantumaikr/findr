@@ -129,9 +129,12 @@ APPROX_MB = {"rank": 1153, "rank-int8": 560, "gate": 1, "qu": 639, "embeddinggem
 INDEX_ROOM_GB = 2.0   # room left for the first index to start (it grows to 1-6 GB on a whole PC, #67), besides the models
 
 
+OWN_FOLDERS = ("rank", "gate", "qu")
+
+
 def _patterns(folder):
-    """(repository, files to fetch, files to skip, size key) for one folder, as pull() fetches it"""
-    if folder in ("rank", "gate", "qu"):
+    """(repository, files to fetch, files to skip, size key) for one folder: what pull() fetches and download_plan() sizes"""
+    if folder in OWN_FOLDERS:
         cpu = gpu()[0] == "cpu"
         if folder == "rank" and cpu:
             return OWN, [f"{folder}/*.json", f"{folder}/model_int8.onnx"], None, "rank-int8"
@@ -152,37 +155,66 @@ def _repo_bytes(repo, allow, ignore, token=None):
 def download_plan(folders, token=None):
     """[(folder, bytes, exact)] for the folders this PC does not have yet (have(): a half-done download counts as missing).
     exact is False when the repository could not be asked and the size is the APPROX_MB estimate"""
-    out, sizes = [], {}
+    out, offline = [], False
     for f in folders:
-        if have(f) or (f not in PUBLIC and f not in ("rank", "gate", "qu")):
+        if have(f) or (f not in PUBLIC and f not in OWN_FOLDERS):
             continue
         repo, allow, ignore, key = _patterns(f)
-        try:
-            if (repo, tuple(allow or ()), tuple(ignore or ())) not in sizes:
-                sizes[(repo, tuple(allow or ()), tuple(ignore or ()))] = _repo_bytes(repo, allow, ignore, token)
-            out.append((f, sizes[(repo, tuple(allow or ()), tuple(ignore or ()))], True))
-        except Exception:   # offline, a proxy, a private repository without a token: the estimate keeps the check useful
-            out.append((f, APPROX_MB.get(key, 0) * 10 ** 6, False))
+        if not offline:
+            try:
+                out.append((f, _repo_bytes(repo, allow, ignore, token), True)); continue
+            except Exception:   # offline, a proxy, a private repository without a token: the estimate keeps the check useful,
+                offline = True   # and the other folders do not each wait out the timeout again
+        out.append((f, APPROX_MB.get(key, 0) * 10 ** 6, False))
     return out
 
 
-def disk_free(where=None):
-    """free bytes on the drive that holds the models folder (or its nearest existing parent: before the first setup)"""
-    p = Path(where or paths.MODELS)
-    while not p.exists() and p.parent != p:
+def _existing(where):
+    p = Path(where)
+    while not p.exists() and p.parent != p:   # before the first setup: the nearest folder that exists
         p = p.parent
-    return shutil.disk_usage(p).free
+    return p
+
+
+def disk_free(where=None):
+    """free bytes on the drive that holds this folder (the models folder by default)"""
+    return shutil.disk_usage(_existing(where or paths.MODELS)).free
+
+
+def same_drive(a, b):
+    try:
+        return os.stat(a).st_dev == os.stat(b).st_dev
+    except OSError:
+        return True   # cannot tell: the stricter check (both on one drive)
+
+
+def room_check(download_bytes):
+    """[(what, folder, free, need)] for every drive that is short: the models' drive for the download (x1.1) and the data
+    folder's drive for a first index to start (INDEX_ROOM_GB); one drive holding both must have room for the sum.
+    FINDR_MODELS on another drive used to hide a full system drive under the data folder"""
+    m, h = _existing(paths.MODELS), _existing(paths.HOME)
+    need_m, need_h = download_bytes * 1.1, INDEX_ROOM_GB * 1e9
+    if same_drive(m, h):
+        free = disk_free(m)
+        return [] if free >= need_m + need_h else [("모델과 색인", paths.MODELS, free, need_m + need_h)]
+    short = []
+    for what, p, need in (("모델", paths.MODELS, need_m), ("색인", paths.HOME, need_h)):
+        free = disk_free(p)
+        if free < need:
+            short.append((what, p, free, need))
+    return short
 
 
 def pull(folders, token=None):
     from huggingface_hub import snapshot_download
-    own = [f for f in folders if f in ("rank", "gate", "qu") and not have(f)]
+    own = [f for f in folders if f in OWN_FOLDERS and not have(f)]
     if own:
         print(f"  findr 모델 받는 중 ({', '.join(own)}) ...", flush=True)
-        cpu = gpu()[0] == "cpu"
-        pats = [p for f in own for p in ([f"{f}/*.json", f"{f}/model_int8.onnx"] if f == "rank" and cpu else [f"{f}/*"])]
-        # a CPU-only PC ranks with the int8 model (543 MB); a GPU PC never uses it
-        snapshot_download(OWN, local_dir=paths.MODELS, allow_patterns=pats, ignore_patterns=None if cpu else ["*.onnx"], token=token)
+        # one download for findr's own folders, with the files _patterns() names (and download_plan() sizes): a CPU-only
+        # PC ranks with the int8 model (543 MB); a GPU PC never uses it
+        sel = [_patterns(f) for f in own]
+        snapshot_download(OWN, local_dir=paths.MODELS, allow_patterns=[p for _, a, _, _ in sel for p in a],
+                          ignore_patterns=sel[0][2], token=token)
     for f in folders:   # the public models (meaning search, photos): without them the engine would fetch them at search time
         if f in PUBLIC and not have(f):
             repo, files, why = PUBLIC[f]

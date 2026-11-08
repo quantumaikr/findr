@@ -102,3 +102,53 @@ def test_the_person_can_skip_the_check(home, monkeypatch):
     pulled = _setup(monkeypatch, [("rank", int(1.2 * GB), True)], free_gb=1)
     monkeypatch.setenv("FINDR_SKIP_DISK_CHECK", "1")
     assert cli.cmd_setup(args()) == 1 and pulled == [["rank"]]
+
+
+def test_index_room_is_checked_on_the_data_folders_drive(home, monkeypatch, capsys):
+    """FINDR_MODELS on a roomy drive must not hide a full drive under the data folder (the index goes there)"""
+    pulled = _setup(monkeypatch, [("rank", int(1.2 * GB), True)], free_gb=0)
+    big = home / "big"; big.mkdir()
+    monkeypatch.setattr(paths, "MODELS", big / "models"); monkeypatch.setattr(models.paths, "MODELS", big / "models")
+    monkeypatch.setattr(models, "same_drive", lambda a, b: False)
+    monkeypatch.setattr(models.shutil, "disk_usage", lambda p: Usage(1, 0, int((50 if str(p).startswith(str(big)) else 1) * GB)))
+    assert cli.cmd_setup(args()) == 5 and pulled == []
+    out = capsys.readouterr().out
+    assert "디스크 공간이 모자랍니다 (색인:" in out and "FINDR_HOME=" in out and "FINDR_MODELS=" not in out
+    monkeypatch.setattr(models.shutil, "disk_usage", lambda p: Usage(1, 0, int((1.0 if str(p).startswith(str(big)) else 50) * GB)))
+    assert models.room_check(int(1.2 * GB)) == [("모델", big / "models", int(1.0 * GB), 1.2 * GB * 1.1)]   # the models' own drive
+    monkeypatch.setattr(models, "same_drive", lambda a, b: True)   # one drive: the sum (1.32 + 2 GB) must fit
+    monkeypatch.setattr(models.shutil, "disk_usage", lambda p: Usage(1, 0, int(3 * GB)))
+    assert [w[0] for w in models.room_check(int(1.2 * GB))] == ["모델과 색인"]
+
+
+def test_offline_asks_the_repository_once(home, monkeypatch):
+    """a dropped network or a hanging proxy: the first timeout decides, the other folders use their estimates at once"""
+    calls = []
+
+    def down(*a, **k):
+        calls.append(a[0]); raise OSError("timed out")
+    monkeypatch.setattr(models, "_repo_bytes", down)
+    monkeypatch.setattr(models, "gpu", lambda: ("mps", 0.0))
+    plan = models.download_plan(["rank", "gate", "qu", "multilingual-e5-small"])
+    assert len(calls) == 1 and len(plan) == 4 and not any(x for _, _, x in plan)
+
+
+@pytest.mark.parametrize("dev", ["cpu", "mps", "cuda"])
+def test_pull_fetches_what_the_plan_sizes(home, monkeypatch, dev):
+    """pull() and download_plan() select files with the same rule (_patterns), so the size shown is the size fetched"""
+    import sys
+    import types
+    got = []
+    hub = types.SimpleNamespace(snapshot_download=lambda repo, **k: got.append((repo, k.get("allow_patterns"), k.get("ignore_patterns"))))
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+    monkeypatch.setattr(models, "gpu", lambda: (dev, 8.0 if dev == "cuda" else 0.0))
+    folders = ["rank", "gate", "qu", "multilingual-e5-small"]
+    models.pull(folders)
+    own = [models._patterns(f) for f in ("rank", "gate", "qu")]
+    assert got[0] == (models.OWN, [p for _, a, _, _ in own for p in a], own[0][2])
+    repo, allow, _, _ = models._patterns("multilingual-e5-small")
+    assert got[1] == (repo, allow, None)
+    if dev == "cpu":
+        assert "rank/model_int8.onnx" in got[0][1] and got[0][2] is None
+    else:
+        assert got[0][2] == ["*.onnx"]

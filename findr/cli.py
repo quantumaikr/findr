@@ -91,20 +91,28 @@ def _disk_short(want, token=None):
         print("  이미 있음:", ", ".join(have_))
     if not plan_:
         return False
-    free = models.disk_free()
     est = "" if all(x for _, _, x in plan_) else " (일부는 추정치)"
     size = lambda b: f"{b / 1e9:.1f}GB" if b >= 1e8 else f"{max(b, 1e6) / 1e6:.0f}MB"
     print(f"  새로 받을 용량: 약 {need / 1e9:.1f}GB{est} — " + ", ".join(f"{f} {size(b)}" for f, b, _ in plan_))
-    room = need * 1.1 + models.INDEX_ROOM_GB * 1e9   # the download plus a first index to start
-    print(f"  디스크 여유: {free / 1e9:.1f}GB (필요: 약 {room / 1e9:.1f}GB, 모델 폴더: {paths.MODELS})")
-    if free >= room or os.environ.get("FINDR_SKIP_DISK_CHECK") == "1":
+    print(f"  디스크 여유: {models.disk_free() / 1e9:.1f}GB (모델 폴더: {paths.MODELS})"
+          + ("" if models.disk_free(paths.HOME) == models.disk_free() else f", {models.disk_free(paths.HOME) / 1e9:.1f}GB (데이터 폴더: {paths.HOME})"))
+    short = models.room_check(need)   # the download on the models' drive, a first index on the data folder's drive
+    if not short or os.environ.get("FINDR_SKIP_DISK_CHECK") == "1":
         return False
-    print(f"\n  디스크 공간이 모자랍니다: 약 {(room - free) / 1e9:.1f}GB를 더 비우거나, 아래 중 하나로 다시 실행해 주세요.")
-    small = models.plan(photo=False, lite=True)[2]
-    if [f for f in want if f not in small]:   # only where --lite fetches less (a Mac or a CPU PC already gets the small set)
-        print(f"  - 작은 모델만:  findr setup --lite   (빠지는 것: {', '.join(f for f in want if f not in small)})")
-    print("  - 모델을 다른 드라이브에:  FINDR_MODELS=<여유 있는 폴더> findr setup")
-    print(f"  디스크 공간이 모자라 받지 않았습니다 (여유 {free / 1e9:.1f}GB, 필요 약 {room / 1e9:.1f}GB).")
+    print()
+    for what, p, free, need_ in short:
+        print(f"  디스크 공간이 모자랍니다 ({what}: {p}): 여유 {free / 1e9:.1f}GB, 필요 약 {need_ / 1e9:.1f}GB")
+    print("  공간을 비우거나, 아래 중 하나로 다시 실행해 주세요.")
+    whats = {w[0] for w in short}
+    if whats & {"모델", "모델과 색인"}:   # the models do not fit: fewer of them, or another drive for them
+        small = models.plan(photo=False, lite=True)[2]
+        if [f for f in want if f not in small]:   # only where --lite fetches less (a Mac or a CPU PC already gets the small set)
+            print(f"  - 작은 모델만:  findr setup --lite   (빠지는 것: {', '.join(f for f in want if f not in small)})")
+        print("  - 모델을 다른 드라이브에:  FINDR_MODELS=<여유 있는 폴더> findr setup")
+    if whats & {"색인", "모델과 색인"}:   # the index will not fit where the data folder is: the data folder elsewhere
+        print("  - 데이터 폴더(색인)를 다른 드라이브에:  FINDR_HOME=<여유 있는 폴더> findr setup")
+    w = short[0]
+    print(f"  디스크 공간이 모자라 받지 않았습니다 ({w[0]} 드라이브 여유 {w[2] / 1e9:.1f}GB, 필요 약 {w[3] / 1e9:.1f}GB).")
     return True
 
 
