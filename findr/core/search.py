@@ -395,12 +395,24 @@ def fact_ok(f, c, slack=10, loose=False):
     return True
 
 
+_LLM_DOWN = [0.0]   # until when the planner server is taken as down
+
+
 def chat_json(prompt, max_tokens):
+    """the condition / plan reader (FINDR_LLM). Callers fall back to their rules on any error. Not set: no call at all.
+    Down: no new try for a minute. On Windows a refused localhost connection takes ~2 s (it retries), and the installed app
+    has no such server, so every understanding-first question waited 2 s for nothing."""
     import urllib.request
+    if not LLM or time.time() < _LLM_DOWN[0]:
+        raise ConnectionError("no condition reader")
     body = json.dumps({"messages": [{"role": "user", "content": prompt}], "max_tokens": max_tokens, "temperature": 0,
                        "response_format": {"type": "json_object"}, "chat_template_kwargs": {"enable_thinking": False}}).encode()
     req = urllib.request.Request(LLM, body, {"Content-Type": "application/json"})
-    return json.load(urllib.request.urlopen(req, timeout=60))["choices"][0]["message"]["content"]
+    try:
+        return json.load(urllib.request.urlopen(req, timeout=60))["choices"][0]["message"]["content"]
+    except OSError:   # refused, unreachable, timed out (URLError is an OSError)
+        _LLM_DOWN[0] = time.time() + 60
+        raise
 
 
 class Finder:
@@ -1209,7 +1221,7 @@ def meets(n, x, text):
 
 
 WEAK = 0.45   # bge-m3 cosine; set from the trial queries (2026-11-03), to be checked on the independent query set
-LLM = os.environ.get("FINDR_LLM", "http://127.0.0.1:8090/v1/chat/completions")   # base 4B (no adapter), started by serve4b.sh
+LLM = os.environ.get("FINDR_LLM", "")   # condition / plan reader (a research 4B server, e.g. http://127.0.0.1:8090/v1/chat/completions); not shipped: off
 
 
 def chat(prompt, max_tokens):
