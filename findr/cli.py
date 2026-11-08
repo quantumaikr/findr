@@ -176,7 +176,9 @@ def _upgrade_why_not(db):
         return f"메모리 {_ram_gb():.0f}GB (8GB 이상에서만)"
     if shutil.disk_usage(paths.HOME).free < 3 * 2 ** 30:
         return "디스크 여유 3GB 미만"
-    if models.gpu()[0] == "mps" and not models.big_ok():   # the Apple GPU self-check already chose the small model here (#27)
+    measured = (paths.HOME / "device_check.json").exists() or models.have(UPGRADE_TO)
+    # an Apple GPU is measured after the download (cmd_upgrade): asking before it judged a missing model as slow for good
+    if models.gpu()[0] == "mps" and measured and not models.big_ok():   # the self-check chose the small model here (#27)
         try:
             rate = json.loads((paths.HOME / "device_check.json").read_text()).get("pieces_per_s")
         except (OSError, ValueError):
@@ -196,6 +198,10 @@ def cmd_upgrade(a):
     if not models.have(UPGRADE_TO):
         print("  더 정확한 의미 모델 받는 중 (한 번, 약 1.2GB) ...", flush=True)
         models.pull([UPGRADE_TO])
+    if models.gpu()[0] == "mps" and not models.big_ok():   # measured now, with the model here: slow on this Mac, small stays
+        why = _upgrade_why_not(a.db) or "이 기기에서 큰 모델이 느림"
+        (paths.HOME / "upgrade_off").write_text(why, encoding="utf-8")
+        print(f"큰 모델로 바꾸기: 하지 않음 ({why})"); return 3
     env = {**os.environ}
     r = subprocess.call([sys.executable, str(paths.CORE / "index.py"), "--root", str(paths.HOME), "--db", str(a.db),
                          "--upgrade", UPGRADE_TO, "--minutes", str(a.minutes)], env=env, cwd=str(paths.CORE))
