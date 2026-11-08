@@ -121,3 +121,22 @@ def test_name_floor_never_worse_than_system_search(tmp_path):
     res2 = [{"name": "메모.txt", "fid": 2}, {"name": "견적서_온누리식품_v2.pdf", "fid": 1}]
     assert [x["fid"] for x in f.name_floor("온누리식품 견적서", res2)] == [1, 2]   # among them: moved up
     assert f.name_floor("메모", res2)[0]["fid"] == 2   # #1 already fits: unchanged
+
+
+def test_xling_named_beyond_the_top_10(tmp_path):
+    """a Korean question whose English-named file the first stage never fetched ('갤럭시 광고 문구' -> Galaxy_Ad_Copy.docx):
+    found from all names when every idea is in the name, one by translation; common pairs and same-script names are left alone"""
+    import sqlite3
+    con = sqlite3.connect(tmp_path / "i.db")
+    con.executescript("CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT, name TEXT, ext TEXT, size INT, mtime REAL, tier INT);"
+                      "CREATE TABLE chunks(id INTEGER PRIMARY KEY, file INT, n INT, text TEXT);")
+    rows = [(1, "Galaxy_Ad_Copy_v1.docx", 1, 1), (2, "Galaxy_Ad_Copy_v2.docx", 5, 1), (3, "galaxy_wallpaper.png", 9, 1),
+            (4, "Galaxy_Ad_Copy_lib.py", 9, 2), (5, "headroad_copy.txt", 9, 1)]
+    for fid, nm, mt, tier in rows:
+        con.execute("INSERT INTO files VALUES(?,?,?,?,1,?,?)", (fid, "/d/" + nm, nm, nm.rsplit(".", 1)[1], mt, tier))
+        con.execute("INSERT INTO chunks VALUES(?,?,0,'')", (fid * 10, fid))
+    f = search.Finder.__new__(search.Finder); f.con = con; f.name_rows = None
+    assert f.xling_named("갤럭시 광고 문구") == [2, 1]   # newest first; library file (tier 2) and 'headroad' (no 'ad' word) out
+    assert f.xling_named("갤럭시 배경화면") == []   # 배경화면 has no English entry: not every idea is carried
+    assert f.xling_named("광고") == []   # one idea is not a name search
+    assert search.xling_cover("갤럭시_광고_문구.hwp", search.xling_ideas("갤럭시 광고 문구")) == (True, False)   # same script
