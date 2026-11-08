@@ -166,6 +166,22 @@ def _fits(x, exts, since, until, folder):
     return True
 
 
+def _path_forms(pth):
+    """the same file as the index may have stored it: as given, with / for \\, and C:\\... <-> /mnt/c/... (WSL)"""
+    m = re.match(r"^([A-Za-z]):[\\/](.*)$", pth or "")
+    forms = [pth, (pth or "").replace("\\", "/")]
+    if m:
+        forms.append(f"/mnt/{m.group(1).lower()}/" + m.group(2).replace("\\", "/"))
+    m = re.match(r"^/mnt/([a-z])/(.*)$", pth or "")
+    if m:
+        forms.append(f"{m.group(1).upper()}:\\" + m.group(2).replace("/", "\\"))
+    return list(dict.fromkeys(forms))
+
+
+MAYBE = 0.15        # a file at least this likely to be the asked kind is never left out
+OTHER_SURE = 0.6    # a file is left out only when this sure it is another kind
+
+
 def search_files(query: str, limit: int = 8, kind: str = "", since: str = "", until: str = "", folder: str = "") -> dict:
     """Find files on this PC from a vague description, the way a person remembers them: what the file was about, roughly
     when, who sent it, which version ('the draft before the final'). Korean and English. Returns the likely files, best
@@ -196,16 +212,39 @@ def search_files(query: str, limit: int = 8, kind: str = "", since: str = "", un
         ids = {}
         if con is not None:
             for x in kept:
-                row = con.execute("SELECT id FROM files WHERE path=?", (x["path"],)).fetchone()
+                row = None
+                for c in _path_forms(x["path"]):   # the engine may name a file the way the OS does, the index another way
+                    row = con.execute("SELECT id FROM files WHERE path=?", (c,)).fetchone()
+                    if row:
+                        break
                 if row:
                     ids[x["path"]] = row[0]
-        kinds = doctype.of_files(con, list(ids.values())) if con is not None else {}
-        if kinds:
+        P = doctype.probs(con, list(ids.values())) if con is not None else {}
+        if P:
+            labels = doctype.heads()["labels"]
             for x in kept:
-                k = kinds.get(ids.get(x["path"]))
-                if k:
-                    x["doc_kind"], x["doc_kind_chance"] = k[0], round(k[1], 2)
-            kept = [x for x in kept if x.get("doc_kind") in dk]
+                p = P.get(ids.get(x["path"]))
+                if p is not None:
+                    x["doc_kind"], x["doc_kind_chance"] = labels[int(p.argmax())], round(float(p.max()), 2)
+                    x["_m"] = doctype.chance_of(p, dk)
+            # only a file surely of another kind leaves: the kind model is wrong at times (0.5-0.8 on PCs it never saw)
+            # and an uncertain guess must not hide the file meant. The rest keep the search's order; those not read as
+            # the asked kind are marked maybe, those with no stored vector unknown
+            out, maybe = [], 0
+            for x in kept:
+                k, c = x.get("doc_kind"), x.get("doc_kind_chance", 0)
+                if k is not None and k not in dk and c >= OTHER_SURE and x.get("_m", 0) < MAYBE:
+                    continue
+                if k is None:
+                    x["doc_kind_match"] = "unknown"; maybe += 1
+                elif k not in dk:
+                    x["doc_kind_match"] = "maybe"; maybe += 1
+                out.append(x)
+            for x in out:
+                x.pop("_m", None)
+            kept = out
+            if maybe:
+                note = f"{maybe} of these may be another kind of document (the kind was uncertain); they are marked."
         else:
             note = "Kinds of documents cannot be told on this index (its encoder has no kind model), so that part was not applied."
     r = dict(r); r["results"] = kept[:limit]

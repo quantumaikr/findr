@@ -64,6 +64,18 @@ def _head(encoder):
 
 def of_files(con, fids):
     """{file id: (kind, probability)} from the stored first-piece vectors; {} when this index's encoder has no head"""
+    labels = heads()["labels"]
+    return {f: (labels[int(p.argmax())], float(p.max())) for f, p in probs(con, fids).items()}
+
+
+def chance_of(p, kinds):
+    """how likely a file (its probabilities) is one of these kinds"""
+    labels = heads()["labels"]
+    return float(sum(p[labels.index(k)] for k in kinds if k in labels))
+
+
+def probs(con, fids):
+    """{file id: probabilities over the kinds (heads()['labels'] order)}"""
     try:
         r = con.execute("SELECT value FROM meta WHERE key='encoder'").fetchone() if con else None
     except sqlite3.OperationalError:   # an index without a meta table (very old, or a test's)
@@ -72,7 +84,6 @@ def of_files(con, fids):
     if hd is None or not fids:
         return {}
     w, b = hd
-    labels = heads()["labels"]
     out = {}
     q = ",".join("?" * len(fids))
     try:
@@ -85,6 +96,5 @@ def of_files(con, fids):
             continue
         z = w @ v + b
         p = np.exp(z - z.max()); p /= p.sum()
-        i = int(p.argmax())
-        out[fid] = (labels[i], float(p[i]))
+        out[fid] = p
     return out

@@ -76,3 +76,26 @@ def test_search_files_kind_without_a_head_says_so(mcp):
     _index(home / "index.db", "unknown-encoder", [("프로젝트_0312.docx", "프로젝트 킥오프 정리", "회의록")]).close()
     r = m.search_files("프로젝트", kind="회의록")
     assert r["results"] and "cannot be told" in r["note"]
+
+
+def test_search_files_drops_only_files_surely_of_another_kind(mcp, monkeypatch):
+    m, home = mcp
+    _index(home / "index.db", "e5-small", [("프로젝트_0312.docx", "프로젝트 킥오프 정리", "회의록"),
+                                          ("프로젝트_정리.docx", "프로젝트 정리", "보고서"),
+                                          ("프로젝트_사진.docx", "프로젝트 사진", "기타")]).close()
+    labels = doctype.heads()["labels"]
+
+    def fake(con, fids):   # file 2 is mostly a report but fairly likely minutes; file 3 is surely not minutes
+        out = {}
+        for f in fids:
+            p = np.full(len(labels), 0.01)
+            p[labels.index({1: "회의록", 2: "보고서", 3: "기타"}[f])] = 0.6
+            if f == 2:
+                p[labels.index("회의록")] = 0.3
+            out[f] = p / p.sum()
+        return out
+    monkeypatch.setattr(doctype, "probs", fake)
+    r = m.search_files("프로젝트", kind="회의록")
+    got = {x["name"]: x for x in r["results"]}
+    assert set(got) == {"프로젝트_0312.docx", "프로젝트_정리.docx"}   # the photo is surely another kind: it leaves
+    assert "doc_kind_match" not in got["프로젝트_0312.docx"] and got["프로젝트_정리.docx"]["doc_kind_match"] == "maybe" and "may be" in r["note"]
