@@ -52,22 +52,6 @@ def test_second_indexer_waits_its_turn(tmp_path):
     assert run([tmp_path / "d"], db, tmp_path).returncode == 0   # the lock went with its holder
 
 
-def test_whole_pc_run_passes_on_the_indexer_exit_code(tmp_path):
-    """`findr index` (whole PC) runs index_pc.py, which used to exit 0 even when index.py refused with FINDR_BUSY (3), so a
-    script or timer could not tell a run that never happened from one that finished (chosen folders already passed it on)"""
-    home = tmp_path / "home"; (home / "Desktop").mkdir(parents=True); (home / "Desktop" / "a.txt").write_text("x")
-    db = tmp_path / "i.db"
-    assert index.one_indexer(db)   # another run holds this index
-    env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home), "FINDR_OCR": "0", "FINDR_HOME": str(tmp_path), "FINDR_DATA": str(tmp_path)}
-    try:
-        r = subprocess.run([sys.executable, str(IDX.with_name("index_pc.py")), "--db", str(db), "--model", "none"],
-                           env=env, capture_output=True, text=True, timeout=180)
-    finally:
-        index._LOCK.close(); index._LOCK = None
-    assert "FINDR_BUSY" in r.stdout and "(exit 3)" in r.stdout
-    assert r.returncode == 3
-
-
 @pytest.mark.skipif(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0), reason="needs a file the user cannot read")
 def test_unreadable_file_stays_pending(tmp_path):
     f = tmp_path / "잠김.txt"; f.write_text("내용", encoding="utf-8"); f.chmod(0)

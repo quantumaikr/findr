@@ -107,7 +107,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=int(os.environ.get("FINDR_APP_PORT", 8096)))
     ap.add_argument("--rounds", type=int, default=3)
-    ap.add_argument("--ready-wait", type=float, default=300, help="seconds to wait for the engine to answer, then for /ready")
+    ap.add_argument("--ready-wait", type=float, default=300, help="seconds to wait for /ready")
     ap.add_argument("--ask", action="store_true", help="also time `findr ask` through the running engine")
     ap.add_argument("--db", default="", help="index file, if not <data folder>/index.db")
     ap.add_argument("--out", default="")
@@ -125,14 +125,8 @@ def main():
         pass
     rep["index"] = index_size(Path(a.db) if a.db else d / "index.db")
 
-    # the engine may still be starting (right after `findr serve` or the app opens): wait for it within --ready-wait
-    t_h = time.time()
-    while True:
-        h, _ = eng.get("/healthz", timeout=10)
-        if h.get("text") == "ok" or time.time() - t_h > a.ready_wait:
-            break
-        time.sleep(1)
-    rep["engine"] = {"health": h.get("text") == "ok", "health_sec": round(time.time() - t_h, 2)}
+    h, dt = eng.get("/healthz", timeout=10)
+    rep["engine"] = {"health": h.get("text") == "ok", "health_sec": round(dt, 2)}
     if not rep["engine"]["health"]:
         print(f"엔진이 응답하지 않습니다 (포트 {a.port}). `findr serve`를 먼저 켜 주세요.")
         return finish(rep, a, d)
