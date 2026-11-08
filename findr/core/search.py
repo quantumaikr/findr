@@ -547,6 +547,23 @@ class Finder:
                 ws.append(w)
         return ws
 
+    def scan_text(self, like, seconds=None, every=20000):
+        """files whose text holds a 2-letter word, read without an index. After a deep run (920k pieces) one such question took
+        24-31 s on a Mac (사진, 예산, 계약) and the time showed in no stage. Two bounds: stop at 201 files (more than 200 is a
+        common word, which literal_files drops anyway: the same answer, at once), and stop reading after LIT_SCAN_S (1 s) for a
+        rare word on a large index (then names and paths alone)"""
+        t0 = time.time(); limit = float(os.environ.get("LIT_SCAN_S") or 1.0) if seconds is None else seconds
+        self.con.set_progress_handler(lambda: int(time.time() - t0 > limit), every)   # checked every N SQLite steps
+        try:
+            out = {f_ for (f_,) in self.con.execute("SELECT DISTINCT file FROM chunks WHERE text LIKE ? ESCAPE '\\' LIMIT 201", (like,))}
+        except sqlite3.OperationalError:   # interrupted at the time limit
+            out = set()
+        finally:
+            self.con.set_progress_handler(None, 0)
+            if getattr(_ST, "d", None) is not None:   # shown in FINDR_SLOW: this time had no stage before
+                _ST.d["literal_scan"] = time.time() - t0
+        return out
+
     def literal_files(self, text, limit=30):
         """for a 1-3 word question: files whose name, path or text contains every word (case-insensitive), newest first"""
         ws = self.content_words(text)
@@ -560,7 +577,7 @@ class Finder:
                 fs |= {f_ for (f_,) in self.con.execute("SELECT DISTINCT c.file FROM fts JOIN chunks c ON c.id = fts.rowid WHERE fts MATCH ? LIMIT 5000",
                                                         ('"' + w.replace('"', '') + '"',))}
             elif len(ws) == 1:   # a 2-char single keyword ("대산"): the trigram index cannot hold it, scan the text once
-                fs |= {f_ for (f_,) in self.con.execute("SELECT DISTINCT file FROM chunks WHERE text LIKE ? ESCAPE '\\'", (like,))}
+                fs |= self.scan_text(like)
             sets = fs if sets is None else sets & fs
             if not sets:
                 return []
