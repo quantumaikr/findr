@@ -67,11 +67,13 @@ def qu_ok(dev):
 def plan(photo=None, lite=False):
     """the folders this PC should have"""
     dev, gb = gpu()
-    # GPU memory decides how much fits: under 4 GB the small meaning model, under 6 GB no side-by-side checker
-    big = dev == "mps" or (dev == "cuda" and gb >= 4)
-    big = big and not lite
+    # GPU memory decides how much fits: under 4 GB the small meaning model, under 6 GB no side-by-side checker.
+    # An Apple GPU starts on the small model too: the large one ran 12-13.5x slower on both field Macs (M3 Air 5.2 vs 62.5,
+    # M1 Pro 8.8 vs 118.7 pieces/s), so every Mac downloaded 1.2 GB, measured it for minutes and fell back. The idle-time
+    # upgrade fetches and measures it later, and switches only where it is fast (fast first, smarter with use).
+    big = dev == "cuda" and gb >= 4 and not lite
     want = ["rank", "gate"] + (["qu"] if qu_ok(dev) else []) + (["embeddinggemma-2"] if big else ["multilingual-e5-small"])
-    if big and checker_ok(dev, gb):
+    if not lite and checker_ok(dev, gb):
         want.append("checker")
     if photo is None:
         photo = dev == "cuda" and gb >= 10   # the photo model needs about 7.5 GB of GPU memory next to the rest

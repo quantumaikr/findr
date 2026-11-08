@@ -31,7 +31,7 @@ window.addEventListener('hashchange', route)
 
 // ---------- first run ----------
 function welcome(s: AppState) {
-  const size = s.gpu === 'cpu' ? '약 3GB' : '약 6~13GB'
+  const size = s.gpu === 'nvidia' ? '약 6~13GB' : '약 3~4GB'   // a Mac starts on the small meaning model too (the large one comes later, in idle time)
   view.innerHTML = `
     <h1>findr</h1>
     <p class="lead">기억나는 대로 물으면 내 PC에서 파일을 찾아 줍니다. 파일 내용과 질문은 이 PC 밖으로 나가지 않습니다.</p>
