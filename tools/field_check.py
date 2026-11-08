@@ -180,6 +180,10 @@ def main():
         rep["summary"]["ask_sec"] = round(time.time() - t, 1)
         rep["summary"]["ask_ok"] = pr.returncode == 0
 
+    st, _ = eng.get("/status", timeout=30)   # the resource manager: tier, signals and pressure while the questions ran
+    if st and "error" not in st:
+        rep["engine"]["status"] = st
+        print(f"이 PC의 등급: {st.get('profile', {}).get('tier_ko')} · 압박 {st.get('pressure')} · 했을 대응 {st.get('would') or '-'}")
     mem, _ = eng.get("/stats", timeout=30)   # the engine's own memory after the questions: now and at its peak
     rep["engine"]["memory"] = {k: mem[k] for k in ("rss_mb", "peak_mb", "gpu_peak_mb") if k in mem}
     s = rep["summary"]

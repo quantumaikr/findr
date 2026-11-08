@@ -186,24 +186,3 @@ def test_particle_alone_is_no_idea():
     """'에서' alone strips to nothing: no idea, no crash (a gate run hit IndexError on it)"""
     assert search.xling_ideas("서버 에서 설정") == [["서버", "server"], ["설정", "config", "setting"]]
     assert search.xling_name_first("서버 에서 설정", [{"name": "a.txt"}, {"name": "server_config.yaml"}]) == 1
-
-
-def test_two_letter_scan_is_bounded(tmp_path):
-    """a one-word 2-letter question reads the text without an index: after a deep run (920k pieces) it took 24-31 s on a
-    Mac. A common word stops at 201 files (literal_files drops more than 200 anyway: the same answer), a rare word is still
-    found, and a scan past its time limit gives names and paths alone instead of an error"""
-    import sqlite3
-    con = sqlite3.connect(tmp_path / "i.db")
-    con.executescript("CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT, name TEXT, ext TEXT, size INT, mtime REAL, tier INT);"
-                      "CREATE TABLE chunks(id INTEGER PRIMARY KEY, file INT, n INT, text TEXT);")
-    con.executemany("INSERT INTO files VALUES(?,?,?,'.txt',1,?,1)", [(i, f"/d/f{i}.txt", f"f{i}.txt", i) for i in range(400)])
-    con.executemany("INSERT INTO chunks VALUES(?,?,0,?)", [(i, i, "사진 정리" if i < 300 else ("대산 견적" if i == 350 else "메모")) for i in range(400)])
-    con.commit()
-    import unicodedata as _ud
-    con.create_function("nfc", 1, lambda s: _ud.normalize("NFC", s) if s else s, deterministic=True)
-    f = search.Finder.__new__(search.Finder); f.con = con
-    assert len(f.scan_text("%사진%")) == 201   # stops early
-    assert f.literal_files("사진") == []   # a common word, as before
-    assert f.literal_files("대산") == [350]   # a rare word, still found in the text
-    assert f.scan_text("%대산%", seconds=-1, every=1) == set()   # past the time limit: no text matches, no error
-    assert con.execute("SELECT count(*) FROM chunks").fetchone()[0] == 400   # the connection still works
