@@ -172,21 +172,47 @@ def search_files(query: str, limit: int = 8, kind: str = "", since: str = "", un
     first, with 'chance' (0-1) that each is the one meant, where it is, when it was modified, and a short excerpt.
     A note says when nothing is a sure match. Ask the person before opening or using a file they did not mean.
     Optional filters: kind (pdf, word, hwp, slides, sheet, image, text, audio, video, or extensions like '.key';
-    several with commas), since / until (YYYY-MM-DD, by modified date), folder (only inside this folder). Use them when
-    the person said the format, the period or the place, or when a first search came back with the wrong kind of file."""
+    several with commas; or a kind of document: 회의록/minutes, 계약서/contract, 견적서/invoice, 보고서/report,
+    계획서/proposal, 신청서/application, 공문/notice, 규정/manual, 명단/list, 양식/form, 증명서/certificate,
+    강의/lecture, 발표/presentation), since / until (YYYY-MM-DD, by modified date), folder (only inside this folder).
+    Use them when the person said the format, the kind of document, the period or the place, or when a first search
+    came back with the wrong kind of file."""
     limit = max(1, min(int(limit or 8), 30))
-    exts = _exts(kind)
-    if not (exts or since or until or folder):
+    from .core import doctype
+    words = [w for w in re.split(r"[,\s]+", str(kind or "")) if w]
+    dk = doctype.match(kind)   # a kind of document (회의록, contract, ...): read from the index's own vectors
+    exts = _exts(",".join(w for w in words if not doctype.match(w)))
+    if not (exts or dk or since or until or folder):
         return _engine_search(query, limit) or _index_search(query, limit)
     r = _engine_search(query, 50) or _index_search(query, 50, exts=exts, folder=folder)   # wider, then the filters
     kept = [x for x in r["results"] if _fits(x, exts, since, until, folder)]
-    if len(kept) < limit:   # the index itself, inside the filters, for what the ranked list did not hold
+    if len(kept) < limit or dk:   # the index itself, inside the filters, for what the ranked list did not hold
         seen = {x["path"] for x in kept}
-        kept += [x for x in _index_search(query, 50, exts=exts, folder=folder)["results"]
+        kept += [x for x in _index_search(query, 300 if dk else 50, exts=exts, folder=folder)["results"]   # a kind is read cheaply: look wider
                  if x["path"] not in seen and _fits(x, exts, since, until, folder)]
+    note = ""
+    if dk:
+        con = _db()
+        ids = {}
+        if con is not None:
+            for x in kept:
+                row = con.execute("SELECT id FROM files WHERE path=?", (x["path"],)).fetchone()
+                if row:
+                    ids[x["path"]] = row[0]
+        kinds = doctype.of_files(con, list(ids.values())) if con is not None else {}
+        if kinds:
+            for x in kept:
+                k = kinds.get(ids.get(x["path"]))
+                if k:
+                    x["doc_kind"], x["doc_kind_chance"] = k[0], round(k[1], 2)
+            kept = [x for x in kept if x.get("doc_kind") in dk]
+        else:
+            note = "Kinds of documents cannot be told on this index (its encoder has no kind model), so that part was not applied."
     r = dict(r); r["results"] = kept[:limit]
     r["filters"] = {k: v for k, v in (("kind", kind), ("since", since), ("until", until), ("folder", folder)) if v}
-    if not r["results"]:
+    if note:
+        r["note"] = note
+    elif not r["results"]:
         r["note"] = "Nothing matched inside these filters. Try without one of them, or list_folder to look around."
     return r
 
