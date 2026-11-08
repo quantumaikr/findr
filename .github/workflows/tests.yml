@@ -23,7 +23,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: astral-sh/setup-uv@v6
+      - name: uv (Astral's server first, GitHub second)
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in Linux) T=x86_64-unknown-linux-gnu ;; macOS) T=aarch64-apple-darwin ;; Windows) T=x86_64-pc-windows-msvc ;; esac
+          bash .github/get-uv.sh "$T" "$RUNNER_TEMP/uvbin"
+          echo "$RUNNER_TEMP/uvbin" >> "$GITHUB_PATH"
 
       - name: Python environment
         shell: bash

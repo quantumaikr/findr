@@ -15,8 +15,9 @@ dependencies = [
   "torch>=2.4",                 # the installer picks the CUDA / CPU / Apple build
   "torchvision>=0.19",
   # EmbeddingGemma-2 needs a transformers build newer than the last release (5.22.2): pinned to the tested commit
-  # the tested commit, pre-built (pure Python): nothing is compiled on the user's PC (#3)
-  "transformers @ https://github.com/quantumaikr/findr/releases/download/deps/transformers-5.23.0.dev0-py3-none-any.whl",
+  # the tested commit, pre-built (pure Python): nothing is compiled on the user's PC (#3). Served from the model repository
+  # (the same file, sha256 a8b00f7d...): GitHub release downloads answered 504 for hours on 2026-11-08 and stopped installs
+  "transformers @ https://huggingface.co/quantumaikr/findr-models/resolve/af56ccb34b94b2348da3216eb3458c12fc8968d5/deps/transformers-5.23.0.dev0-py3-none-any.whl#sha256=a8b00f7db929ea8cc11c7422585f0ea99d72804e14b3978fb3dd3d9fed5a1ef6",
   "sentence-transformers>=5.0",
   "huggingface_hub>=0.30",
   "pypdf>=4.0",
