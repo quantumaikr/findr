@@ -30,6 +30,8 @@ class Fake(BaseHTTPRequestHandler):
             body = b'{"ready": true}'
         elif u.path == "/progress":
             body = b"{}"
+        elif u.path == "/stats":
+            body = b'{"files": 40, "rss_mb": 900, "peak_mb": 1200}'
         else:
             k = int(parse_qs(u.query)["k"][0])
             res = [{"name": f"secret_{i}.pdf", "path": f"/home/x/secret_{i}.pdf", "prob": 0.9} for i in range(k)]
@@ -54,6 +56,7 @@ def test_counts_and_times_only(tmp_path, monkeypatch):
     rep = json.loads(out)
     assert "secret" not in out and "/home/x" not in out   # the PC's file names stay on the PC
     assert rep["index"] == {"files": 40, "pieces": 0}
+    assert rep["engine"]["memory"] == {"rss_mb": 900, "peak_mb": 1200}   # the engine's own memory, now and at its peak
     assert rep["summary"]["short_lists"] == 0 and rep["summary"]["k30_count"] == 30
     assert rep["checks"]["엔진 준비"] and rep["checks"]["결과 개수(k=10)"]
     assert not rep["checks"]["없는 파일 질문"] and code == 1   # the fake answers everything with 90 %: flagged
@@ -64,3 +67,9 @@ def test_engine_down(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["field_check", "--port", "9", "--rounds", "1"])
     assert load().main() == 1
     assert json.loads((tmp_path / "field_check.json").read_text(encoding="utf-8"))["engine"]["health"] is False
+
+
+def test_engine_reports_its_memory():
+    import search
+    m = search.proc_memory()
+    assert m.get("peak_mb", 0) > 0 and m.get("peak_mb", 0) >= m.get("rss_mb", 0)

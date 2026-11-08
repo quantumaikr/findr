@@ -1940,6 +1940,42 @@ def _local_request(h):
         h.headers.get(x) for x in ("CF-Connecting-IP", "X-Forwarded-For", "Forwarded", "X-Real-IP"))
 
 
+def proc_memory():
+    """this engine's memory now and at its peak (MB), and the GPU's peak when one is in use: the field reports had a 20 GB
+    engine with no number to compare against (report the peak, not a plan)"""
+    out = {}
+    try:
+        if sys.platform.startswith("linux"):
+            for line in open("/proc/self/status", encoding="utf-8"):
+                if line.startswith(("VmRSS:", "VmHWM:")):
+                    out["rss_mb" if line.startswith("VmRSS") else "peak_mb"] = int(line.split()[1]) // 1024
+        elif os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+
+            class PMC(ctypes.Structure):
+                _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD), ("PeakWorkingSetSize", ctypes.c_size_t),
+                            ("WorkingSetSize", ctypes.c_size_t), ("a", ctypes.c_size_t), ("b", ctypes.c_size_t), ("c", ctypes.c_size_t),
+                            ("d", ctypes.c_size_t), ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
+            m = PMC(); m.cb = ctypes.sizeof(PMC)
+            k32 = ctypes.windll.kernel32; k32.GetCurrentProcess.restype = wintypes.HANDLE
+            gpmi = ctypes.windll.psapi.GetProcessMemoryInfo   # the 64-bit handle needs its type spelled out (OverflowError)
+            gpmi.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD]; gpmi.restype = wintypes.BOOL
+            if gpmi(k32.GetCurrentProcess(), ctypes.byref(m), m.cb):
+                out = {"rss_mb": m.WorkingSetSize // 2**20, "peak_mb": m.PeakWorkingSetSize // 2**20}
+        else:   # macOS: the peak (ru_maxrss is in bytes there)
+            import resource
+            out["peak_mb"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 2**20
+    except Exception:   # noqa: BLE001  (a number we cannot read is left out)
+        pass
+    try:
+        if "torch" in sys.modules and sys.modules["torch"].cuda.is_initialized():
+            out["gpu_peak_mb"] = sys.modules["torch"].cuda.max_memory_allocated() // 2**20
+    except Exception:   # noqa: BLE001
+        pass
+    return out
+
+
 def open_on_pc(path, reveal=False):
     """open a file with its program, or show it in its folder, as the desktop app does"""
     import subprocess
@@ -2161,7 +2197,7 @@ def serve(f, port):
                 body = json.dumps(projsum.summarize(db, pr), ensure_ascii=False).encode(); ct = "application/json; charset=utf-8"
             elif u.path == "/stats":
                 with SEARCH_LOCK:
-                    body = json.dumps(f.stats()).encode(); ct = "application/json"
+                    body = json.dumps({**f.stats(), **proc_memory()}).encode(); ct = "application/json"
             else:
                 pg = Path(__file__).with_name("page.html")
                 body = (pg.read_text(encoding="utf-8") if pg.exists() else PAGE).encode(); ct = "text/html; charset=utf-8"
