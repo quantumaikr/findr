@@ -2047,19 +2047,26 @@ def serve(f, port):
             if urlparse(self.path).path == "/progress":   # indexing still running: the page shows where it stands
                 if not self.authed():
                     return
+                data_ = Path(os.environ.get("FINDR_DATA") or Path.home() / ".findr")
                 try:
-                    data_ = Path(os.environ.get("FINDR_DATA") or Path.home() / ".findr")
                     p_ = json.loads((data_ / "progress.json").read_bytes())
                     if not indexer_alive(p_):
-                        body_ = b"{}"   # the indexer was stopped: no '색인 진행 중' banner left behind
+                        p_ = {}   # the indexer was stopped: no '색인 진행 중' banner left behind
                     else:
                         # paused is the pause file itself: a paused indexer waits without writing progress, and a page opened
                         # after a restart showed '진행 중' with a pause button that paused it again (field, Mac)
                         p_["paused"] = (data_ / "pause").exists()
-                        body_ = json.dumps(p_, ensure_ascii=False).encode()
                 except (OSError, ValueError):
-                    body_ = b"{}"
-                return self.reply(200, body_, "application/json; charset=utf-8")
+                    p_ = {}
+                # #106: in the app, the page offers '지금 반영' and says when new files were last taken in, idle or not
+                if os.environ.get("FINDR_APP") == "1":
+                    p_["app"] = True
+                    try:
+                        p_["last_refresh"] = int(float((data_ / "last_refresh").read_text().strip()))
+                    except (OSError, ValueError):
+                        pass
+                    p_["refresh_asked"] = (data_ / "refresh_now").exists()
+                return self.reply(200, json.dumps(p_, ensure_ascii=False).encode(), "application/json; charset=utf-8")
             if urlparse(self.path).path == "/auth":   # the desktop app opens the page once with its key; a cookie keeps it signed in
                 import hmac
                 t_ = parse_qs(urlparse(self.path).query).get("t", [""])[0]
@@ -2246,6 +2253,11 @@ def serve(f, port):
                 f_ = Path(os.environ.get("FINDR_DATA") or Path.home() / ".findr") / "pause"
                 f_.write_text("1") if on else f_.unlink(missing_ok=True)
                 return self.reply(200, json.dumps({"ok": True, "paused": on}).encode(), "application/json")
+            if self.headers.get("X-Findr") == "1" and urlparse(self.path).path == "/refresh":
+                # '지금 반영' (#106): the app's refresher looks for this file every few seconds and takes in new files at once
+                f_ = Path(os.environ.get("FINDR_DATA") or Path.home() / ".findr") / "refresh_now"
+                f_.write_text(str(int(time.time())))
+                return self.reply(200, b'{"ok": true}', "application/json")
             if self.headers.get("X-Findr") == "1" and urlparse(self.path).path == "/open":   # 열기 / 폴더 in a browser on this PC
                 if not _local_request(self):
                     return self.reply(403, b'{"ok": false, "why": "remote"}', "application/json")
