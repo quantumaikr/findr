@@ -107,9 +107,23 @@ def _inside(p, k):
         return False
 
 
+def own_dirs():
+    """findr's own folders: a source checkout (git clone in the home folder) and the data folder. Whole-PC search indexed
+    findr's README and code, and they came up for questions about the person's files (#66)"""
+    out = []
+    repo = Path(__file__).resolve().parents[2]
+    if (repo / "pyproject.toml").is_file() and (repo / "findr" / "core").is_dir():
+        out.append(repo)
+    for k in ("FINDR_HOME", "FINDR_DATA"):
+        if os.environ.get(k):
+            out.append(Path(os.environ[k]).expanduser().resolve())
+    out.append((Path.home() / ".findr").resolve())
+    return list(dict.fromkeys(out))
+
+
 def user_roots(mnt="/mnt"):
     """standard user folders, cloud folders, other folders made in the home folder, then non-system folders at each drive top"""
-    out, seen = [], set()
+    out, seen = [], set(own_dirs())
     homes, drives = _places(mnt)
     std = {nm.lower() for _, _, names in USER_DIRS for nm in names}
     for u in homes:

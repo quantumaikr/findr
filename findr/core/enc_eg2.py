@@ -36,8 +36,10 @@ class EG2:
         import os
         device = pick_device(device)
         from sentence_transformers import SentenceTransformer
-        # Apple GPU: float32 (M1 has no bfloat16 hardware, and float16 overflows in this model)
-        kw = {"model_kwargs": {"torch_dtype": torch.float32}} if device == "mps" else {}
+        # Apple GPU: float32 (M1 has no bfloat16 hardware, and float16 overflows in this model). CPU: float32 as well. The
+        # config's bfloat16 runs at 0.1 pieces/s on a 4-core laptop CPU without bf16 support (#66); on a recent CPU the two
+        # are within 10% (6.5 vs 5.9 pieces/s on 4 threads)
+        kw = {"model_kwargs": {"torch_dtype": torch.float32}} if device in ("mps", "cpu") else {}
         self.st = SentenceTransformer(PATH, device=device, **kw); self.st.max_seq_length = max_len; self.dev = device
         self.bs = int(os.environ.get("FINDR_BATCH") or (16 if device == "mps" else 64))
 
