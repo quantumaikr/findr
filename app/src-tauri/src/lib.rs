@@ -207,16 +207,30 @@ fn start_refresher() {
         return;
     }
     start_upgrader();
-    thread::spawn(|| loop {
+    thread::spawn(|| {
+        let started = std::time::Instant::now();
+        let mut last_refresh: Option<std::time::Instant> = None;
+        loop {
         let folders = load_folders();
         if !folders.is_empty() && home().join("index.db").exists() && !on_battery() {
+            // changed files: at once, then every hour
+            let refresh_due = last_refresh.map(|t| t.elapsed().as_secs() >= 3600).unwrap_or(true);
+            // the deep run waits for idle time, as the model upgrade does: started right after the page opened, its 28 minutes
+            // made the first search 27.9 s and left 0.5 GB free on an 8 GB laptop (#66 rerun)
+            let idle = match idle_seconds() {
+                Some(s) => s >= 300,
+                None => started.elapsed().as_secs() >= 3000, // cannot tell: not in the first 50 minutes
+            };
             for deep in [false, true] {
                 // the deep run (rest of long documents, scans on a CPU, the opening-only reads of the first pass) every 6 hours:
                 // files added since the last one get the same care
                 let fresh = std::fs::metadata(home().join(".deep-done")).and_then(|m| m.modified()).ok()
                     .and_then(|t| t.elapsed().ok()).map(|e| e.as_secs() < 6 * 3600).unwrap_or(false);
-                if deep && fresh {
+                if (deep && (fresh || !idle)) || (!deep && !refresh_due) {
                     continue;
+                }
+                if !deep {
+                    last_refresh = Some(std::time::Instant::now());
                 }
                 take_index_turn();
                 let log = std::fs::File::create(home().join("logs").join(if deep { "deep.log" } else { "refresh.log" }));
@@ -237,7 +251,8 @@ fn start_refresher() {
                 }
             }
         }
-        thread::sleep(std::time::Duration::from_secs(3600));
+        thread::sleep(std::time::Duration::from_secs(600)); // look every 10 minutes: idle time for the deep run is caught soon
+        }
     });
 }
 
