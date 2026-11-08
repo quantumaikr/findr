@@ -210,6 +210,8 @@ function pipeline(r){
 const APP=!!(window.__TAURI__&&window.__TAURI__.core);   // inside the desktop app: open files and folders directly
 let LOCAL=false;   // a browser on this PC: the engine opens files for it (never through a tunnel)
 if(!APP)fetch('/canopen').then(r=>r.json()).then(j=>{LOCAL=!!j.local;if(LOCAL&&last)list()}).catch(()=>{});
+// the engine answers at once but warms up for a few seconds after a start: say so instead of a silent first wait (#68)
+(function waitReady(n){fetch('/ready').then(r=>r.json()).then(j=>{const m=$('#meta');if(!j.ready){if(!last&&m)m.textContent='검색 엔진을 준비하는 중입니다… 곧 바로 답합니다';if(n<120)setTimeout(()=>waitReady(n+1),1000)}else if(!last&&m)m.textContent=''}).catch(()=>{})})(0);
 // indexing: a small live chip in the status line; it opens a panel with what can be found now (search works meanwhile)
 (function(){
  const ST=[['names','이름으로 찾기','파일 목록을 만드는 중'],['namevec','비슷한 말로 이름 찾기','이름의 뜻을 파악하는 중'],
