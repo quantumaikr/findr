@@ -1430,9 +1430,23 @@ def _ce_score(q, res, d, tok, m, nosumm, top=None):
         # of 5 made every question 3.3 s against the 1.5 s budget (#66 rerun); a recent CPU still scores 5 within it
         n = min(n, max(3, int(cap / CE_RATE[d])))
     t_ = time.time()
+
+    def run(part):
+        b = tok([q] * len(part), part, padding=True, truncation=True, max_length=CE_MAXLEN, return_tensors="pt").to(m.device)
+        return torch.sigmoid(m(**b).logits.view(-1).float()).cpu().tolist()
+
     with torch.no_grad():
-        b = tok([q] * n, docs[:n], padding=True, truncation=True, max_length=CE_MAXLEN, return_tensors="pt").to(m.device)
-        sc = torch.sigmoid(m(**b).logits.view(-1).float()).cpu().tolist()
+        if m.device.type == "mps":
+            # Apple GPU: 30 candidates took 4-5 s, and 7-12 s while indexing or a hot fanless laptop shared the GPU (field,
+            # 0.2.12-13). In steps of CE_STEP_MPS (10), first ones first; past CE_TOTAL_MPS (3 s) for the question no more steps.
+            # The page's 10 are always scored; the rest keep their first-stage order below them.
+            step, limit = int(os.environ.get("CE_STEP_MPS") or 10), float(os.environ.get("CE_TOTAL_MPS") or 3)
+            sc = []
+            while len(sc) < n and (len(sc) < step or time.time() - _QT[0] < limit):
+                sc += run(docs[len(sc):min(n, len(sc) + step)])
+            n = len(sc)
+        else:
+            sc = run(docs[:n])
     if m.device.type == "cpu" and d not in CE_RATE:
         # the rate is measured once (the warm-up's full-size batch) and then kept: learned from each question, it made the
         # number of candidates, and so the answer, depend on the question before (#66: rank 1, then rank 8 a moment later)
