@@ -38,6 +38,7 @@ dependencies = [
   "onnxruntime>=1.18",          # the int8 reranker on PCs without a GPU (about 2.7x faster)
   "einops>=0.7",                # the photo model's image processor: without it the photo server stopped at start
   "accelerate>=1.0",
+  "psutil>=5.9",                # the resource manager: free memory, CPU load, battery (it came with accelerate; now named)
 ]
 
 [project.scripts]

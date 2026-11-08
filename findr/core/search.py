@@ -1451,6 +1451,7 @@ import threading as _th  # noqa: E402
 # reranker scores by (model, question, candidate text): people ask the same thing again, the page asks again for more results,
 # and one question scores overlapping candidates in its repair passes. The text is the key, so an edited file is scored anew.
 # The number of candidates scored does not change with the cache: the same question keeps the same answer (#74).
+GOV = None   # the resource manager, started with the server (governor.py)
 CE_CACHE = collections.OrderedDict()
 CE_CACHE_MAX = int(os.environ.get("CE_CACHE") or 50000)   # 0: off
 CE_CACHE_LOCK = _th.Lock()   # the warm-up scores outside the search lock
@@ -1491,7 +1492,10 @@ def _ce_score(q, res, d, tok, m, nosumm, top=None):
         if miss:
             b = tok([q] * len(miss), [part[i] for i in miss], padding=True, truncation=True, max_length=CE_MAXLEN,
                     return_tensors="pt").to(m.device)
+            t_m = time.time()
             got.update(zip(miss, torch.sigmoid(m(**b).logits.view(-1).float()).cpu().tolist()))
+            if GOV is not None:   # the model's own time per candidate (cached scores left out): heat or sharing shows as a slowdown
+                GOV.rerank_time(time.time() - t_m, int(b["input_ids"].numel()))
         with CE_CACHE_LOCK:
             out = [got[i] for i in range(len(keys))]
             for i, k in enumerate(keys):
@@ -2027,6 +2031,12 @@ def open_on_pc(path, reveal=False):
 
 def serve(f, port):
     _stage_timers()
+    global GOV
+    try:   # the resource manager: observes this PC (profile, memory, CPU, power, heat) and says what it would do (/status)
+        from governor import Governor
+        GOV = Governor(dev=DEVICE, log=lambda s: print(s, flush=True)); GOV.start()
+    except Exception as e:   # noqa: BLE001  (search works without it)
+        print(f"FINDR_GOV off {type(e).__name__}", flush=True)
 
     class H(BaseHTTPRequestHandler):
         def reply(self, code, body, ct):
@@ -2237,6 +2247,8 @@ def serve(f, port):
             elif u.path == "/stats":
                 with SEARCH_LOCK:
                     body = json.dumps({**f.stats(), **proc_memory()}).encode(); ct = "application/json"
+            elif u.path == "/status":   # this PC as findr sees it now: tier, signals, pressure, what it would do
+                body = json.dumps(GOV.state() if GOV is not None else {}, ensure_ascii=False).encode(); ct = "application/json; charset=utf-8"
             else:
                 pg = Path(__file__).with_name("page.html")
                 body = (pg.read_text(encoding="utf-8") if pg.exists() else PAGE).encode(); ct = "text/html; charset=utf-8"
@@ -2245,6 +2257,29 @@ def serve(f, port):
         def do_POST(self):
             if not self.authed():
                 return
+            if self.headers.get("X-Findr") == "1" and urlparse(self.path).path == "/embed":
+                # document vectors for the indexer, from the encoder this engine already holds: one copy of the model on the
+                # PC instead of two (the indexer's own copy, with torch, was 1.7 of its 1.75 GB; with the engine's 2.7 GB it
+                # went past what an 8 GB laptop leaves and the OS killed the engine). Same vectors as the indexer's own:
+                # the document side, 512 tokens.
+                try:
+                    r = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 4 << 20)) or b"{}")
+                    texts, name = [str(t) for t in r["texts"]][:64], str(r.get("encoder") or "")
+                except Exception:
+                    return self.reply(400, b'{"ok": false}', "application/json")
+                enc = getattr(f, "enc", None)
+                if enc is None or name != getattr(f, "encoder", None) or not hasattr(enc, "st"):
+                    return self.reply(409, json.dumps({"ok": False, "why": "encoder", "have": getattr(f, "encoder", None)}).encode(), "application/json")
+                import base64
+                with SEARCH_LOCK:   # the encoder is shared with the questions: one short batch at a time
+                    old = enc.st.max_seq_length
+                    try:
+                        enc.st.max_seq_length = 512
+                        v = enc.emb(texts, query=False).cpu().numpy().astype("float16")
+                    finally:
+                        enc.st.max_seq_length = old
+                return self.reply(200, json.dumps({"ok": True, "dim": int(v.shape[1]) if len(v) else 0,
+                                                   "vecs": base64.b64encode(v.tobytes()).decode()}).encode(), "application/json")
             if self.headers.get("X-Findr") == "1" and urlparse(self.path).path == "/pause":
                 try:
                     on = bool(json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 256)) or b"{}").get("on"))

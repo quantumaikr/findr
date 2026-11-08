@@ -159,6 +159,8 @@ fn start_upgrader() {
                 let half = std::thread::available_parallelism().map(|n| (n.get() / 2).max(1)).unwrap_or(2);
                 let mut c = low_priority(python());
                 c.env("FINDR_THREADS", half.to_string()).env("OMP_NUM_THREADS", half.to_string());
+                // the person came back (keyboard or mouse in the last minute): the run stops and keeps what it computed
+                c.env("FINDR_STOP_ON_INPUT", "60");
                 c.args(["-m", "findr", "upgrade", "--minutes", "10"]);
                 let log = std::fs::OpenOptions::new().create(true).append(true).open(h.join("logs").join("upgrade.log"));
                 own_group(&mut c);
