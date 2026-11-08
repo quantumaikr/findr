@@ -1456,7 +1456,6 @@ def photo_text_vec(q):
 # and no 'not here' at all)
 NCAND = int(os.environ.get("NCAND") or (5 if DEVICE == "cpu" else 30))
 CE_MAXLEN = int(os.environ.get("CE_MAXLEN") or (256 if DEVICE == "cpu" else 384))   # ranker input length (256 for the CPU ranker)
-BUCKETS = sorted(int(x) for x in os.environ.get("CE_BUCKETS", "").split(",") if x.strip())   # fixed input lengths (off: one per batch)
 _OLD_NCAND = 30   # candidates handed to the 4B (40 cost 1.1 s per rerank on 2026-11-04; set 1 had every found answer within 20)
 
 
@@ -1584,7 +1583,13 @@ def _ce_key(d, q, doc):
 def _ce_score(q, res, d, tok, m, nosumm, top=None):
     import torch
     if nosumm:   # the stage-A reranker was trained on name | folder | opening text
-        docs = [f"{x['name']} | {'/'.join(x['path'].replace(chr(92), '/').split('/')[-3:-1])} | {x.get('head', '')[:700]}" for x in res]
+        # CE_TAIL=1: candidates past the first CE_TAIL_FROM (10) read a shorter opening (CE_TAIL_CHARS, 220). On a Mac the
+        # time is the candidates times their length (M1 Pro alone: 10 x 200 tokens 0.35 s, 10 x 384 0.65 s, 30 x 384 1.9 s;
+        # no shape or fp16 effect, 11/9); the page shows the first ten, and the rest still get scored, more cheaply
+        tail_from = int(os.environ.get("CE_TAIL_FROM") or 10) if os.environ.get("CE_TAIL", "0") == "1" else 10 ** 9
+        tail_n = int(os.environ.get("CE_TAIL_CHARS") or 220)
+        docs = [f"{x['name']} | {'/'.join(x['path'].replace(chr(92), '/').split('/')[-3:-1])} | {x.get('head', '')[:700 if i < tail_from else tail_n]}"
+                for i, x in enumerate(res)]
     else:
         docs = [f"{x['name']} | {'/'.join(x['path'].replace(chr(92), '/').split('/')[-3:-1])} | {(x.get('summary') or '')[:200]} {x.get('head', '')[:500]}"
                 for x in res]
@@ -1608,20 +1613,10 @@ def _ce_score(q, res, d, tok, m, nosumm, top=None):
             got = {i: CE_CACHE[k] for i, k in enumerate(keys) if k in CE_CACHE}
         miss = [i for i in range(len(keys)) if i not in got]
         if miss:
-            qs_, ds_ = [q] * len(miss), [part[i] for i in miss]
-            if BUCKETS:
-                # a few fixed shapes only (CE_BUCKETS, e.g. 128,256,384, and a full batch of CE_STEP): the Apple GPU builds an
-                # execution graph per input shape, and a new length per batch made each question pay for new ones (Macs, 11/9:
-                # 256 instead of 384 tokens saved no time, fp16 5%, one batch of 30 was 1.6 s slower)
-                longest = max(len(x) for x in tok(qs_, ds_, truncation=True, max_length=CE_MAXLEN)["input_ids"])
-                L_ = next((b_ for b_ in BUCKETS if b_ >= longest), CE_MAXLEN)
-                full = max(len(miss), int(os.environ.get("CE_STEP_MPS") or 10))   # the batch filled up to one size with copies
-                b = tok(qs_ + qs_[:1] * (full - len(miss)), ds_ + ds_[:1] * (full - len(miss)), padding="max_length",
-                        truncation=True, max_length=L_, return_tensors="pt").to(m.device)
-            else:
-                b = tok(qs_, ds_, padding=True, truncation=True, max_length=CE_MAXLEN, return_tensors="pt").to(m.device)
+            b = tok([q] * len(miss), [part[i] for i in miss], padding=True, truncation=True, max_length=CE_MAXLEN,
+                    return_tensors="pt").to(m.device)
             t_m = time.time()
-            got.update(zip(miss, torch.sigmoid(m(**b).logits.view(-1).float()).cpu().tolist()[:len(miss)]))
+            got.update(zip(miss, torch.sigmoid(m(**b).logits.view(-1).float()).cpu().tolist()))
             if GOV is not None:   # the model's own time per candidate (cached scores left out): heat or sharing shows as a slowdown
                 GOV.rerank_time(time.time() - t_m, int(b["input_ids"].numel()))
         with CE_CACHE_LOCK:

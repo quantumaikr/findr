@@ -1,50 +1,43 @@
-"""fixed input shapes for the reranker (CE_BUCKETS): the same scores as one length per batch, padded to a few lengths and a
-full batch so the Apple GPU reuses its execution graphs (Macs, 11/9); and the count of scored candidates in FINDR_SLOW"""
+"""the reranker's cost on a Mac is the candidates times their length (11/9): the tail past the first ten may read a shorter
+opening (CE_TAIL), and FINDR_SLOW says how many candidates were scored (a Mac's 3 s budget can stop before 30, #74)"""
 import search
 
 
 class Tok:
-    """a stand-in tokenizer: one id per character, padded as asked"""
+    """a stand-in tokenizer: one id per character"""
+    seen = []
+
     def __call__(self, qs, ds, padding=False, truncation=True, max_length=512, return_tensors=None):
+        Tok.seen += list(ds)
+        import torch
         ids = [[1] * min(len(q) + len(d), max_length) for q, d in zip(qs, ds)]
-        if padding == "max_length":
-            ids = [x + [0] * (max_length - len(x)) for x in ids]
-        elif padding:
-            L = max(len(x) for x in ids); ids = [x + [0] * (L - len(x)) for x in ids]
-        out = {"input_ids": ids}
-        if return_tensors:
-            import torch
-            t = torch.tensor(ids); out = {"input_ids": t, "attention_mask": (t > 0).long()}
-            return type("B", (dict,), {"to": lambda self, dev: self})(out)
-        return out
+        L = max(len(x) for x in ids); ids = [x + [0] * (L - len(x)) for x in ids]
+        t = torch.tensor(ids)
+        return type("B", (dict,), {"to": lambda self, dev: self})({"input_ids": t, "attention_mask": (t > 0).long()})
 
 
 class Model:
-    device = type("D", (), {"type": "cpu"})()
-    shapes = []
+    device = type("D", (), {"type": "cuda"})()
 
     def __call__(self, input_ids, attention_mask):
-        import torch
-        Model.shapes.append(tuple(input_ids.shape))
-        return type("O", (), {"logits": attention_mask.sum(1, keepdim=True).float() / 100})()   # depends on real length only
+        return type("O", (), {"logits": attention_mask.sum(1, keepdim=True).float() / 1000})()
 
 
-def test_buckets_give_the_same_scores_in_fixed_shapes(monkeypatch):
-    res = [{"name": f"f{i}", "path": f"/d/f{i}", "head": "x" * (20 + 13 * i)} for i in range(7)]
+def test_tail_reads_a_shorter_opening(monkeypatch):
+    res = [{"name": f"f{i}", "path": f"/d/f{i}", "head": "가" * 900} for i in range(14)]
     monkeypatch.setattr(search, "CE_CACHE_MAX", 0)
-    monkeypatch.setattr(search, "BUCKETS", [])
-    monkeypatch.setattr(search, "CE_RATE", {})   # the CPU time budget would learn a rate and score fewer the second time
-    Model.shapes = []
-    a = search._ce_score("q", res, "d", Tok(), Model(), True)
-    monkeypatch.setattr(search, "BUCKETS", [64, 128, 384]); search.CE_RATE.clear()
-    monkeypatch.setenv("CE_STEP_MPS", "10")
-    Model.shapes = []
-    b = search._ce_score("q", res, "d", Tok(), Model(), True)
-    assert max(abs(x - y) for x, y in zip(a, b)) < 1e-6   # padding does not change a score (last bits aside)
-    assert Model.shapes == [(10, 128)]              # a full batch of 10, one of the fixed lengths
+    monkeypatch.setenv("CE_TAIL", "1")
+    Tok.seen = []
+    search._ce_score("q", res, "d", Tok(), Model(), True)
+    lens = [len(s) for s in Tok.seen]
+    assert max(lens[:10]) > 700 and max(lens[10:]) < 260   # the first ten as before, the tail shorter
+    monkeypatch.setenv("CE_TAIL", "0")
+    Tok.seen = []
+    search._ce_score("q", res, "d", Tok(), Model(), True)
+    assert min(len(s) for s in Tok.seen) > 700              # off: every candidate reads the same opening
 
 
-def test_slow_line_counts_scored_candidates(capsys, monkeypatch):
+def test_slow_line_counts_scored_candidates(capsys):
     search._ST.d = {"ce_scores": 2.5, "ce_n": 30.0}
     search._slow_line({"results": [1, 2]}, "xce", 2.7)
     out = capsys.readouterr().out

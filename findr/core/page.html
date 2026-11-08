@@ -174,8 +174,15 @@ async function go(){
  if(last&&last.q0&&last.q0!==qq&&!last.picked)tried.push(last.q0); if(tried.length>8)tried=tried.slice(-8);
  $('#res').innerHTML='<div class="skel"></div><div class="skel"></div><div class="skel"></div>'; $('#pipe').innerHTML='';$('#notice').innerHTML='';$('#under').innerHTML='';$('#meta').textContent='';
  const t0=performance.now(); $('#spd').classList.remove('on');
- try{const r=await (await fetch('/api?'+new URLSearchParams({q:qq,mode,k:30}))).json(); if(my!==seq)return; r._rt=Math.round(performance.now()-t0); if(r.error){$('#res').innerHTML='';$('#notice').innerHTML='<div class="notice">'+esc(r.error)+'</div>';return} if(DEMO&&r.results)r.results=r.results.filter(x=>!/googledrive/i.test(x.path)); last=r; last.q0=qq; last.first=(r.results||[]).map(x=>x.path); last.t0=Date.now(); if(DEMO)speed(r); sel=-1;
-  show(r); remember(qq,mode,r.results&&r.results[0]?base(r.results[0].path):''); refine(qq,r)}
+ // fast first, then smarter: where the full search takes over a second (a Mac or a CPU laptop: the reranker, 2-3 s), the
+ // first stage's list (~0.1 s) is shown at once and the reranked order replaces it in place, without the fade
+ let pre=false, slowMs=0; try{slowMs=+localStorage.getItem('findr_full_ms')||0}catch(e){}
+ if(mode==='auto'&&slowMs>1000){try{const p=await (await fetch('/api?'+new URLSearchParams({q:qq,mode:'base',k:30}))).json();
+  if(my!==seq)return; if(p&&p.results&&p.results.length&&!p.error){p._rt=Math.round(performance.now()-t0);p.q0=qq;p.rfText='정밀하게 정리하는 중…';
+   last=p;last.first=p.results.map(x=>x.path);show(p);pre=true}}catch(e){}}
+ try{const r=await (await fetch('/api?'+new URLSearchParams({q:qq,mode,k:30}))).json(); if(my!==seq)return;
+  try{localStorage.setItem('findr_full_ms',String(r.ms||0))}catch(e){} r._rt=Math.round(performance.now()-t0); if(r.error){$('#res').innerHTML='';$('#notice').innerHTML='<div class="notice">'+esc(r.error)+'</div>';return} if(DEMO&&r.results)r.results=r.results.filter(x=>!/googledrive/i.test(x.path)); last=r; last.q0=qq; last.first=(r.results||[]).map(x=>x.path); last.t0=Date.now(); if(DEMO)speed(r); sel=-1;
+  show(r,!pre); remember(qq,mode,r.results&&r.results[0]?base(r.results[0].path):''); refine(qq,r)}
  catch(e){$('#res').innerHTML='';$('#notice').innerHTML='<div class="notice">검색 서버에 연결하지 못했습니다.</div>'}
 }
 let tried=[];
@@ -268,16 +275,16 @@ if(!APP)fetch('/canopen').then(r=>r.json()).then(j=>{LOCAL=!!j.local;if(LOCAL&&l
    P.paused=!P.paused;render();setTimeout(tick,800)}});
  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!pan.hidden)close_()});
  document.addEventListener('click',e=>{if(!pan.hidden&&!pan.contains(e.target)&&!chip.contains(e.target))close_()});
- const _show=show; show=function(r){_show(r);   // while files are still being read, say why some were found by name only
+ const _show=show; show=function(r,f){_show(r,f);   // while files are still being read, say why some were found by name only
   if(!active||!r||!r.results)return;const sg=P.stages||{};
   const msg=sg.content!=='done'?'아직 파일을 살펴보는 중이라, 일부는 이름으로만 찾았어요.':sg.meaning!=='done'?'아직 내용의 뜻을 파악하는 중이라, 비슷한 말로 찾기는 일부 파일만 돼요.':'';
   if(msg)document.getElementById('notice')?.insertAdjacentHTML('afterbegin',`<div class="ixnote">${msg} <button class="ixmore">진행 보기</button></div>`)};
  document.addEventListener('click',e=>{if(e.target.closest('.ixmore'))open_()});
  tick()})();
-function show(r){
+function show(r,fresh=true){   // fresh=false: the reranked order replacing the quick list (no fade, no empty moment)
  $('#under').innerHTML=understanding(r); $('#pipe').innerHTML=pipeline(r);
  $('#notice').innerHTML=(r.note?'<div class="notice">'+esc(r.note)+'</div>':'')+(r.info?'<div class="refine">ⓘ '+esc(r.info)+'</div>':'');
- facets(r.results||[]); list(true);
+ facets(r.results||[]); list(fresh);
 }
 function filtered(){return (last&&last.results||[]).filter(x=>(!fKind||kindOf(x.path)[2]===fKind)&&(!fDir||dir(x.path)===fDir||dir(x.path).startsWith(fDir+'/')))}   // '보고서' is not '보고서2024'
 // fresh: a new answer fades in. Every later redraw (the second look, 열기 turning on, filters, ✘) draws the cards as they
