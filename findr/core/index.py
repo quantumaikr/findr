@@ -331,6 +331,7 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="read content of at most N pending files in this run (0 = no limit)")
     ap.add_argument("--upgrade", default="", help="move the meaning vectors to this encoder in idle time (no scan), then switch")
     ap.add_argument("--minutes", type=float, default=50, help="--upgrade: stop after N minutes (the next idle run continues)")
+    ap.add_argument("--names-only", action="store_true", help="register new and changed files by name only (on battery); content waits for the next full run")
     a = ap.parse_args()
     roots = [Path(r) for r in a.root]; Path(a.db).expanduser().parent.mkdir(parents=True, exist_ok=True)
     if not one_indexer(a.db):
@@ -480,6 +481,8 @@ def main():
     _P["files"] = con.execute("SELECT count(*) FROM files WHERE tier>0").fetchone()[0]
     if not a.no_embed:   # stage 1b: a meaning vector from each file's name and folders (natural-language search on names)
         print("FINDR_STAGE namevec", flush=True); embed(con, a.model, names_only=True)
+    if a.names_only:   # 2026-11-08 (#106): on battery the app still shows new files by name; their content stays pending
+        progress("done", 1, 1); print("FINDR_STAGE done (names only)", flush=True); return
     print("FINDR_STAGE content", flush=True)
     for k, root in enumerate(roots):   # stage 2: content, the folders people look in first
         progress("content", k, len(roots)); read_wave(con, root, a)

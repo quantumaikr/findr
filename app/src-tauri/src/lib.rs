@@ -228,7 +228,8 @@ fn set_upgrade(on: bool) -> Result<(), String> {
     }
 }
 
-/// after the search page is up: changed files now and every hour, and once the later pieces of long documents
+/// after the search page is up: changed files now and every 10 minutes (#106; names only on battery), at once when the
+/// person presses '지금 반영' on the search page (the `refresh_now` file), and once the later pieces of long documents
 fn start_refresher() {
     use std::sync::atomic::Ordering;
     if REFRESHER.swap(true, Ordering::SeqCst) {
@@ -238,11 +239,23 @@ fn start_refresher() {
     thread::spawn(|| {
         let started = std::time::Instant::now();
         let mut last_refresh: Option<std::time::Instant> = None;
+        let mut last_look: Option<std::time::Instant> = None;
+        let asked = || home().join("refresh_now").exists();
         loop {
+        // a cheap look every 5 seconds for '지금 반영'; the rest (battery, idle time) every 10 minutes
+        let now_asked = asked();
+        if !now_asked && last_look.map(|t| t.elapsed().as_secs() < 600).unwrap_or(false) {
+            thread::sleep(std::time::Duration::from_secs(5));
+            continue;
+        }
+        last_look = Some(std::time::Instant::now());
         let folders = load_folders();
-        if !folders.is_empty() && home().join("index.db").exists() && !on_battery() {
-            // changed files: at once, then every hour
-            let refresh_due = last_refresh.map(|t| t.elapsed().as_secs() >= 3600).unwrap_or(true);
+        if !folders.is_empty() && home().join("index.db").exists() {
+            // on battery new files still come in by name (an hour without them, or none at all unplugged, read as broken);
+            // their content, the meaning vectors and the deep run wait for the charger. '지금 반영' reads them in full.
+            let battery = on_battery();
+            // the hourly refresh missed files saved minutes ago; with #104 a run that finds nothing new costs ~3 s
+            let refresh_due = now_asked || last_refresh.map(|t| t.elapsed().as_secs() >= 600).unwrap_or(true);
             // the deep run waits for idle time, as the model upgrade does: started right after the page opened, its 28 minutes
             // made the first search 27.9 s and left 0.5 GB free on an 8 GB laptop (#66 rerun)
             let idle = match idle_seconds() {
@@ -254,16 +267,23 @@ fn start_refresher() {
                 // files added since the last one get the same care
                 let fresh = std::fs::metadata(home().join(".deep-done")).and_then(|m| m.modified()).ok()
                     .and_then(|t| t.elapsed().ok()).map(|e| e.as_secs() < 6 * 3600).unwrap_or(false);
-                if (deep && (fresh || !idle)) || (!deep && !refresh_due) {
+                if (deep && (battery || fresh || !idle || asked())) || (!deep && !refresh_due) {
                     continue;
                 }
                 if !deep {
                     last_refresh = Some(std::time::Instant::now());
                 }
+                let names_only = !deep && battery && !now_asked;
+                if now_asked && !deep {
+                    stop_upgrade(); // the person asked: the model upgrade gives way (it keeps what it computed)
+                }
                 take_index_turn();
                 if person_waiting() {
                     give_index_turn(); // the person's run first; this one comes round again in 10 minutes
                     continue;
+                }
+                if !deep {
+                    let _ = std::fs::remove_file(home().join("refresh_now")); // taken: a press during this run asks again
                 }
                 let log = std::fs::File::create(home().join("logs").join(if deep { "deep.log" } else { "refresh.log" }));
                 let mut c = low_priority(python());
@@ -273,12 +293,30 @@ fn start_refresher() {
                 if deep {
                     c.arg("--deep");
                 }
+                if names_only {
+                    c.arg("--names-only");
+                }
                 own_group(&mut c);
                 let ok = match log.map(|f| c.stdout(f).stderr(Stdio::null()).stdin(Stdio::null()).spawn()) {
                     Ok(Ok(mut child)) => {
                         track(child.id());
                         *BG_RUN.lock().unwrap() = Some(child.id());
-                        let ok = child.wait().map(|s| s.success()).unwrap_or(false);
+                        // a deep run takes hours: '지금 반영' pressed meanwhile stops it (it keeps what it read and runs again later)
+                        let ok = loop {
+                            match child.try_wait() {
+                                Ok(Some(s)) => break s.success(),
+                                Ok(None) => {
+                                    if deep && asked() {
+                                        kill_tree(child.id());
+                                        let _ = child.kill();
+                                        let _ = child.wait();
+                                        break false;
+                                    }
+                                    thread::sleep(std::time::Duration::from_secs(2));
+                                }
+                                Err(_) => break false,
+                            }
+                        };
                         *BG_RUN.lock().unwrap() = None;
                         untrack(child.id());
                         ok
@@ -289,11 +327,22 @@ fn start_refresher() {
                 if deep && ok {
                     let _ = std::fs::write(home().join(".deep-done"), VERSION);
                 }
+                if !deep && ok {
+                    mark_refreshed();
+                }
             }
         }
-        thread::sleep(std::time::Duration::from_secs(600)); // look every 10 minutes: idle time for the deep run is caught soon
+        // always a pause: a press left waiting behind the person's own run must not take and give the turn in a tight loop
+        // (the person's run polls every 2 s and would never get it)
+        thread::sleep(std::time::Duration::from_secs(5));
         }
     });
+}
+
+/// when new files were last taken in, for the search page's '마지막 반영 HH:MM' (#106)
+fn mark_refreshed() {
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let _ = std::fs::write(home().join("last_refresh"), t.to_string());
 }
 
 // the search page's port (FINDR_APP_PORT for side-by-side testing)
@@ -765,6 +814,9 @@ fn start_index(app: AppHandle, folders: Vec<String>, deep: Option<bool>) {
         }
         let ok = stream(&app, "index", "index", c);
         give_index_turn();
+        if ok {
+            mark_refreshed();
+        }
         if deep.unwrap_or(false) && ok {
             let _ = std::fs::write(home().join(".deep-done"), VERSION);
         }

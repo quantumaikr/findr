@@ -168,7 +168,7 @@ def cmd_index(a):
     print(f"색인: 폴더 {len(a.paths)}개 (이름 → 내용 → 의미 순서, 모든 폴더 함께)", flush=True)
     # absolute: the indexer runs in findr/core, so `findr index .` indexed findr itself and the next run crashed on its paths
     return subprocess.call([sys.executable, str(core / "index.py"), "--root", *[os.path.abspath(Path(p).expanduser()) for p in a.paths],
-                            "--db", str(a.db), "--model", enc], env=env, cwd=str(core))
+                            "--db", str(a.db), "--model", enc, *(["--names-only"] if a.names_only else [])], env=env, cwd=str(core))
 
 
 UPGRADE_TO = "embeddinggemma-2"
@@ -330,6 +330,8 @@ def cmd_serve(a):
         except OSError:
             pass
     url = f"http://127.0.0.1:{a.port}"
+    if a.app:
+        os.environ["FINDR_APP"] = "1"   # the page shows "지금 반영" only when the app's refresher is there to answer it
     if a.app:   # the desktop app reads the key from the data folder itself; it only needs to know the page is up.
         # said by the engine once its socket accepts connections (said earlier, a slow PC showed an empty page)
         os.environ["FINDR_READY_LINE"] = "FINDR_APP_READY " + json.dumps({"port": a.port, "features": side}, ensure_ascii=False)
@@ -520,6 +522,7 @@ def main(argv=None):
     s.set_defaults(fn=cmd_setup)
     s = sub.add_parser("index", help="색인 (폴더를 주지 않으면 PC 전체의 내 파일)"); s.add_argument("paths", nargs="*")
     s.add_argument("--deep", action="store_true", help="긴 문서의 뒷부분까지 의미 계산 (오래 걸림, 쉬는 시간에 권장)")
+    s.add_argument("--names-only", action="store_true", help="새 파일을 이름으로만 반영 (내용은 다음 색인 때, 배터리일 때 앱이 씀)")
     s.set_defaults(fn=cmd_index)
     s = sub.add_parser("serve", help="검색 화면 열기"); s.add_argument("--port", type=int, default=8096)
     s.add_argument("--no-browser", action="store_true"); s.add_argument("--no-photo", action="store_true"); s.add_argument("--no-llm", action="store_true")

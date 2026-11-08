@@ -119,6 +119,12 @@ def test_search_page(world):   # the app's page: sign-in, search, progress (#7: 
         r = json.loads(op.open(base + "/api?" + urllib.parse.urlencode({"q": "스마트센서 견적서"}), timeout=300).read())
         assert r["results"] and "견적서_스마트센서" in r["results"][0]["name"], r.get("results", [])[:2]
         assert isinstance(json.loads(op.open(base + "/progress", timeout=30).read()), dict)
+        # #106 '지금 반영': the page asks, the app's refresher sees the file; /progress says so and when files last came in
+        rq = urllib.request.Request(base + "/refresh", data=b"", method="POST", headers={"X-Findr": "1"})
+        assert json.loads(op.open(rq, timeout=30).read())["ok"] and (home / "refresh_now").exists()
+        (home / "last_refresh").write_text("1700000000")
+        pg = json.loads(op.open(base + "/progress", timeout=30).read())
+        assert pg["app"] and pg["refresh_asked"] and pg["last_refresh"] == 1700000000, pg
     finally:
         p.terminate()
         try:
