@@ -45,4 +45,3 @@ t = time.time()
 rc = subprocess.call([sys.executable, str(Path(__file__).with_name("index.py")), "--root", *[str(p) for _, _, p in roots],
                       "--db", a.db, "--model", a.model], env=env)
 print(f"PC_DONE {len(roots)} folders in {time.time() - t:.0f}s (exit {rc})", flush=True)
-sys.exit(rc)   # FINDR_BUSY (3) and crashes reach `findr index` (whole PC) and the scripts that run it, as with chosen folders

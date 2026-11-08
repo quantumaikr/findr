@@ -1277,11 +1277,53 @@ def drop(con, fid):
         pass
 
 
+class EngineEncoder:
+    """document vectors from the search engine already running on this PC (POST /embed): the model stays in one process.
+    The indexer's own copy (torch and the model) was 1.7 of its 1.75 GB, and next to the engine's 2.7 GB it went past what
+    an 8 GB laptop leaves: the OS killed the engine (3 GB reproduction). Used when the engine holds the same encoder;
+    FINDR_EMBED_VIA=local turns it off, and any failure falls back to the indexer's own copy."""
+    STEP = 32
+
+    def __init__(self, url, pw, name):
+        self.url, self.name = url, name
+        import base64
+        self.hdr = {"Authorization": "Basic " + base64.b64encode(f"index:{pw}".encode()).decode(), "X-Findr": "1",
+                    "Content-Type": "application/json"}
+
+    @classmethod
+    def connect(cls, name):
+        if os.environ.get("FINDR_EMBED_VIA", "auto") == "local" or not name:
+            return None
+        d = os.environ.get("FINDR_DATA")
+        try:
+            pw = Path(d, ".password").read_text().strip() if d else ""
+        except OSError:
+            return None
+        e = cls(f"http://127.0.0.1:{os.environ.get('FINDR_APP_PORT') or 8096}", pw, name)
+        try:
+            e.vectors(["준비"])
+            return e
+        except Exception:   # noqa: BLE001  (no engine, another encoder, an old engine without /embed)
+            return None
+
+    def vectors(self, texts):
+        import base64
+        import urllib.request
+        out = []
+        for i in range(0, len(texts), self.STEP):
+            req = urllib.request.Request(self.url + "/embed", json.dumps({"encoder": self.name, "texts": texts[i:i + self.STEP]}).encode(),
+                                         self.hdr)
+            r = json.loads(urllib.request.urlopen(req, timeout=300).read())
+            out.append(np.frombuffer(base64.b64decode(r["vecs"]), np.float16).reshape(-1, r["dim"]))
+        return np.concatenate(out) if out else np.zeros((0, 1), np.float16)
+
+
+def _meta_encoder(con):
+    r = con.execute("SELECT value FROM meta WHERE key='encoder'").fetchone()
+    return r[0] if r else None
+
+
 def embed(con, model, names_only=False):
-    Enc = None
-    from enc_eg2 import EG2, SmallEnc, encoder_of
-    import torch
-    from enc_eg2 import make_encoder
     con.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
     if model in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and not con.execute("SELECT 1 FROM chunks WHERE emb IS NOT NULL LIMIT 1").fetchone():
         con.execute("INSERT OR REPLACE INTO meta VALUES('encoder', ?)", (model,)); con.commit()   # a new index records its encoder
@@ -1298,11 +1340,39 @@ def embed(con, model, names_only=False):
     if not rows:   # nothing to embed: no encoder load (three loads cost ~7 s per run with nothing new)
         con.commit(); print(f"FINDR_EMBED 0 chunks 0s (computed 0, identical skipped 0" + (f", later pieces left for a deep run {later})" if later else ")"))
         return
-    enc = make_encoder(encoder_of(con)) if encoder_of(con) in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") else Enc(model)   # same encoder as the vectors already stored
-    if not isinstance(enc, EG2):
-        enc.tok.model_max_length = 512
-    if os.environ.get("FINDR_THREADS"):   # background indexing: leave CPU cores for the person's own work
-        torch.set_num_threads(max(1, int(os.environ["FINDR_THREADS"])))
+    name = _meta_encoder(con)
+    eng = EngineEncoder.connect(name) if name in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") else None
+    enc = None
+
+    def local():
+        """the indexer's own copy of the encoder (no engine, or the engine went away)"""
+        from enc_eg2 import EG2, make_encoder
+        import torch
+        e = make_encoder(name) if name in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") else None
+        if e is None:
+            raise RuntimeError(f"no encoder for {name}")
+        if not isinstance(e, EG2):
+            e.tok.model_max_length = 512
+        if os.environ.get("FINDR_THREADS"):   # background indexing: leave CPU cores for the person's own work
+            torch.set_num_threads(max(1, int(os.environ["FINDR_THREADS"])))
+        return e
+
+    def vecs(texts):
+        nonlocal eng, enc
+        if eng is not None:
+            try:
+                return eng.vectors(texts)
+            except Exception as e:   # noqa: BLE001  (the engine stopped or was restarted): carry on with our own copy
+                print(f"FINDR_EMBED engine gone ({type(e).__name__}): this run computes its own vectors", flush=True); eng = None
+        if enc is None:
+            enc = local()
+        import torch
+        with torch.no_grad():
+            return emb512(enc, texts).cpu().numpy().astype(np.float16)
+
+    if eng is None:
+        enc = local()
+    print(f"FINDR_EMBED_VIA {'engine' if eng is not None else 'local'} ({name})", flush=True)
     # identical inputs (a copied file, repeated boilerplate under the same name) are computed once
     groups = {}
     for cid, t, p in rows:
@@ -1312,8 +1382,7 @@ def embed(con, model, names_only=False):
     for i in range(0, len(uniq), 256):
         pause_wait()
         b = uniq[i:i + 256]
-        with torch.no_grad():
-            v = emb512(enc, [k for k, _ in b]).cpu().numpy().astype(np.float16)
+        v = vecs([k for k, _ in b])
         con.executemany("UPDATE chunks SET emb=?, emb2=NULL WHERE id=?", [(x.tobytes(), cid) for x, (_, cids) in zip(v, b) for cid in cids])   # changed text: its side vector is stale
         done_ = i + len(b)
         if done_ % 2560 < 256 or time.time() - last > 30 or done_ == len(uniq):   # saved and reported often: progress is visible
@@ -1321,7 +1390,7 @@ def embed(con, model, names_only=False):
             rate = done_ / max(last - t0, 1e-6); left = (len(uniq) - done_) / max(rate, 1e-6)
             print(f"  embedded {done_}/{len(uniq)} {last - t0:.0f}s | {rate:.0f} pieces/s | about {left / 60:.0f} min left", flush=True)
             progress("namevec" if names_only else "meaning", done_, len(uniq), minutes_left=round(left / 60))
-            if not warned and done_ >= 1024 and left > 6 * 3600 and isinstance(enc, EG2) and not isinstance(enc, SmallEnc):
+            if not warned and done_ >= 1024 and left > 6 * 3600 and name == "embeddinggemma-2":
                 warned = True
                 print("FINDR_SLOW 이 PC에서는 큰 모델이 느립니다. 작은 모델로 바꾸면 훨씬 빨라집니다:  findr setup --lite", flush=True)
     con.commit(); print(f"FINDR_EMBED {len(rows)} chunks {time.time() - t0:.0f}s (computed {len(uniq)}, identical skipped {len(rows) - len(uniq)}"

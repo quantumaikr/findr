@@ -2250,6 +2250,29 @@ def serve(f, port):
         def do_POST(self):
             if not self.authed():
                 return
+            if self.headers.get("X-Findr") == "1" and urlparse(self.path).path == "/embed":
+                # document vectors for the indexer, from the encoder this engine already holds: one copy of the model on the
+                # PC instead of two (the indexer's own copy, with torch, was 1.7 of its 1.75 GB; with the engine's 2.7 GB it
+                # went past what an 8 GB laptop leaves and the OS killed the engine). Same vectors as the indexer's own:
+                # the document side, 512 tokens.
+                try:
+                    r = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 4 << 20)) or b"{}")
+                    texts, name = [str(t) for t in r["texts"]][:64], str(r.get("encoder") or "")
+                except Exception:
+                    return self.reply(400, b'{"ok": false}', "application/json")
+                enc = getattr(f, "enc", None)
+                if enc is None or name != getattr(f, "encoder", None) or not hasattr(enc, "st"):
+                    return self.reply(409, json.dumps({"ok": False, "why": "encoder", "have": getattr(f, "encoder", None)}).encode(), "application/json")
+                import base64
+                with SEARCH_LOCK:   # the encoder is shared with the questions: one short batch at a time
+                    old = enc.st.max_seq_length
+                    try:
+                        enc.st.max_seq_length = 512
+                        v = enc.emb(texts, query=False).cpu().numpy().astype("float16")
+                    finally:
+                        enc.st.max_seq_length = old
+                return self.reply(200, json.dumps({"ok": True, "dim": int(v.shape[1]) if len(v) else 0,
+                                                   "vecs": base64.b64encode(v.tobytes()).decode()}).encode(), "application/json")
             if self.headers.get("X-Findr") == "1" and urlparse(self.path).path == "/pause":
                 try:
                     on = bool(json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 256)) or b"{}").get("on"))
