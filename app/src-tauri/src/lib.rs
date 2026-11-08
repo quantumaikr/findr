@@ -457,9 +457,13 @@ fn setup_runtime(app: AppHandle) {
         if let Err(e) = copy_dir(&src, &dst) {
             return done(false, &format!("엔진 파일을 준비하지 못했습니다: {e}"));
         }
+        // an update needs nothing new most of the time: from uv's cache first, so an outage of the download servers does not
+        // stop it (2026-11-08: GitHub answered 504 for a dependency wheel and the engine stayed on the old version)
+        let mut off = command(uv());
+        off.args(["pip", "install", "--offline", "--reinstall-package", "findr-ai", "--python"]).arg(python()).arg(&dst);
         let mut c = command(uv());
         c.args(["pip", "install", "--reinstall-package", "findr-ai", "--python"]).arg(python()).arg(&dst);
-        if !stream(&app, "setup", "engine", c) {
+        if !stream(&app, "setup", "engine", off) && !stream(&app, "setup", "engine", c) {
             return done(false, "검색 엔진을 설치하지 못했습니다.");
         }
         // 4. models for this PC
