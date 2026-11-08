@@ -30,6 +30,9 @@ uv pip install --python .venv/bin/python -e .      # git pull은 새 의존성�
 - 색인 형식이 바뀌는 시험 전에는 DB를 복사해 둡니다: `sqlite3 ~/.findr/index.db "PRAGMA wal_checkpoint(TRUNCATE)"` 뒤 `cp`.
 - 색인, 평가, 검색 서버는 한 번에 하나씩 돌립니다(L16). 오래 걸리는 색인은 `caffeinate -i ./findr.sh index`로 잠자기를 막습니다(macOS).
 - PC 전체 색인 범위에서 뺄 폴더는 `~/.findr/exclude.txt`에 한 줄씩 적습니다(#17).
+- **새 설치를 시험할 때는 데이터 폴더를 따로 둡니다.** findr가 이미 있는 PC에서는 새로 clone해도 `install.sh`가 기본 `~/.findr`의 모델과 색인을 그대로 씁니다. 그러면 "처음 설치"와 "첫 색인"을 잴 수 없습니다. `install.sh`와 모든 명령에 `FINDR_HOME=<새 폴더>`를 붙이고, `exclude.txt`도 새 폴더에 둡니다(#67).
+- 메모리를 재기 전에, 예전 실행이 남긴 `multiprocessing` 도우미(`resource_tracker`, `spawn_main`, 부모 PID 1)를 정리합니다.
+- 백그라운드로 띄운 `serve`는 SIGINT를 무시할 수 있습니다(비대화형 셸). 이때는 SIGTERM으로 끕니다.
 
 ## 4. 재기
 
@@ -62,6 +65,11 @@ uv pip install --python .venv/bin/python -e .      # git pull은 새 의존성�
 
 통과(정답이 3위 안), 1위 적중, 응답 시간 중앙값·최대를 보여 주고 `acceptance_result.json`에 남깁니다. `--slow 8`이면 8초를 넘는 질문마다 서버를 `sample`해 `acceptance_slow/`에 둡니다(macOS). 순위를 바꾸는 PR은 전후 결과를 비교해 1위가 바뀐 질문을 적습니다(L6).
 
+- **비교는 같은 채점기로 합니다.** 직접 만든 스크립트는 경로로 맞추거나 "없다고 답해야 하는 질문"을 틀린 것으로 세기 쉽습니다. 실제로 15/16을 14/16으로 세어, 없던 퇴행을 의심한 적이 있습니다(#67). 기준은 `tools/acceptance.py`입니다.
+- **퇴행이 의심되면 옛 코드로 먼저 확인합니다.** 같은 색인을 기준 커밋의 `git worktree`로 띄워 같은 질문을 하면 몇 분이면 됩니다.
+- **응답 시간은 검색 화면(API)으로 잽니다.** `findr ask`는 실행할 때마다 모델과 색인을 새로 불러와 18~29초가 걸립니다. CPU에서는 순위도 화면과 다를 수 있습니다(#66).
+- `FINDR_SLOW` 줄은 CLI `serve`에서는 터미널에만 나옵니다. 출력을 파일로 남겨 두세요: `./findr.sh serve 2>&1 | tee <데이터 폴더>/logs/serve.log`
+
 ## 5. 증상으로 찾기
 
 | 증상 | 원인 | 원칙 | 이슈 |
@@ -79,6 +87,10 @@ uv pip install --python .venv/bin/python -e .      # git pull은 새 의존성�
 | 새 형식을 추가했는데 이미 색인된 파일은 그대로 | 다시 읽기 조건 없음 | L3 | #34 |
 | 바탕화면 색인이 CPU 0%로 멈춤 (macOS) | iCloud "데스크탑 및 문서" 동기화가 파일 정보를 막음. findr 밖의 문제 | — | — |
 | 색인 대상이 갑자기 몇 배로 | 홈 폴더의 conda·개발 폴더 포함 → `exclude.txt`, 기본 제외 목록 | — | #17 |
+| `--deep`이 첫 색인이 말한 남은 조각보다 몇 배 오래 걸림 | 첫 색인에서 읽지 않은 긴 문서 뒷부분이 남은 수에 안 들어감 | L13 | #67 |
+| 서버를 켠 뒤 첫 질문만 약 3초 더 걸림 (`ce_scores`) | 미리 준비(#50)가 실제 크기의 재순위 묶음을 데우지 않음 (추정) | — | #67 |
+| 색인 중 가끔 질문이 15초, `FINDR_SLOW`의 `refresh`가 8~11초 | 새 벡터가 저장되면 다음 질문이 전체를 다시 불러옴 | L15 | #67 |
+| Apple GPU에서 `doctor`가 쓰지 않는 큰 모델을 ✓로 표시 | `models.plan()`이 자가 시험(`big_ok`)을 안 봄 | L1 | #67 |
 
 ## 6. 보고
 
