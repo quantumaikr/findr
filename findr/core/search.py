@@ -1972,9 +1972,15 @@ def serve(f, port):
                 if not self.authed():
                     return
                 try:
-                    body_ = (Path(os.environ.get("FINDR_DATA") or Path.home() / ".findr") / "progress.json").read_bytes()
-                    if not indexer_alive(json.loads(body_)):
+                    data_ = Path(os.environ.get("FINDR_DATA") or Path.home() / ".findr")
+                    p_ = json.loads((data_ / "progress.json").read_bytes())
+                    if not indexer_alive(p_):
                         body_ = b"{}"   # the indexer was stopped: no '색인 진행 중' banner left behind
+                    else:
+                        # paused is the pause file itself: a paused indexer waits without writing progress, and a page opened
+                        # after a restart showed '진행 중' with a pause button that paused it again (field, Mac)
+                        p_["paused"] = (data_ / "pause").exists()
+                        body_ = json.dumps(p_, ensure_ascii=False).encode()
                 except (OSError, ValueError):
                     body_ = b"{}"
                 return self.reply(200, body_, "application/json; charset=utf-8")
