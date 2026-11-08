@@ -400,6 +400,12 @@ def cmd_doctor(a):
         print(f"  ✗ 연산 라이브러리를 불러오지 못함: {type(e).__name__}: {str(e)[:160]}")
         if os.name == "nt":
             print("    → Visual C++ 런타임 업데이트: winget install Microsoft.VCRedist.2015+.x64")
+    try:   # the comfort tier the resource manager starts from (what this PC has)
+        sys.path.insert(0, str(paths.CORE)); import governor
+        pr = governor.profile(dev, gb)
+        print(f"  ✓ 이 PC에 맞춘 등급: {pr['tier_ko']} ({', '.join(pr['reasons'])})")
+    except Exception:   # noqa: BLE001
+        pass
     for w in want:
         print(f"  {'✓' if models.have(w) else '✗'} 모델 {w}")
     used = _index_encoder()   # the list above is what this PC may have; the index says which meaning model it really uses

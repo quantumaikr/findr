@@ -547,23 +547,6 @@ class Finder:
                 ws.append(w)
         return ws
 
-    def scan_text(self, like, seconds=None, every=20000):
-        """files whose text holds a 2-letter word, read without an index. After a deep run (920k pieces) one such question took
-        24-31 s on a Mac (사진, 예산, 계약) and the time showed in no stage. Two bounds: stop at 201 files (more than 200 is a
-        common word, which literal_files drops anyway: the same answer, at once), and stop reading after LIT_SCAN_S (1 s) for a
-        rare word on a large index (then names and paths alone)"""
-        t0 = time.time(); limit = float(os.environ.get("LIT_SCAN_S") or 1.0) if seconds is None else seconds
-        self.con.set_progress_handler(lambda: int(time.time() - t0 > limit), every)   # checked every N SQLite steps
-        try:
-            out = {f_ for (f_,) in self.con.execute("SELECT DISTINCT file FROM chunks WHERE text LIKE ? ESCAPE '\\' LIMIT 201", (like,))}
-        except sqlite3.OperationalError:   # interrupted at the time limit
-            out = set()
-        finally:
-            self.con.set_progress_handler(None, 0)
-            if getattr(_ST, "d", None) is not None:   # shown in FINDR_SLOW: this time had no stage before
-                _ST.d["literal_scan"] = time.time() - t0
-        return out
-
     def literal_files(self, text, limit=30):
         """for a 1-3 word question: files whose name, path or text contains every word (case-insensitive), newest first"""
         ws = self.content_words(text)
@@ -577,7 +560,7 @@ class Finder:
                 fs |= {f_ for (f_,) in self.con.execute("SELECT DISTINCT c.file FROM fts JOIN chunks c ON c.id = fts.rowid WHERE fts MATCH ? LIMIT 5000",
                                                         ('"' + w.replace('"', '') + '"',))}
             elif len(ws) == 1:   # a 2-char single keyword ("대산"): the trigram index cannot hold it, scan the text once
-                fs |= self.scan_text(like)
+                fs |= {f_ for (f_,) in self.con.execute("SELECT DISTINCT file FROM chunks WHERE text LIKE ? ESCAPE '\\'", (like,))}
             sets = fs if sets is None else sets & fs
             if not sets:
                 return []
@@ -1468,6 +1451,7 @@ import threading as _th  # noqa: E402
 # reranker scores by (model, question, candidate text): people ask the same thing again, the page asks again for more results,
 # and one question scores overlapping candidates in its repair passes. The text is the key, so an edited file is scored anew.
 # The number of candidates scored does not change with the cache: the same question keeps the same answer (#74).
+GOV = None   # the resource manager, started with the server (governor.py)
 CE_CACHE = collections.OrderedDict()
 CE_CACHE_MAX = int(os.environ.get("CE_CACHE") or 50000)   # 0: off
 CE_CACHE_LOCK = _th.Lock()   # the warm-up scores outside the search lock
@@ -1508,7 +1492,10 @@ def _ce_score(q, res, d, tok, m, nosumm, top=None):
         if miss:
             b = tok([q] * len(miss), [part[i] for i in miss], padding=True, truncation=True, max_length=CE_MAXLEN,
                     return_tensors="pt").to(m.device)
+            t_m = time.time()
             got.update(zip(miss, torch.sigmoid(m(**b).logits.view(-1).float()).cpu().tolist()))
+            if GOV is not None:   # the model's own time per candidate (cached scores left out): heat or sharing shows as a slowdown
+                GOV.rerank_time(time.time() - t_m, int(b["input_ids"].numel()))
         with CE_CACHE_LOCK:
             out = [got[i] for i in range(len(keys))]
             for i, k in enumerate(keys):
@@ -2044,6 +2031,12 @@ def open_on_pc(path, reveal=False):
 
 def serve(f, port):
     _stage_timers()
+    global GOV
+    try:   # the resource manager: observes this PC (profile, memory, CPU, power, heat) and says what it would do (/status)
+        from governor import Governor
+        GOV = Governor(dev=DEVICE, log=lambda s: print(s, flush=True)); GOV.start()
+    except Exception as e:   # noqa: BLE001  (search works without it)
+        print(f"FINDR_GOV off {type(e).__name__}", flush=True)
 
     class H(BaseHTTPRequestHandler):
         def reply(self, code, body, ct):
@@ -2247,6 +2240,8 @@ def serve(f, port):
             elif u.path == "/stats":
                 with SEARCH_LOCK:
                     body = json.dumps({**f.stats(), **proc_memory()}).encode(); ct = "application/json"
+            elif u.path == "/status":   # this PC as findr sees it now: tier, signals, pressure, what it would do
+                body = json.dumps(GOV.state() if GOV is not None else {}, ensure_ascii=False).encode(); ct = "application/json; charset=utf-8"
             else:
                 pg = Path(__file__).with_name("page.html")
                 body = (pg.read_text(encoding="utf-8") if pg.exists() else PAGE).encode(); ct = "text/html; charset=utf-8"
