@@ -50,9 +50,12 @@ function welcome(s: AppState) {
 const STEPS: [string, string][] = [['vcrt', 'Windows 구성 요소'], ['env', '파이썬 환경'], ['torch', '연산 라이브러리'], ['engine', '검색 엔진'], ['models', '모델 받기']]
 
 async function setup(s: AppState) {
+  // an update on a PC that already has an index and folders: back to search (the folder screen again was a needless question,
+  // field 0.2.13); the background refresh picks up changes as before
+  const keep = s.update && s.indexed && s.folders.length > 0
   view.innerHTML = `
     <h1>${s.update ? '새 버전을 준비하는 중' : '준비하는 중'}</h1>
-    <p class="lead">창을 닫지 말고 기다려 주세요. 끝나면 색인할 폴더를 고르는 화면으로 넘어갑니다.</p>
+    <p class="lead">창을 닫지 말고 기다려 주세요. 끝나면 ${keep ? '검색 화면으로 돌아갑니다' : '색인할 폴더를 고르는 화면으로 넘어갑니다'}.</p>
     <div class="card"><ul class="steps">${STEPS.map(([id, name]) => `
       <li id="st-${id}"><span class="state">대기</span><div><div class="step-name">${name}</div><div class="step-line"></div></div></li>`).join('')}
     </ul></div>
@@ -73,7 +76,12 @@ async function setup(s: AppState) {
     document.getElementById('log')!.textContent = log.join('\n')
   }))
   unlisten.push(await listen<Done>('setup-done', e => {
-    if (e.payload.ok) { if (cur) mark(cur, 'ok', '완료'); location.hash = 'folders'; return }
+    if (e.payload.ok) {
+      if (cur) mark(cur, 'ok', '완료')
+      const to = keep ? 'search' : 'folders'
+      if (location.hash === '#' + to) route(); else location.hash = to
+      return
+    }
     if (cur) mark(cur, 'fail', '실패')
     document.getElementById('msg')!.innerHTML = `<div class="notice err">${esc(e.payload.message)}</div>
       <div class="actions"><button class="primary" id="retry">다시 시도</button></div>`
