@@ -50,3 +50,10 @@ def test_name_floor_keeps_the_asked_format(monkeypatch):
     assert f.name_floor("강의자료 pdf", res)[0]["name"] == "발표.pdf"
     monkeypatch.setenv("KIND_GATE", "0")
     assert f.name_floor("강의자료 pdf", res)[0]["name"] == "강의자료 신청.xlsx"
+
+
+def test_format_holds_at_the_very_end(monkeypatch):
+    """Mac (11/9): '강의 자료 pdf' had .key files at 2-5, brought in by stages after the search's own format filter"""
+    rs = [{"name": "강의.pdf"}, {"name": "강의.key"}, {"name": "강의2.key"}, {"name": "강의2.pdf"}]
+    assert [x["name"] for x in search.format_first("강의 자료 pdf", rs)] == ["강의.pdf", "강의2.pdf", "강의.key", "강의2.key"]
+    assert search.format_first("강의 자료", rs) == rs   # no format named: nothing moves
