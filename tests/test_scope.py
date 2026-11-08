@@ -145,3 +145,17 @@ def test_exclude_and_dropped_root(tmp_path):
     assert {"견적서.txt", "회의록.txt", "계약서.txt"} <= names
     names, out = _scan(tmp_path, [old])   # most of the index outside the roots (a missing drive?): nothing removed
     assert "견적서.txt" in names and "FINDR_OUTSIDE kept" in out
+
+
+def test_system_names_only_at_the_top(tmp_path):
+    """drive-top names (windows, users, drivers, samsung ...) are skipped at a root's top only. Below it they are a
+    person's own folders: a web app's users/ code (300 files on a Mac Air, 11/9) left the index because every folder
+    below the top was taken as the top"""
+    root = tmp_path / "dev"
+    for d, n in ((root / "windows", "installer.txt"), (root / "app" / "src" / "users", "users_api.txt"),
+                 (root / "app" / "drivers", "driver_notes.txt"), (root / "app" / "build", "bundle.txt")):
+        d.mkdir(parents=True); (d / n).write_text("내용 " + n, encoding="utf-8")
+    names, _ = _scan(tmp_path, [root])
+    assert {"users_api.txt", "driver_notes.txt"} <= names   # deep: kept
+    assert "installer.txt" not in names                     # the root's top: skipped as before
+    assert "bundle.txt" not in names                        # build output: skipped at any depth, as before
