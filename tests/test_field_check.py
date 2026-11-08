@@ -64,9 +64,32 @@ def test_counts_and_times_only(tmp_path, monkeypatch):
 
 def test_engine_down(tmp_path, monkeypatch):
     monkeypatch.setenv("FINDR_HOME", str(tmp_path))
-    monkeypatch.setattr(sys, "argv", ["field_check", "--port", "9", "--rounds", "1"])
+    monkeypatch.setattr(sys, "argv", ["field_check", "--port", "9", "--rounds", "1", "--ready-wait", "1"])
     assert load().main() == 1
     assert json.loads((tmp_path / "field_check.json").read_text(encoding="utf-8"))["engine"]["health"] is False
+
+
+def test_waits_for_an_engine_still_starting(tmp_path, monkeypatch):
+    """run right after `findr serve`: the engine answers a few seconds later, and the check waits instead of giving up"""
+    import socket
+    import time
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
+    (tmp_path / ".password").write_text("pw")
+    holder = {}
+
+    def start_late():
+        time.sleep(1.5)
+        holder["srv"] = HTTPServer(("127.0.0.1", port), Fake)
+        holder["srv"].serve_forever()
+    threading.Thread(target=start_late, daemon=True).start()
+    monkeypatch.setenv("FINDR_HOME", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["field_check", "--port", str(port), "--rounds", "1", "--ready-wait", "20"])
+    try:
+        load().main()
+    finally:
+        holder.get("srv") and holder["srv"].shutdown()
+    rep = json.loads((tmp_path / "field_check.json").read_text(encoding="utf-8"))
+    assert rep["engine"]["health"] is True and rep["engine"]["health_sec"] >= 1
 
 
 def test_engine_reports_its_memory():
