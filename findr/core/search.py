@@ -1244,10 +1244,35 @@ PHOTO_URL = os.environ.get("PHOTO_URL", "")   # local photo model server (photo_
 PHOTO_WORD = re.compile(r"사진|이미지|그림|스크린샷|캡처|캡쳐|찍은|찍었|셀카|풍경|photo|jpe?g|png", re.I)
 
 
+_PHOTO_UP = [0.0, False]   # (checked at, answering)
+
+
+def _photo_up():
+    """is the photo server answering? It loads for 1-2 minutes after start (search does not wait, #57), and on Windows a
+    refused localhost connection takes ~2 s: without this look every question then waited PHOTO_WAIT for nothing.
+    Down: look again after 10 s; up: trusted until a request fails"""
+    import socket
+    if _PHOTO_UP[1] or time.time() - _PHOTO_UP[0] < 10:
+        return _PHOTO_UP[1]
+    u = urlparse(PHOTO_URL)
+    try:
+        socket.create_connection((u.hostname or "127.0.0.1", u.port or 80), timeout=0.3).close()
+        _PHOTO_UP[:] = [time.time(), True]
+    except OSError:
+        _PHOTO_UP[:] = [time.time(), False]
+    return _PHOTO_UP[1]
+
+
 def photo_text_vec(q):
     import base64, urllib.request
+    if not _photo_up():
+        raise ConnectionError("photo server not answering yet")
     req = urllib.request.Request(PHOTO_URL.rstrip("/") + "/text", json.dumps({"q": q}).encode(), {"Content-Type": "application/json"})
-    o = json.loads(urllib.request.urlopen(req, timeout=3).read())
+    try:
+        o = json.loads(urllib.request.urlopen(req, timeout=3).read())
+    except OSError:   # the server went away: back to looking every 10 s
+        _PHOTO_UP[:] = [time.time(), False]
+        raise
     return np.frombuffer(base64.b64decode(o["vec"]), np.float16).astype(np.float32), float(o["scale"])
 NCAND = int(os.environ.get("NCAND") or (15 if DEVICE == "cpu" else 30))   # candidates reranked (15 for the CPU ranker, 2026-11-06)
 CE_MAXLEN = int(os.environ.get("CE_MAXLEN") or (256 if DEVICE == "cpu" else 384))   # ranker input length (256 for the CPU ranker)
