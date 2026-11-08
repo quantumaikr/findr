@@ -565,22 +565,27 @@ class Finder:
             return []
         return [f_ for (f_,) in self.con.execute(f"SELECT id FROM files WHERE id IN ({','.join('?' * len(sets))}) ORDER BY mtime DESC LIMIT ?", (*sets, limit))]
 
-    def xling_named(self, q, limit=50):
+    def xling_named(self, q, res=(), limit=50):
         """files whose NAME carries every idea of a Korean question through XLING, one at least by translation, newest first.
         The rescue in the top 10 is not enough when neither the meaning nor the word search brought the name in
-        ('갤럭시 광고 문구' -> Galaxy_Ad_Copy.docx: no Korean word of the question is in it)"""
-        ideas = xling_ideas(q)
-        if not ideas:
-            return []
-        self.load_scan()
-        cids = [cid for cid, nm, tr in self.name_rows if tr != 2
-                and all(any(sp in nm for sp in idea) for idea in ideas)   # cheap substring pass first: 100k names
-                and xling_cover(nm, ideas) == (True, True)]
-        if not cids or len(cids) > limit:   # a pair of common words is not a name search
-            return []
-        qm = ",".join("?" * len(cids))
-        return [f_ for (f_,) in self.con.execute(
-            f"SELECT f.id FROM chunks c JOIN files f ON f.id=c.file WHERE c.id IN ({qm}) ORDER BY f.mtime DESC", cids)]
+        ('갤럭시 광고 문구' -> Galaxy_Ad_Copy.docx: no Korean word of the question is in it). Every idea first, then the
+        English-spelled ones alone; nothing when a name in the top 10 (res) already carries them"""
+        sets = xling_sets(q)
+        if sets:
+            self.load_scan()
+        for ideas in sets:
+            if any(xling_cover(x.get("name"), ideas)[0] for x in res[:10]):
+                return []
+            cids = [cid for cid, nm, tr in self.name_rows if tr != 2
+                    and all(any(sp[:1] == "~" or sp in nm for sp in idea) for idea in ideas)   # cheap substring pass first: 100k names
+                    and xling_cover(nm, ideas) == (True, True)]
+            if len(cids) > limit:   # a pair of common words is not a name search
+                return []
+            if cids:
+                qm = ",".join("?" * len(cids))
+                return [f_ for (f_,) in self.con.execute(
+                    f"SELECT f.id FROM chunks c JOIN files f ON f.id=c.file WHERE c.id IN ({qm}) ORDER BY f.mtime DESC", cids)]
+        return []
 
     def coverage(self, text, top):
         """share of the question's content words (2+ chars, particles stripped) present in the file's name, path or text"""
@@ -962,8 +967,8 @@ class Finder:
                 j = xling_name_first(q, r["results"])   # Korean words, English name: Remote_Access_Design.pdf (#19)
                 if j:
                     r["results"] = [r["results"][j]] + r["results"][:j] + r["results"][j + 1:]; r["xling"] = 1
-                elif r["results"] and xling_ideas(q) and not xling_cover(r["results"][0].get("name"), xling_ideas(q))[0]:
-                    xf = self.xling_named(q)   # not in the top 10: from all names (field: 0.2.13 found it only below rank 10)
+                elif r["results"]:
+                    xf = self.xling_named(q, r["results"])   # not in the top 10: from all names (field: 0.2.13 found it only below rank 10)
                     if xf:
                         at = next((i for i, x in enumerate(r["results"]) if x["fid"] == xf[0]), None)
                         top_ = [r["results"].pop(at)] if at is not None else self.files_out(xf[:1])
@@ -1464,11 +1469,15 @@ def _ce_score(q, res, d, tok, m, nosumm, top=None):
         if m.device.type == "mps":
             # Apple GPU: 30 candidates took 4-5 s, and 7-12 s while indexing or a hot fanless laptop shared the GPU (field,
             # 0.2.12-13). In steps of CE_STEP_MPS (10), first ones first; past CE_TOTAL_MPS (3 s) for the question no more steps.
-            # The page's 10 are always scored; the rest keep their first-stage order below them.
+            # The page's 10 are always scored; the rest keep their first-stage order below them. A step starts only when the
+            # last one's time says it ends within the budget: checked at the start alone, a 2-3 s step begun at 2.9 s ended
+            # at 5-6 s while indexing shared the GPU (field, Mac Air)
             step, limit = int(os.environ.get("CE_STEP_MPS") or 10), float(os.environ.get("CE_TOTAL_MPS") or 3)
-            sc = []
-            while len(sc) < n and (len(sc) < step or time.time() - _QT[0] < limit):
+            sc, last = [], 0.0
+            while len(sc) < n and (len(sc) < step or time.time() - _QT[0] + last <= limit):
+                t_s = time.time()
                 sc += run(docs[len(sc):min(n, len(sc) + step)])
+                last = time.time() - t_s
             n = len(sc)
         else:
             sc = run(docs[:n])
@@ -1646,11 +1655,49 @@ XLING = {
     "자료": "", "문서": "", "파일": "", "관련": "", "내": "", "그": "", "거": "", "것": "", "처리": "", "하기": "", "찾기": "",
 }
 _XL_JOSA = re.compile(r"(으로|에서|에게|이랑|하고|까지|부터|이나|은|는|이|가|을|를|의|에|로|와|과|도|만|랑)$")
+# a loanword sounds like the English name word (히스토그램 ~ histogram, 넘파이 ~ numpy): both reduced to consonants, so no list
+# has to hold every tool and product name. Korean: initial/final consonants (ㅇ final = ng), ㅎ dropped; English: c/g hard,
+# th t, tion sn, r silent before a consonant (카트 ~ cart), l = r, voiced = voiceless
+_CHO = ["k", "k", "n", "t", "t", "l", "m", "p", "p", "s", "s", "", "j", "j", "j", "k", "t", "p", "h"]
+_JONG = ["", "k", "k", "k", "n", "n", "n", "t", "l", "k", "m", "p", "l", "l", "p", "l", "m", "p", "p", "t", "t", "N", "t", "t", "k", "t", "p", "t"]
+_NOT_LOAN = re.compile(r"(기|는|다|고|요|서|며|던|게|지|면|한|된|할|들|님|해|했|하|려|본|봐|운|된)$")   # verb endings: 불러오기 is not 'block'
+XL_GENERIC = {"실습", "코드", "데이터", "분석", "연구", "개발", "정리"}   # rarely in a name (relax: optional)
 
 
-def xling_ideas(q):
+def ko_sound(w):
+    out = []
+    for ch in w:
+        c = ord(ch) - 0xAC00
+        if not 0 <= c < 11172:
+            return ""
+        out += [_CHO[c // 588], _JONG[c % 28]]
+    return re.sub(r"(.)\1+", r"\1", "".join(out).replace("h", ""))
+
+
+import functools  # noqa: E402
+
+
+@functools.lru_cache(maxsize=200000)
+def en_sound(t):
+    t = re.sub(r"ng(?![aeiou])", "N", t.lower())
+    t = re.sub(r"(.)\1+", r"\1", t); t = re.sub(r"[ts]ion", "sn", t); t = re.sub(r"c(?=[eiy])", "s", t)
+    t = t.replace("ph", "p").replace("tch", "j").replace("ch", "j").replace("sh", "s").replace("th", "t").replace("ck", "k").replace("gh", "")
+    t = re.sub(r"r(?![aeiouy])", "", t)
+    t = t.translate(str.maketrans({"c": "k", "q": "k", "g": "k", "d": "t", "b": "p", "f": "p", "v": "p", "z": "s", "r": "l", "x": "ks"}))
+    return re.sub(r"(.)\1+", r"\1", re.sub(r"[aeiouywh]", "", t))
+
+
+def _sounds_in(sk, nm):
+    """a name word of 4+ letters that sounds like the loanword (or holds it, for a 4+ consonant loanword: instacartorders)"""
+    return any(en_sound(t) == sk or (len(sk) >= 4 and sk in en_sound(t)) for t in re.findall(r"[a-z]{4,}", nm))
+
+
+def xling_ideas(q, relax=False):
     """the ideas of a Korean question, each with the spellings that count for it in a file name (XLING);
-    [] for a question without Korean or with fewer than two ideas"""
+    [] for a question without Korean or with fewer than two ideas.
+    relax: only the ideas a name can carry in English (words of the list, English words). People ask with words no
+    file name has ('히스토그램 그려 보는 실습': 그려, 보는), and each of them blocked the name (field, 0.2.13: 5 of 10 out of
+    the top 10)"""
     words = re.findall(r"[가-힣]{2,}|[A-Za-z][A-Za-z0-9]+", q)
     if not words or not any(re.match(r"[가-힣]", w) for w in words):
         return []
@@ -1661,27 +1708,52 @@ def xling_ideas(q):
         stem = w if w in XLING else _XL_JOSA.sub("", w)
         if XLING.get(stem) == "" or XLING.get(w) == "":
             continue   # 자료, 문서, 파일 …: not an idea of the content
-        ideas.append([stem] + (XLING.get(stem) or "").split())
+        if not stem:
+            continue   # a particle alone (에서)
+        # sound spellings are off unless XLING_SOUND=1: the GPU PC gate moved nothing, the field sets decide (2026-11-08)
+        sk = "" if XLING.get(stem) or _NOT_LOAN.search(stem) or os.environ.get("XLING_SOUND") != "1" else ko_sound(stem)
+        sp = (XLING.get(stem) or "").split() + (["~" + sk] if len(sk) >= 3 else [])
+        if relax and (not sp or stem in XL_GENERIC):
+            continue
+        # relax: a word with only a sound spelling may be a native word (경사도 sounds like nothing): it counts when it matches
+        ideas.append((["?"] if relax and not XLING.get(stem) else []) + [stem] + sp)
     return ideas if len(ideas) >= 2 else []
 
 
+def xling_sets(q):
+    """every idea first; then, if that drops some, only the ideas with an English spelling. The looser set is off unless
+    XLING_RELAX=1: on the GPU PC's held-out test set it moved one answer from rank 1 to 2 (2026-11-08); field sets decide"""
+    strict = xling_ideas(q)
+    loose = xling_ideas(q, relax=True) if os.environ.get("XLING_RELAX") == "1" else strict
+    return [i for i in (strict, loose if loose != strict else []) if i]
+
+
 def xling_cover(name, ideas):
-    """(the name carries every idea, at least one of them by an English translation)"""
+    """(the name carries every idea, at least one of them by an English translation or sound); an idea starting with '?'
+    is optional, and at least two ideas must be carried"""
     nm = unicodedata.normalize("NFC", name or "").lower()
-    hit = [next((sp for sp in idea if (sp in nm if len(sp) > 3 or re.match(r"[가-힣]", sp)
+    opt = [idea[:1] == ["?"] for idea in ideas]
+    ideas = [idea[1:] if o else idea for idea, o in zip(ideas, opt)]
+    hit = [next((sp for sp in idea if (_sounds_in(sp[1:], nm) if sp[:1] == "~" else sp in nm if len(sp) > 3 or re.match(r"[가-힣]", sp)
                                        else re.search(rf"(?<![a-z]){re.escape(sp)}(?![a-z])", nm))), None) for idea in ideas]
-    return all(hit), any(h and re.match(r"[a-z]", h) and h != idea[0] for h, idea in zip(hit, ideas))
+    full = all(h or o for h, o in zip(hit, opt)) and sum(bool(h) for h in hit) >= 2
+    return full, any(h and h != idea[0] for h, idea in zip(hit, ideas))
 
 
 def xling_name_first(q, res, top=10):
     """index (in res[:top], > 0) of the file whose name covers every idea of a Korean question through XLING,
-    when at least one idea needed a translation and #1's name does not cover them; else 0"""
-    ideas = xling_ideas(q)
-    if not ideas or not res or xling_cover(res[0].get("name"), ideas)[0]:
+    when at least one idea needed a translation and #1's name does not cover them; else 0. Every idea first; the English-
+    spelled ideas alone only when no name in the top carries every idea ('원격 설계 메모.txt' for '원격 설계 메모' stays)"""
+    if not res:
         return 0
-    for j, x in enumerate(res[1:top], 1):
-        if xling_cover(x.get("name"), ideas) == (True, True):
-            return j
+    for ideas in xling_sets(q):
+        if xling_cover(res[0].get("name"), ideas)[0]:
+            return 0
+        for j, x in enumerate(res[1:top], 1):
+            if xling_cover(x.get("name"), ideas) == (True, True):
+                return j
+        if any(xling_cover(x.get("name"), ideas)[0] for x in res[1:top]):
+            return 0
     return 0
 
 

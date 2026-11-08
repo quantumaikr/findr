@@ -140,3 +140,49 @@ def test_xling_named_beyond_the_top_10(tmp_path):
     assert f.xling_named("갤럭시 배경화면") == []   # 배경화면 has no English entry: not every idea is carried
     assert f.xling_named("광고") == []   # one idea is not a name search
     assert search.xling_cover("갤럭시_광고_문구.hwp", search.xling_ideas("갤럭시 광고 문구")) == (True, False)   # same script
+
+
+def test_xling_words_no_name_has(monkeypatch):
+    """people ask with words no file name carries ('블러 적용해 보는 예제': 적용해, 보는); those no longer block the English name,
+    but a name that carries every word of the question, in Korean, still wins over the looser English match"""
+    monkeypatch.setenv("XLING_RELAX", "1")
+    res = [{"name": "notes.md"}, {"name": "readme.txt"}, {"name": "blur_example.py"}]
+    assert search.xling_name_first("블러 적용해 보는 예제", res) == 2
+    assert search.xling_sets("블러 적용해 보는 예제")[1] == [["블러", "blur"], ["예제", "example", "sample"]]
+    res2 = res + [{"name": "블러 적용해 보는 예제.ipynb"}]
+    assert search.xling_name_first("블러 적용해 보는 예제", res2) == 0   # the same-script name: left to the usual rules
+    assert search.xling_name_first("온누리식품 견적서", [{"name": "a.txt"}, {"name": "quote.pdf"}]) == 0   # one English idea
+    assert len(search.xling_sets("메모 정리")) == 1   # nothing translatable: no looser set (the strict one never fires)
+    monkeypatch.delenv("XLING_RELAX")
+    assert search.xling_name_first("블러 적용해 보는 예제", res) == 0   # off by default: every idea, as before
+
+
+def test_loanwords_by_sound(monkeypatch):
+    """off unless XLING_SOUND=1. a loanword matches the English name word it sounds like, with no list entry (판다스 ~ pandas, 쿠버네티스 ~ kubernetes);
+    verb forms are not loanwords (불러오기 is not 'block'), and short sounds (2 consonants) do not count"""
+    for ko, en in [("판다스", "pandas"), ("쿠버네티스", "kubernetes"), ("깃허브", "github"), ("노션", "notion"), ("태깅", "tagging"),
+                   ("텐서플로", "tensorflow"), ("레시피", "recipe"), ("인스타카트", "instacart")]:
+        assert search.ko_sound(ko) == search.en_sound(en), (ko, en)
+    assert search.xling_ideas("판다스 예제")[0] == ["판다스"]   # off by default
+    monkeypatch.setenv("XLING_SOUND", "1")
+    assert search.xling_ideas("불러오기 예제")[0] == ["불러오기"]   # no sound spelling for a verb form
+    assert search.xling_ideas("도커 예제")[0] == ["도커"]   # tk: too short to trust
+    res = [{"name": "notes.md"}, {"name": "Pandas_Example.ipynb"}]
+    assert search.xling_name_first("판다스 예제", res) == 1
+    assert search.xling_cover("instacartorders_analysis.ipynb", search.xling_ideas("인스타카트 분석"))[0]   # held in a longer word
+    assert not search.xling_cover("blocks.txt", [["불러오기"]])[0]
+
+
+def test_relax_sound_only_words_are_optional(monkeypatch):
+    """(sounds on) relaxed: a word with only a sound spelling (a native word sounds like nothing) does not block the name, but counts when it
+    matches; two carried ideas at least"""
+    monkeypatch.setenv("XLING_RELAX", "1"); monkeypatch.setenv("XLING_SOUND", "1")
+    loose = search.xling_sets("경사도 이미지 노트북")[-1]
+    assert loose[0][0] == "?" and search.xling_cover("image_gradient.ipynb", loose) == (True, True)
+    assert not search.xling_cover("image.png", loose)[0]   # one idea is not enough
+
+
+def test_particle_alone_is_no_idea():
+    """'에서' alone strips to nothing: no idea, no crash (a gate run hit IndexError on it)"""
+    assert search.xling_ideas("서버 에서 설정") == [["서버", "server"], ["설정", "config", "setting"]]
+    assert search.xling_name_first("서버 에서 설정", [{"name": "a.txt"}, {"name": "server_config.yaml"}]) == 1
