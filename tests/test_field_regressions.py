@@ -17,7 +17,7 @@ def _index(tmp_path, root, **env):
     db = tmp_path / "i.db"
     e = {**os.environ, "FINDR_OCR": "0", **env}
     r = subprocess.run([sys.executable, str(CORE / "index.py"), "--root", str(root), "--db", str(db), "--no-embed"],
-                       env=e, capture_output=True, text=True, timeout=120)
+                       env=e, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     assert r.returncode == 0, r.stderr[-500:]
     return db, r.stdout
 
