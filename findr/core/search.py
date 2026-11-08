@@ -1389,9 +1389,10 @@ def ce_scores(q, res, d=None, nosumm=None):
     with torch.no_grad():
         b = tok([q] * n, docs[:n], padding=True, truncation=True, max_length=CE_MAXLEN, return_tensors="pt").to(m.device)
         sc = torch.sigmoid(m(**b).logits.view(-1).float()).cpu().tolist()
-    if m.device.type == "cpu":
-        per = (time.time() - t_) / max(n, 1)
-        CE_RATE[d] = per if d not in CE_RATE else 0.7 * CE_RATE[d] + 0.3 * per
+    if m.device.type == "cpu" and d not in CE_RATE:
+        # the rate is measured once (the warm-up's full-size batch) and then kept: learned from each question, it made the
+        # number of candidates, and so the answer, depend on the question before (#66: rank 1, then rank 8 a moment later)
+        CE_RATE[d] = (time.time() - t_) / max(n, 1)
     low = min(sc) if sc else 0.0
     return sc + [low * 0.5 - 0.001 * i for i in range(len(docs) - n)]
 
@@ -1544,7 +1545,18 @@ XLING = {
     "유튜브": "youtube", "썸네일": "thumbnail", "자막": "subtitle caption", "대본": "script", "스크립트": "script",
     "인터뷰": "interview", "설문": "survey", "통계": "statistic stats", "정책": "policy", "체크리스트": "checklist",
     "생성기": "generator", "생성": "generat", "엔진": "engine", "시스템": "system", "플랫폼": "platform", "솔루션": "solution",
-    "블루프린트": "blueprint", "자료": "", "문서": "", "파일": "", "관련": "", "내": "", "그": "", "거": "", "것": "",
+    "블루프린트": "blueprint",
+    # students' and developers' PCs name files in English (#66): code, notebooks, image processing, machine learning, crawling
+    "코드": "code", "파이썬": "python py", "실습": "practice lab exercise", "노트북": "notebook ipynb", "과제": "assignment homework",
+    "예제": "example sample", "윤곽선": "contour", "외곽선": "contour", "블러": "blur", "흐림": "blur", "스무딩": "smoothing smooth",
+    "엣지": "edge", "경계선": "edge", "필터": "filter", "히스토그램": "histogram", "이진화": "threshold binary", "형태학": "morphology",
+    "모폴로지": "morphology", "얼굴": "face", "인식": "recognition detect", "탐지": "detection detect", "객체": "object",
+    "분류": "classification classify", "회귀": "regression", "군집": "cluster", "신경망": "neural network", "딥러닝": "deep learning",
+    "머신러닝": "machine learning ml", "전처리": "preprocess preprocessing", "시각화": "visualization visualize plot",
+    "크롤링": "crawl crawling crawler", "크롤러": "crawler", "스크래핑": "scraping scrape", "셀레니움": "selenium",
+    "웹캠": "webcam", "카메라": "camera", "번호판": "plate license", "손글씨": "handwriting mnist", "감정": "emotion sentiment",
+    "추출": "extract extraction", "변환": "convert transform", "압축": "compress zip", "엑셀": "excel xlsx", "워드": "word docx",
+    "자료": "", "문서": "", "파일": "", "관련": "", "내": "", "그": "", "거": "", "것": "", "처리": "", "하기": "", "찾기": "",
 }
 _XL_JOSA = re.compile(r"(으로|에서|에게|이랑|하고|까지|부터|이나|은|는|이|가|을|를|의|에|로|와|과|도|만|랑)$")
 
@@ -2000,6 +2012,11 @@ def serve(f, port):
             try:
                 t = time.time()
                 with SEARCH_LOCK:
+                    # the reranker at full size (NCAND candidates, the longest input): it loads, compiles its kernels for that
+                    # shape and, on a CPU, measures its rate once. A plain search may score few candidates, or none on an index
+                    # still being built (#66: FINDR_WARM 0.1s, then 20 s on the first question; #67: 3 s more on Apple GPU)
+                    ce_scores("지난달 회의 자료", [{"name": "warm.txt", "path": "/warm/warm.txt", "head": "가나다라 " * 400,
+                                                   "summary": ""} for _ in range(NCAND)])
                     f.search("지난달 회의 자료", mode="xce", k=10)
                     if getattr(f, "ng", None) is None and _has_facts(f):   # understanding-first route: its planner loads once
                         from ng import NG
