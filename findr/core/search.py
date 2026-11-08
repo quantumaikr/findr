@@ -2115,6 +2115,28 @@ def _stage_timers():
     gc.callbacks.append(on_gc)
 
 
+RESULTS = collections.OrderedDict()   # whole answers by question and state: people ask the same things again (#R0)
+RESULTS_MAX = int(os.environ.get("RESULT_CACHE") or 300)   # 0: off
+RESULTS_LOCK = _th.Lock()   # the server answers on several threads
+
+
+def result_key(f, q, mode, k, prev, pin):
+    """the key of a whole answer, or None (cache off). It holds what can change the answer: the question, the route, how
+    many, the question before, a pinned 'today' and the day itself (relative dates), the index (SQLite data_version moves
+    when the indexer commits), and the personal memory (a choice made since lifts another file). On a Mac a repeated
+    question still took 1.3-1.5 s (only some reranker scores cached); the same answer comes back at once"""
+    if not RESULTS_MAX:
+        return None
+    try:
+        ver = f.con.execute("PRAGMA data_version").fetchone()[0]
+    except Exception:   # noqa: BLE001
+        return None
+    pm = personal()
+    mem = len(getattr(pm, "rows", []) or []) if pm is not None else 0
+    flags = tuple(os.environ.get(x, "") for x in ("KIND_GATE", "DUP_COLLAPSE", "TIME_WORDS", "CE_TAIL", "CE_MATCHED"))
+    return (q, mode, k, prev, pin, dt.date.today().isoformat(), ver, mem, flags)
+
+
 def _slow_line(res, mode, total):
     d = getattr(_ST, "d", None) or {}
     st = {k: int(v * 1000) for k, v in sorted(d.items(), key=lambda kv: -kv[1]) if v >= 0.01 and k != "ce_n"}
@@ -2354,7 +2376,16 @@ def serve(f, port):
                 no_facts = mode == "ng" and not _has_facts(f)   # '이해 우선' on an index without work facts: no such table -> 500 (#32)
                 if no_facts:
                     mode = "xce"   # the reranker answers, and route / the /refine cache say so
-                t_req = time.time(); _ST.d = {}
+                t_req = time.time()
+                rkey = result_key(f, q_, mode, k, prev_, self.headers.get("X-Findr-Today"))
+                with RESULTS_LOCK:
+                    hit = RESULTS.get(rkey) if rkey else None
+                    if hit is not None:
+                        RESULTS.move_to_end(rkey)
+                if hit is not None:   # the same question again, nothing changed since: the same answer at once
+                    res = json.loads(hit); res["cached"] = True; res["ms"] = int((time.time() - t_req) * 1000)
+                    return self.reply(200, json.dumps(res, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
+                _ST.d = {}
                 with SEARCH_LOCK:
                   _ST.d["lock_wait"] = time.time() - t_req
                   global EVAL_NOW
@@ -2404,6 +2435,11 @@ def serve(f, port):
                     _LAST.clear()
                 _LAST[(q_, mode)] = res
                 body = json.dumps(res, ensure_ascii=False, default=str).encode()
+                if rkey:
+                    with RESULTS_LOCK:
+                        RESULTS[rkey] = body
+                        while len(RESULTS) > RESULTS_MAX:
+                            RESULTS.popitem(last=False)
                 ct = "application/json; charset=utf-8"
             elif u.path == "/explore":
                 body = (Path(__file__).with_name("explore.html")).read_bytes(); ct = "text/html; charset=utf-8"
