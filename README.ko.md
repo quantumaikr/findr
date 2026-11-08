@@ -216,6 +216,10 @@ claude mcp add findr -- <python> -m findr mcp
 - 한국어와 영어 밖의 언어
 - AI 도구와 더 깊게: findr가 찾은 파일로 AI가 일을 하되, 사람이 허락한 만큼만
 
+## 사용성 시험 참여
+
+Windows와 macOS, GPU가 있는 PC와 없는 PC에서 사무직 사용자와 함께 findr를 시험하고 있습니다. 참여하신다면 [참여 안내](docs/TESTER_GUIDE.md)를 따라 주세요. 0.2.11 이상 설치, 첫 색인, 내 파일에 대한 질문 10개, 기록할 것, 파일 이름을 드러내지 않고 보고하는 방법이 들어 있습니다. 개발자용 절차는 [docs/FIELD_TESTING.md](docs/FIELD_TESTING.md)에 있습니다.
+
 ## 기여하기
 
 버그 보고와 PR을 환영합니다. 가장 도움이 되는 것은 실제 PC에서 잰 숫자입니다. 하드웨어, 파일 수, 고치기 전과 후의 시간이나 결과를 함께 적어 주세요.

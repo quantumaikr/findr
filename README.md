@@ -208,6 +208,10 @@ Most of what changed in 0.2.x came from people installing findr on their own mac
 - More languages beyond Korean and English.
 - Deeper links with AI tools: let assistants act on what findr finds, with the person's approval.
 
+## Taking part in a usability test
+
+We are testing findr with office workers on Windows and macOS PCs, with and without a GPU. If you are taking part, follow the [tester guide](docs/TESTER_GUIDE.md) (in Korean). It covers installing version 0.2.11 or later, the first index, ten questions about your own files, what to record, and how to send a report without exposing file names. The developer-side procedure is in [docs/FIELD_TESTING.md](docs/FIELD_TESTING.md).
+
 ## Contributing
 
 Bug reports and pull requests are welcome. Measurements from real machines are the most useful thing you can send: the hardware, the number of files, and the time or result before and after.
