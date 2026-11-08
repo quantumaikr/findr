@@ -149,7 +149,11 @@ def parse(q, now=None):
                 soft |= ex                                                # a topic word: keep it, boost the kind
     day0 = now.replace(hour=0, minute=0, second=0, microsecond=0)
     D = dt.timedelta
-    for pat, f in [(r"(\d+)\s*(개월|달)\s*(이내|안에|동안|사이|간)", lambda m: (day0 - D(30.44 * int(m.group(1))), None)),
+    yr = lambda n: (day0.replace(year=day0.year - n, month=1, day=1), day0.replace(year=day0.year - n + 1, month=1, day=1))
+    # calendar years as people say them (TIME_WORDS=1): "작년에 만든 발표자료" read no period at all (real PCs, 11/9)
+    years = [(r"재작년", lambda m: yr(2)), (r"작년|지난\s*해|지난해", lambda m: yr(1)), (r"올해|금년|이번\s*해", lambda m: (yr(0)[0], None))] \
+        if os.environ.get("TIME_WORDS", "0") == "1" else []
+    for pat, f in years + [(r"(\d+)\s*(개월|달)\s*(이내|안에|동안|사이|간)", lambda m: (day0 - D(30.44 * int(m.group(1))), None)),
                    (r"(\d+)\s*(개월|달)\s*전", lambda m: (day0 - D(30.44 * (int(m.group(1)) + 0.5)), day0 - D(30.44 * (int(m.group(1)) - 0.5)))),
                    (r"반년\s*전", lambda m: (day0 - D(30.44 * 7), day0 - D(30.44 * 5))),
                    (r"(\d+)\s*주\s*전", lambda m: (day0 - D(7 * int(m.group(1)) + 4), day0 - D(7 * int(m.group(1)) - 4))),
