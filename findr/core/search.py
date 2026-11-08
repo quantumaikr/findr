@@ -1464,11 +1464,15 @@ def _ce_score(q, res, d, tok, m, nosumm, top=None):
         if m.device.type == "mps":
             # Apple GPU: 30 candidates took 4-5 s, and 7-12 s while indexing or a hot fanless laptop shared the GPU (field,
             # 0.2.12-13). In steps of CE_STEP_MPS (10), first ones first; past CE_TOTAL_MPS (3 s) for the question no more steps.
-            # The page's 10 are always scored; the rest keep their first-stage order below them.
+            # The page's 10 are always scored; the rest keep their first-stage order below them. A step starts only when the
+            # last one's time says it ends within the budget: checked at the start alone, a 2-3 s step begun at 2.9 s ended
+            # at 5-6 s while indexing shared the GPU (field, Mac Air)
             step, limit = int(os.environ.get("CE_STEP_MPS") or 10), float(os.environ.get("CE_TOTAL_MPS") or 3)
-            sc = []
-            while len(sc) < n and (len(sc) < step or time.time() - _QT[0] < limit):
+            sc, last = [], 0.0
+            while len(sc) < n and (len(sc) < step or time.time() - _QT[0] + last <= limit):
+                t_s = time.time()
                 sc += run(docs[len(sc):min(n, len(sc) + step)])
+                last = time.time() - t_s
             n = len(sc)
         else:
             sc = run(docs[:n])

@@ -65,12 +65,12 @@ def test_apple_gpu_stops_at_the_question_budget(monkeypatch, tmp_path):
 
     d = str(tmp_path / "rank")
     monkeypatch.setenv("CE_DIR", d)
-    monkeypatch.setenv("CE_TOTAL_MPS", "0.3")
+    monkeypatch.setenv("CE_TOTAL_MPS", "0.5")
     monkeypatch.setitem(search.CE, d, (_Tok(), _Slow()))
     docs = [{"name": f"{i}.txt", "path": f"/x/{i}.txt", "head": "본문", "summary": ""} for i in range(30)]
     search._QT[0] = clock[0]
     sc = search.ce_scores("견적서", docs)
-    assert calls == [10, 10] and len(sc) == 30   # 0.2 s, then 0.4 s > 0.3 s: stopped after 20
+    assert calls == [10, 10] and len(sc) == 30   # 0.2 s; 0.4 s + 0.2 s for a third step > 0.5 s: stopped after 20
     assert max(sc[20:]) < min(sc[:20])   # unscored ones stay below, in their first-stage order
     calls.clear(); search._QT[0] = clock[0] - 10   # budget already spent (a long first stage): still the first 10
     search.ce_scores("견적서", docs)
