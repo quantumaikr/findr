@@ -174,6 +174,8 @@ def main():
         rep["summary"]["ask_sec"] = round(time.time() - t, 1)
         rep["summary"]["ask_ok"] = pr.returncode == 0
 
+    mem, _ = eng.get("/stats", timeout=30)   # the engine's own memory after the questions: now and at its peak
+    rep["engine"]["memory"] = {k: mem[k] for k in ("rss_mb", "peak_mb", "gpu_peak_mb") if k in mem}
     s = rep["summary"]
     checks = {"엔진 준비": rep["engine"]["ready"], "오류 없음": s["errors"] == 0,
               f"느린 10% ≤ {SLOW_P90:g}초": s["p90_sec"] is not None and s["p90_sec"] <= SLOW_P90,
@@ -186,6 +188,9 @@ def main():
           f" · 파일 {nfiles:,} · 준비까지 {rep['engine']['ready_wait_sec']} s" + (" · 색인 중" if rep["engine"]["indexing"] else ""))
     print(f"질문 {s['asked']}개: 중앙값 {s['median_sec']} s, 느린 10% {s['p90_sec']} s, 최대 {s['max_sec']} s, 대기 최대 {s['wait_ms_max']} ms"
           + (f", findr ask {s['ask_sec']} s" if a.ask else ""))
+    m = rep["engine"]["memory"]
+    if m:
+        print("엔진 메모리: " + " · ".join(f"{label} {m[k]:,} MB" for k, label in (("rss_mb", "지금"), ("peak_mb", "최대"), ("gpu_peak_mb", "GPU 최대")) if k in m))
     for k, v in checks.items():
         print(f"  {'통과' if v else '확인 필요'}  {k}")
     return finish(rep, a, d)
