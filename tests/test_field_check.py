@@ -32,10 +32,14 @@ class Fake(BaseHTTPRequestHandler):
             body = b"{}"
         elif u.path == "/stats":
             body = b'{"files": 40, "rss_mb": 900, "peak_mb": 1200}'
-        else:
-            k = int(parse_qs(u.query)["k"][0])
+        elif u.path == "/status":   # the resource manager (#109): field_check reads it after the questions
+            body = b'{"tier": "standard"}'
+        elif u.path == "/api":
+            k = int(parse_qs(u.query).get("k", ["10"])[0])
             res = [{"name": f"secret_{i}.pdf", "path": f"/home/x/secret_{i}.pdf", "prob": 0.9} for i in range(k)]
             body = json.dumps({"results": res, "route": "xce", "ms": 5}).encode()
+        else:   # a path the engine does not serve: what the real one answers, instead of a KeyError in the test log
+            self.send_response(404); self.send_header("Content-Length", "0"); self.end_headers(); return
         self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
 
 
