@@ -66,7 +66,16 @@ def mem_available_gb():
             base = "/sys/fs/cgroup" + rel
             mx = open(base + "/memory.max").read().strip()
             if mx != "max":
-                left = (int(mx) - int(open(base + "/memory.current").read())) / 2**30
+                # memory.current counts the file cache too, which the kernel takes back before it stops anything: without
+                # it a limit full of cache read as critical with room to spare (the same reckoning container tools use)
+                used = int(open(base + "/memory.current").read())
+                try:
+                    for ln in open(base + "/memory.stat"):
+                        if ln.startswith("inactive_file "):
+                            used -= int(ln.split()[1]); break
+                except OSError:
+                    pass
+                left = (int(mx) - used) / 2**30
                 avail = left if avail is None else min(avail, left)
         except (OSError, ValueError):
             pass
@@ -211,10 +220,14 @@ class Governor(threading.Thread):
     def would(self):
         """what an acting manager would do now (recorded only, nothing changes yet)"""
         p, w = self.press, []
+        # memory: holding indexing was tried and measured, and it is not the action. In a 3 GB limit it held 300 s and
+        # freed nothing (43 s -> 321 s); in 4 GB with the indexer's own model loaded, 43 s -> 144 s and more time at the
+        # limit (a held process keeps what it holds). What frees memory is the indexer letting go of its model, to
+        # start again later
         if p["memory"] == "critical":
-            w.append("백그라운드 색인 멈춤, 캐시 비움, 사진 모델 내림 (검색 엔진 보호)")
+            w.append("색인기가 모델을 내려놓고 나중에 이어서, 사진 모델 내림 (검색 엔진 보호)")
         elif p["memory"] == "tight":
-            w.append("백그라운드 색인 멈춤")
+            w.append("큰 파일 읽기 미룸")
         if p["cpu"] == "busy":
             w.append("백그라운드 작업 쉼, 재정렬 후보 줄임")
         if p["power"] == "battery":
