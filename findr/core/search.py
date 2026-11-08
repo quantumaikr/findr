@@ -905,6 +905,7 @@ class Finder:
             # 작년 vanished from rank 3 to an empty list). Search without the period; the end says no file is from it
             r = self._search(q, dict(p, since=None, until=None), text, eng, n_fetch if use4b else k, t0, late)
             r["time_miss"] = True
+        pre_period = list(r["results"]) if p["since"] and not r.get("time_miss") else None   # inside the period, before later stages
         if use4b and r["results"]:
             ids = [x["fid"] for x in r["results"]]; qm = ",".join("?" * len(ids))
             sm = dict(self.con.execute(f"SELECT file, summary FROM cards WHERE file IN ({qm})", ids).fetchall())
@@ -1073,6 +1074,16 @@ class Finder:
             r["ms"] = int(1000 * (time.time() - t0))
         if pfut is not None:
             self.photo_merge(q, r, pfut, k, p)
+        if pre_period and os.environ.get("TIME_WORDS", "0") == "1":
+            # later stages (repair across the whole index, history, cross-language and name passes) bring files from outside
+            # the period; on a Mac "작년에 만든 발표자료" ended with ten files of this year while the period held ten (11/9).
+            # Files of the period come first: those the stages kept, then the ones they pushed out, then the rest
+            a_ = p["since"].strftime("%Y-%m-%d %H:%M"); b_ = p["until"].strftime("%Y-%m-%d %H:%M") if p["until"] else "9999"
+            fit = lambda x: a_ <= (x.get("date") or "") < b_
+            now_ = [x for x in r["results"] if fit(x)]
+            have_ = {x.get("fid") for x in now_}
+            back_ = [x for x in pre_period if fit(x) and x.get("fid") not in have_]
+            r["results"] = (now_ + back_ + [x for x in r["results"] if not fit(x)])[:k]
         if not r["results"]:
             r["note"] = "조건에 맞는 파일이 없습니다."
         if cond is not None:

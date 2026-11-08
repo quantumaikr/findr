@@ -45,3 +45,9 @@ def test_relative_years_are_soft(monkeypatch):
     assert search.parse("3개월 전 회의록", now=NOW)["soft_time"] is False    # other periods keep their filter as before
     src = open(search.__file__, encoding="utf-8").read()
     assert 'if p.get("soft_time") and not r["results"]:' in src and 'r["time_miss"] = True' in src
+
+
+def test_period_candidates_come_back_at_the_end():
+    """Mac Air (11/9): base found ten files of 작년, the full route ended with none (later stages replaced them)"""
+    src = open(search.__file__, encoding="utf-8").read()
+    assert "pre_period = list(r[\"results\"])" in src and "back_ = [x for x in pre_period if fit(x)" in src
