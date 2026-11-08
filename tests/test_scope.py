@@ -113,7 +113,7 @@ def test_scan_skips_app_profile_and_special_files(tmp_path):
     db = tmp_path / "i.db"
     env = {**os.environ, "FINDR_SCOPE": "user", "FINDR_OCR": "0"}
     r = subprocess.run([sys.executable, str(scope.Path(scope.__file__).with_name("index.py")), "--root", str(movies), str(tmp_path),
-                        "--db", str(db), "--no-embed"], env=env, capture_output=True, text=True, timeout=120)
+                        "--db", str(db), "--no-embed"], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     assert r.returncode == 0, r.stderr[-500:]
     names = {n for (n,) in sqlite3.connect(db).execute("SELECT name FROM files")}
     assert "여행 영상 편집.txt" in names
@@ -125,7 +125,7 @@ def _scan(tmp_path, roots, **env):
     db = tmp_path / "i.db"
     e = {**os.environ, "FINDR_SCOPE": "user", "FINDR_OCR": "0", **env}
     r = subprocess.run([sys.executable, str(scope.Path(scope.__file__).with_name("index.py")), "--root", *map(str, roots),
-                        "--db", str(db), "--no-embed"], env=e, capture_output=True, text=True, timeout=120)
+                        "--db", str(db), "--no-embed"], env=e, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     assert r.returncode == 0, r.stderr[-500:]
     return {n for (n,) in sqlite3.connect(db).execute("SELECT name FROM files")}, r.stdout
 

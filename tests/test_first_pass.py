@@ -22,7 +22,7 @@ def scan(root, db, deep=False):
     if not deep:
         env["FINDR_FIRST_PIECES"] = "8"
     r = subprocess.run([sys.executable, str(CORE / "index.py"), "--root", str(root), "--db", str(db), "--no-embed"],
-                       env=env, capture_output=True, text=True, timeout=120)
+                       env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     assert r.returncode == 0, r.stderr[-800:]
     return sqlite3.connect(str(db))
 

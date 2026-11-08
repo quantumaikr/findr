@@ -23,7 +23,7 @@ def test_walk_skips_a_findr_checkout_and_data_folder_inside_a_root(tmp_path):
     db = tmp_path / "i.db"
     env = {**os.environ, "FINDR_OCR": "0", "FINDR_HOME": str(data)}
     r = subprocess.run([sys.executable, str(Path(scope.__file__).with_name("index.py")), "--root", str(root), "--db", str(db), "--no-embed"],
-                       env=env, capture_output=True, text=True, timeout=120)
+                       env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     assert r.returncode == 0, r.stderr[-500:]
     names = {n for (n,) in sqlite3.connect(db).execute("SELECT name FROM files")}
     assert "견적서.txt" in names and "progress.txt" not in names, names
@@ -35,6 +35,6 @@ def test_a_chosen_root_that_is_own_stays(tmp_path):
     db = tmp_path / "i.db"
     env = {**os.environ, "FINDR_OCR": "0", "FINDR_HOME": str(root)}
     r = subprocess.run([sys.executable, str(Path(scope.__file__).with_name("index.py")), "--root", str(root), "--db", str(db), "--no-embed"],
-                       env=env, capture_output=True, text=True, timeout=120)
+                       env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     assert r.returncode == 0, r.stderr[-500:]
     assert "메모.txt" in {n for (n,) in sqlite3.connect(db).execute("SELECT name FROM files")}

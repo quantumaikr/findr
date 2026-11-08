@@ -32,7 +32,7 @@ def test_deep_file_is_indexed_and_read(tmp_path):
     (tmp_path / "near.txt").write_text("near the top", encoding="utf-8")
     db = tmp_path / "i.db"
     r = subprocess.run([sys.executable, str(Path(index.__file__)), "--root", str(tmp_path), "--db", str(db), "--no-embed"],
-                       env={**os.environ, "FINDR_OCR": "0"}, capture_output=True, text=True, timeout=120)
+                       env={**os.environ, "FINDR_OCR": "0"}, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     assert r.returncode == 0, r.stderr[-500:]
     rows = dict(sqlite3.connect(db).execute("SELECT name, path FROM files").fetchall())
     assert "long_path_report.txt" in rows and "near.txt" in rows, r.stdout[-500:]
