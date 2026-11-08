@@ -66,6 +66,7 @@ def test_refresh_counts_only_after_the_indexer_commits(tmp_path):
     v = np.zeros(4, np.float16).tobytes()
     w.execute("INSERT INTO chunks VALUES(1, 1, 0, 'a', ?)", (v,)); w.commit()
     f = search.Finder.__new__(search.Finder)
+    f.db_uri = db.resolve().as_uri() + "?mode=ro"
     f.con = sqlite3.connect(db, check_same_thread=False)
     f._dv = f.con.execute("PRAGMA data_version").fetchone()[0]
     f.ids, f.encoder, f._top = np.array([1]), "e5-small", 1
@@ -76,7 +77,13 @@ def test_refresh_counts_only_after_the_indexer_commits(tmp_path):
     w.execute("INSERT INTO chunks VALUES(2, 2, 0, 'b', ?)", (v,)); w.commit()   # the indexer adds a vector
     seen.clear()
     f.refresh(every=0)
-    assert any("count(*)" in s for s in seen) and len(f.ids) == 2   # changed: counted and reloaded
+    assert not any("count(*)" in s for s in seen), seen   # changed: still no scan on the question's connection (#67)
+    import time
+    for _ in range(100):
+        if not getattr(f, "_reloading", False):
+            break
+        time.sleep(0.05)
+    assert len(f.ids) == 2   # counted and reloaded on the reload thread
 
 
 def test_upgrade_skips_where_the_gpu_self_check_chose_small(tmp_path, monkeypatch):
