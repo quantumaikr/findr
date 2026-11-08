@@ -72,6 +72,33 @@ def test_apple_gpu_stops_at_the_question_budget(monkeypatch, tmp_path):
     sc = search.ce_scores("견적서", docs)
     assert calls == [10, 10] and len(sc) == 30   # 0.2 s; 0.4 s + 0.2 s for a third step > 0.5 s: stopped after 20
     assert max(sc[20:]) < min(sc[:20])   # unscored ones stay below, in their first-stage order
-    calls.clear(); search._QT[0] = clock[0] - 10   # budget already spent (a long first stage): still the first 10
+    calls.clear(); search.CE_CACHE.clear(); search._QT[0] = clock[0] - 10   # (scores not cached) budget already spent (a long first stage): still the first 10
     search.ce_scores("견적서", docs)
     assert calls == [10]
+
+
+def test_scores_are_cached_by_question_and_text(monkeypatch, tmp_path):
+    """the same question and the same candidate text are scored once (repeat questions, the page asking again, repair passes);
+    an edited file has a new text and is scored anew; the number of candidates scored stays the same"""
+    seen = []
+
+    class _Count(_Model):
+        def __call__(self, **b):
+            seen.append(b["input_ids"].shape[0])
+            return types.SimpleNamespace(logits=torch.arange(b["input_ids"].shape[0], dtype=torch.float).view(-1, 1))
+
+    d = str(tmp_path / "rank")
+    monkeypatch.setenv("CE_DIR", d)
+    monkeypatch.setitem(search.CE, d, (_Tok(), _Count()))
+    monkeypatch.setattr(search, "CE_RATE", {})
+    search.CE_CACHE.clear()
+    docs = [{"name": f"{i}.txt", "path": f"/x/{i}.txt", "head": "본문", "summary": ""} for i in range(6)]
+    import time
+    search._QT[0] = time.time(); first = search.ce_scores("견적서", docs)
+    search._QT[0] = time.time(); again = search.ce_scores("견적서", docs)
+    assert again == first and seen == [6]   # nothing new to score the second time
+    docs[2] = {**docs[2], "head": "고친 본문"}
+    search._QT[0] = time.time(); search.ce_scores("견적서", docs)
+    assert seen == [6, 1]   # only the edited file
+    search._QT[0] = time.time(); search.ce_scores("계약서", docs)
+    assert seen[-1] == 6   # another question: its own scores
