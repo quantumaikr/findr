@@ -285,17 +285,43 @@ def cmd_mcp(a):
     return 0
 
 
+def _ask_engine(q, k):
+    """the search engine already running for this data folder answers: the same path, numbers and speed as the page, and no
+    second copy of the models in memory (#66, #67, #68: ask took 14-29 s and ranked differently). None when it is not up,
+    or when the engine on that port belongs to another data folder (its password differs)"""
+    import base64
+    import urllib.parse
+    import urllib.request
+    from . import mcp_server
+    if not mcp_server._engine_up():
+        return None
+    key = mcp_server._key()
+    req = urllib.request.Request(f"{mcp_server.ENGINE}/api?" + urllib.parse.urlencode({"q": q, "k": k, "mode": "auto"}),
+                                 headers={"Cookie": f"findr_t={key}", "Authorization": "Basic " + base64.b64encode(f"findr:{key}".encode()).decode()})
+    try:
+        return json.loads(urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=120).read())
+    except Exception:
+        return None
+
+
 def cmd_ask(a):
-    _engine_env()
-    os.environ.setdefault("FINDR_ENCODER", _encoder())
-    import search
-    f = search.Finder(str(a.db))
-    r = search.add_probs(f.search(" ".join(a.query), mode="xce", k=a.k))
+    q = " ".join(a.query)
+    t = time.time()
+    r = None if (a.local or Path(a.db).resolve() != paths.DB.resolve()) else _ask_engine(q, a.k)
+    how = "실행 중인 검색 엔진"
+    if r is None:   # no engine up: load the models here (slower: every ask loads them again)
+        how = "모델을 직접 불러옴"
+        _engine_env()
+        os.environ.setdefault("FINDR_ENCODER", _encoder())
+        import search
+        f = search.Finder(str(a.db))
+        r = search.add_probs(f.search(q, mode="xce", k=a.k))
     if r.get("note"):
         print("ⓘ", r["note"])
     for i, x in enumerate(r.get("results", []), 1):
         pr = f"{round(100 * x['prob'])}%" if x.get("prob") is not None else ""
-        print(f"{i:2d}. {pr:>4}  {x['name']}  ({x['date']})\n      {x['path']}")
+        print(f"{i:2d}. {pr:>4}  {x['name']}  ({x.get('date', '')})\n      {x['path']}")
+    print(f"  ({time.time() - t:.1f}초, {how})")
     return 0
 
 
@@ -419,7 +445,9 @@ def main(argv=None):
     s.set_defaults(fn=cmd_serve)
     s = sub.add_parser("roots", help="PC 전체 색인 때 볼 폴더 목록 (JSON)"); s.set_defaults(fn=cmd_roots)
     s = sub.add_parser("mcp", help="AI 도구(Claude 등)에 findr 연결: MCP 서버 (stdio)"); s.set_defaults(fn=cmd_mcp)
-    s = sub.add_parser("ask", help="터미널에서 찾기"); s.add_argument("query", nargs="+"); s.add_argument("-k", type=int, default=5); s.set_defaults(fn=cmd_ask)
+    s = sub.add_parser("ask", help="터미널에서 찾기 (검색 화면이 켜져 있으면 그 엔진에 물음)"); s.add_argument("query", nargs="+")
+    s.add_argument("-k", type=int, default=5)
+    s.add_argument("--local", action="store_true", help="켜진 엔진을 쓰지 않고 모델을 직접 불러오기"); s.set_defaults(fn=cmd_ask)
     s = sub.add_parser("doctor", help="설치 상태 점검"); s.set_defaults(fn=cmd_doctor)
     s = sub.add_parser("upgrade", help="쉬는 시간에 더 정확한 의미 모델로 조금씩 바꾸기 (GPU 없는 PC)")
     s.add_argument("--minutes", type=float, default=50, help="이번에 쓸 최대 시간 (다음 번에 이어서)"); s.set_defaults(fn=cmd_upgrade)
