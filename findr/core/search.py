@@ -1444,6 +1444,24 @@ def _ce_load(d):
     CE[d] = (tok, m)
 
 
+import collections  # noqa: E402
+import hashlib  # noqa: E402
+import threading as _th  # noqa: E402
+
+# reranker scores by (model, question, candidate text): people ask the same thing again, the page asks again for more results,
+# and one question scores overlapping candidates in its repair passes. The text is the key, so an edited file is scored anew.
+# The number of candidates scored does not change with the cache: the same question keeps the same answer (#74).
+CE_CACHE = collections.OrderedDict()
+CE_CACHE_MAX = int(os.environ.get("CE_CACHE") or 50000)   # 0: off
+CE_CACHE_LOCK = _th.Lock()   # the warm-up scores outside the search lock
+
+
+def _ce_key(d, q, doc):
+    if not CE_CACHE_MAX:
+        return object()   # never found: every score is computed
+    return hashlib.blake2b(f"{d}\x00{q}\x00{doc}".encode("utf-8", "replace"), digest_size=16).digest()
+
+
 def _ce_score(q, res, d, tok, m, nosumm, top=None):
     import torch
     if nosumm:   # the stage-A reranker was trained on name | folder | opening text
@@ -1465,8 +1483,22 @@ def _ce_score(q, res, d, tok, m, nosumm, top=None):
     t_ = time.time()
 
     def run(part):
-        b = tok([q] * len(part), part, padding=True, truncation=True, max_length=CE_MAXLEN, return_tensors="pt").to(m.device)
-        return torch.sigmoid(m(**b).logits.view(-1).float()).cpu().tolist()
+        # scores already computed for this question and this text come from the cache; only the rest go to the model
+        keys = [_ce_key(d, q, s) for s in part]
+        with CE_CACHE_LOCK:   # hits are taken now: another thread may push them out before this one is done
+            got = {i: CE_CACHE[k] for i, k in enumerate(keys) if k in CE_CACHE}
+        miss = [i for i in range(len(keys)) if i not in got]
+        if miss:
+            b = tok([q] * len(miss), [part[i] for i in miss], padding=True, truncation=True, max_length=CE_MAXLEN,
+                    return_tensors="pt").to(m.device)
+            got.update(zip(miss, torch.sigmoid(m(**b).logits.view(-1).float()).cpu().tolist()))
+        with CE_CACHE_LOCK:
+            out = [got[i] for i in range(len(keys))]
+            for i, k in enumerate(keys):
+                CE_CACHE[k] = out[i]; CE_CACHE.move_to_end(k)
+            while len(CE_CACHE) > CE_CACHE_MAX:
+                CE_CACHE.popitem(last=False)
+        return out
 
     with torch.no_grad():
         if m.device.type == "mps":
