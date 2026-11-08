@@ -19,8 +19,11 @@ def test_years(monkeypatch):
     assert (p["since"], p["until"]) == (dt.datetime(2026, 1, 1), None)
 
 
-def test_off_by_default(monkeypatch):
+def test_on_by_default_and_can_be_turned_off(monkeypatch):
+    """on since the real-PC sealed sets (11/9: three PCs, none worse); TIME_WORDS=0 is the way back"""
     monkeypatch.delenv("TIME_WORDS", raising=False)
+    assert search.parse("작년에 만든 발표자료", now=NOW)["since"] == dt.datetime(2025, 1, 1)
+    monkeypatch.setenv("TIME_WORDS", "0")
     assert search.parse("작년에 만든 발표자료", now=NOW)["since"] is None
 
 
