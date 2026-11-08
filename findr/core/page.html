@@ -37,6 +37,7 @@ main{padding:22px 28px 60px;max-width:1080px;width:100%}
 .meta{display:flex;justify-content:space-between;color:var(--faint);font-size:12px;margin:14px 2px 6px}
 .res{display:flex;flex-direction:column;gap:8px}
 .card{display:grid;grid-template-columns:44px 1fr auto;gap:12px;padding:12px 14px;background:var(--panel);border:1px solid var(--line);border-radius:12px;transition:border-color .15s,box-shadow .15s;opacity:0;transform:translateY(6px);animation:in .3s forwards}
+.card.still{animation:none;opacity:1;transform:none}
 .card:hover,.card.sel{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc2)}
 .badge{width:44px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:700;letter-spacing:.02em;color:#fff}
 .nm{font-weight:650;font-size:15px;word-break:break-all}.rank{color:var(--faint);font-weight:500;margin-right:6px}
@@ -270,15 +271,17 @@ if(!APP)fetch('/canopen').then(r=>r.json()).then(j=>{LOCAL=!!j.local;if(LOCAL&&l
 function show(r){
  $('#under').innerHTML=understanding(r); $('#pipe').innerHTML=pipeline(r);
  $('#notice').innerHTML=(r.note?'<div class="notice">'+esc(r.note)+'</div>':'')+(r.info?'<div class="refine">ⓘ '+esc(r.info)+'</div>':'');
- facets(r.results||[]); list();
+ facets(r.results||[]); list(true);
 }
 function filtered(){return (last&&last.results||[]).filter(x=>(!fKind||kindOf(x.path)[2]===fKind)&&(!fDir||dir(x.path).startsWith(fDir)))}
-function list(){
+// fresh: a new answer fades in. Every later redraw (the second look, 열기 turning on, filters, ✘) draws the cards as they
+// are: a redraw that replayed the fade emptied the whole list for a moment, a few seconds after the results (field, Mac)
+function list(fresh){
  const rs=filtered(), r=last;
  const routeTxt={auto:'자동',ng:'이해 우선',xce:'정밀',base:'빠른 찾기'}[r.route||mode]||'';
  $('#meta').innerHTML='<span>'+rs.length+'개'+(fKind||fDir?' (거름)':'')+' · '+routeTxt+' <span id="rf" class="rf">'+esc(r.rfText||'')+'</span></span><span>서버 '+r.ms+'ms · 화면 '+r._rt+'ms</span>';
  $('#res').innerHTML=rs.map((x,i)=>{const k=kindOf(x.path);const d=dir(x.path);
-  return '<div class="card'+(x.no?' rej':'')+'" data-i="'+i+'" style="animation-delay:'+Math.min(i,8)*30+'ms"><div class="badge" style="background:'+k[1]+'">'+k[0]+'</div>'+
+  return '<div class="card'+(x.no?' rej':'')+(fresh?'':' still')+'" data-i="'+i+'" style="animation-delay:'+Math.min(i,8)*30+'ms"><div class="badge" style="background:'+k[1]+'">'+k[0]+'</div>'+
   '<div><div class="nm"><span class="rank">'+(i+1)+'</span>'+(x.prob!=null?'<span class="odds" style="background:'+(x.prob>=.7?'var(--acc)':x.prob>=.3?'#c27a2c':'#8a8780')+'">'+Math.round(x.prob*100)+'%</span>':'')+hl(base(x.path))+'</div><div class="path">'+
   d.split('/').map((seg,j,a)=>'<span data-dir="'+esc(a.slice(0,j+1).join('/'))+'">'+esc(seg)+'</span>').join(' / ')+'</div>'+
   (x.why&&x.why.length?'<div class="why">'+x.why.map(esc).join(' · ')+'</div>':'')+(x.snippet?'<div class="snip">'+hl(x.snippet)+'</div>':'')+'</div>'+

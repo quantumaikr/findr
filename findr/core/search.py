@@ -2042,6 +2042,9 @@ def serve(f, port):
                     with SEARCH_LOCK:
                         res = personal().apply(f, q_, res)
                 res = add_probs(res)
+                # the page's '서버' time: the whole request, not the search alone (a Mac page showed 서버 3.4 s · 화면 7.1 s and
+                # the rest had no name: the index refresh check before the search and the steps after it were left out)
+                res["search_ms"] = int(res.get("ms") or 0); res["ms"] = max(res["search_ms"], int((time.time() - t_req) * 1000))
                 if time.time() - t_req > SLOW_MS / 1000:
                     _slow_line(res, mode, time.time() - t_req)
                 _ST.d = None
