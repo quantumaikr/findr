@@ -120,6 +120,7 @@ static UPGRADING: Mutex<Option<Child>> = Mutex::new(None);
 
 fn stop_upgrade() {
     if let Some(mut c) = UPGRADING.lock().unwrap().take() {
+        kill_tree(c.id()); // with the index.py it started: killing the upgrade alone left that running
         let _ = c.kill();
         let _ = c.wait();
     }
@@ -144,10 +145,13 @@ fn start_upgrader() {
                 c.env("FINDR_THREADS", half.to_string()).env("OMP_NUM_THREADS", half.to_string());
                 c.args(["-m", "findr", "upgrade", "--minutes", "10"]);
                 let log = std::fs::OpenOptions::new().create(true).append(true).open(h.join("logs").join("upgrade.log"));
+                own_group(&mut c);
                 let code = match log.map(|f| c.stdout(f).stderr(Stdio::null()).stdin(Stdio::null()).spawn()) {
                     Ok(Ok(child)) => {
+                        let pid = child.id();
+                        track(pid);
                         *UPGRADING.lock().unwrap() = Some(child);
-                        loop {
+                        let code = loop {
                             thread::sleep(std::time::Duration::from_secs(2));
                             let mut g = UPGRADING.lock().unwrap();
                             match g.as_mut().map(|c| c.try_wait()) {
@@ -161,7 +165,9 @@ fn start_upgrader() {
                                     break None; // stopped for an indexing run
                                 }
                             }
-                        }
+                        };
+                        untrack(pid);
+                        code
                     }
                     _ => None,
                 };
@@ -243,9 +249,15 @@ fn start_refresher() {
                 if deep {
                     c.arg("--deep");
                 }
-                let ok = match log {
-                    Ok(f) => c.stdout(f).stderr(Stdio::null()).stdin(Stdio::null()).status().map(|s| s.success()).unwrap_or(false),
-                    Err(_) => false,
+                own_group(&mut c);
+                let ok = match log.map(|f| c.stdout(f).stderr(Stdio::null()).stdin(Stdio::null()).spawn()) {
+                    Ok(Ok(mut child)) => {
+                        track(child.id());
+                        let ok = child.wait().map(|s| s.success()).unwrap_or(false);
+                        untrack(child.id());
+                        ok
+                    }
+                    _ => false,
                 };
                 give_index_turn();
                 if deep && ok {
@@ -329,8 +341,102 @@ fn command(prog: impl AsRef<std::ffi::OsStr>) -> Command {
     c
 }
 
+// ---------- the app's own runs: indexing, refresh, deep run, upgrade, installs ----------
+// Each runs in its own process group and is remembered here and in runs.pid: it stops with the app, and a run that a killed
+// app left behind stops at the next start. Field (Mac): quitting during indexing left the indexer running, the next start
+// added one more, three wrote to one index at once and the search engine reached 20 GB with 52 s answers.
+static RUNS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+fn own_group(c: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        c.process_group(0);
+    }
+    #[cfg(not(unix))]
+    let _ = c;
+}
+
+fn runs_file() -> PathBuf {
+    home().join("runs.pid")
+}
+
+fn save_runs(v: &[u32]) {
+    let _ = std::fs::write(runs_file(), v.iter().map(|p| p.to_string()).collect::<Vec<_>>().join("\n"));
+}
+
+fn track(pid: u32) {
+    let mut g = RUNS.lock().unwrap();
+    g.push(pid);
+    save_runs(&g);
+}
+
+fn untrack(pid: u32) {
+    let mut g = RUNS.lock().unwrap();
+    g.retain(|p| *p != pid);
+    save_runs(&g);
+}
+
+/// end a run and everything it started (the indexer starts index.py, the engine its helper servers)
+fn kill_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        let _ = command("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).status();
+    }
+    #[cfg(not(windows))]
+    {
+        let grp = format!("-{pid}");
+        let _ = Command::new("kill").args(["-TERM", "--", &grp]).status();
+        for _ in 0..30 {
+            if !Command::new("kill").args(["-0", "--", &grp]).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false) {
+                return;
+            }
+            thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let _ = Command::new("kill").args(["-KILL", "--", &grp]).status();
+    }
+}
+
+/// with the app: every run it started
+fn stop_runs() {
+    let pids: Vec<u32> = RUNS.lock().unwrap().drain(..).collect();
+    for p in pids {
+        kill_tree(p);
+    }
+    let _ = std::fs::remove_file(runs_file());
+}
+
+/// at start: the runs of an app that was killed. Only findr's own processes: a number can belong to another program after
+/// a restart of the PC.
+fn reap_left_runs() {
+    let Ok(s) = std::fs::read_to_string(runs_file()) else { return };
+    for pid in s.lines().filter_map(|l| l.trim().parse::<u32>().ok()) {
+        if is_findr_run(pid) {
+            kill_tree(pid);
+        }
+    }
+    let _ = std::fs::remove_file(runs_file());
+}
+
+fn is_findr_run(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        let q = format!("(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine");
+        command("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &q]).output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase().contains("findr"))   // every run names findr or its folder
+            .unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        // any process of the group whose command line names findr (the group leader may be gone already)
+        Command::new("pgrep").args(["-g", &pid.to_string(), "-f", "findr"]).output()
+            .map(|o| o.status.success() && !o.stdout.is_empty()).unwrap_or(false)
+    }
+}
+
 /// run a command, sending each output line to the window as `event`; true when it succeeded
 fn stream(app: &AppHandle, event: &str, step: &str, mut cmd: Command) -> bool {
+    own_group(&mut cmd);
     let child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null()).spawn();
     let mut child = match child {
         Ok(c) => c,
@@ -339,6 +445,8 @@ fn stream(app: &AppHandle, event: &str, step: &str, mut cmd: Command) -> bool {
             return false;
         }
     };
+    let pid = child.id();
+    track(pid);
     let mut joins = vec![];
     for r in [child.stdout.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
               child.stderr.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>)].into_iter().flatten() {
@@ -355,7 +463,9 @@ fn stream(app: &AppHandle, event: &str, step: &str, mut cmd: Command) -> bool {
     for j in joins {
         let _ = j.join();
     }
-    child.wait().map(|s| s.success()).unwrap_or(false)
+    let ok = child.wait().map(|s| s.success()).unwrap_or(false);
+    untrack(pid);
+    ok
 }
 
 #[derive(Clone, Serialize)]
@@ -578,7 +688,15 @@ fn load_folders() -> Vec<String> {
 /// where indexing stands (progress.json written by the indexer), or "" before it starts
 #[tauri::command]
 fn read_progress() -> String {
-    std::fs::read_to_string(home().join("progress.json")).unwrap_or_default()
+    let s = std::fs::read_to_string(home().join("progress.json")).unwrap_or_default();
+    // paused is the pause file itself: a paused indexer writes no progress, so the screen said '진행 중' after a restart
+    match serde_json::from_str::<serde_json::Value>(&s) {
+        Ok(serde_json::Value::Object(mut m)) => {
+            m.insert("paused".into(), serde_json::Value::Bool(home().join("pause").exists()));
+            serde_json::Value::Object(m).to_string()
+        }
+        _ => s,
+    }
 }
 
 /// pause or resume indexing: the indexer holds between steps while the file exists (a forgotten pause lapses after an hour)
@@ -712,6 +830,7 @@ pub fn run() {
         .manage(Engine(Mutex::new(None)))
         .manage(AppUrl(Mutex::new(None)))
         .setup(|app| {
+            reap_left_runs(); // an indexer that a killed app left behind would run next to this app's own
             if let Some(w) = app.get_webview_window("main") {
                 *app.state::<AppUrl>().0.lock().unwrap() = w.url().ok();
             }
@@ -734,7 +853,7 @@ pub fn run() {
             "search" => go_app(app, "search"),
             "settings" => go_app(app, "settings"),
             "data" => { let _ = open_data_dir(app.clone()); }
-            "quit" => { stop(&app.state::<Engine>()); app.exit(0); }
+            "quit" => { stop(&app.state::<Engine>()); stop_upgrade(); stop_runs(); app.exit(0); }
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
@@ -746,6 +865,8 @@ pub fn run() {
         .run(|app, e| {
             if let tauri::RunEvent::Exit = e {
                 stop(&app.state::<Engine>());
+                stop_upgrade();
+                stop_runs();
             }
         });
 }
