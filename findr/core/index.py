@@ -103,8 +103,26 @@ except ImportError:
     from moretext import sheet_text, rtf_text, eml_text
 
 
+def _long(s: str) -> str:
+    """Windows: the \\\\?\\ form of an absolute path, which reaches past 260 characters without the LongPathsEnabled setting
+    (off by default: files deeper than that were left out silently, #60). Elsewhere, and for relative paths: unchanged"""
+    if os.name != "nt" or s.startswith("\\\\?\\") or not os.path.isabs(s):
+        return s
+    s = os.path.normpath(s)
+    return "\\\\?\\UNC\\" + s[2:] if s.startswith("\\\\") else "\\\\?\\" + s
+
+
+def _short(s: str) -> str:
+    """back from the \\\\?\\ form: paths are stored, shown and opened in their usual form"""
+    if s.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + s[8:]
+    return s[4:] if s.startswith("\\\\?\\") else s
+
+
 def extract(p: Path, limit):
     ext = real_ext(p)
+    if os.name == "nt" and len(str(p)) >= 248:   # past MAX_PATH: readers open it in the \\?\ form
+        p = Path(_long(str(p)))
     try:
         if ext in (".xls", ".xlsb", ".ods"):   # sheets: python-calamine first, LibreOffice only when that fails
             t = sheet_text(p, limit)
@@ -359,13 +377,15 @@ def main():
         seen, t0, new = set(), time.time(), 0
         pre = root.as_posix().rstrip("/") + "/"   # several roots share one db: only this root's files can be "gone"
         known = {r[0]: (r[1], r[2], r[3], r[4]) for r in con.execute("SELECT path,size,mtime,id,tier FROM files WHERE path LIKE ?", (pre + "%",))}
-        for dp, dns, fns in os.walk(root):
+        unread = []   # folders the walk could not open: counted, never silent
+        for dpl, dns, fns in os.walk(_long(str(root)), onerror=unread.append):
+            dp = _short(dpl)
             if not a.with_libs and APP_MARK & set(dns):
                 dns[:] = []; continue   # an installed application bundle (ships its own Python): not the user's files
             dns[:] = [d for d in dns if d not in (SKIP_DIR if a.with_libs else SKIP_DIR | LIB_DIRS)]
             if os.name == "nt":   # os.walk skips symlinks but follows junctions ('Documents/My Music' -> Music, a second scan)
                 from scope import is_link
-                dns[:] = [d for d in dns if not is_link(os.path.join(dp, d))]
+                dns[:] = [d for d in dns if not is_link(os.path.join(dpl, d))]
             if os.environ.get("FINDR_SCOPE") == "user":   # whole-PC mode: no system, program, cache or library folders
                 from scope import skip_dir, app_profile
                 if app_profile(fns):
@@ -379,7 +399,7 @@ def main():
                     continue
                 p = Path(dp) / fn
                 try:
-                    st = p.stat()
+                    st = os.stat(os.path.join(dpl, fn))
                 except OSError:
                     continue
                 if not _stat.S_ISREG(st.st_mode):
@@ -408,6 +428,8 @@ def main():
             drop(con, known[s][2])
         con.commit()
         print(f"FINDR_SCAN new/changed {new} removed {len(gone)} in {time.time() - t0:.0f}s")
+        if unread:
+            print(f"FINDR_SKIPPED {len(unread)} folders could not be read ({type(unread[0]).__name__})", flush=True)
         progress("names", k + 1, len(roots))
     _P["files"] = con.execute("SELECT count(*) FROM files WHERE tier>0").fetchone()[0]
     if not a.no_embed:   # stage 1b: a meaning vector from each file's name and folders (natural-language search on names)
