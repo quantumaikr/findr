@@ -1456,6 +1456,7 @@ def photo_text_vec(q):
 # and no 'not here' at all)
 NCAND = int(os.environ.get("NCAND") or (5 if DEVICE == "cpu" else 30))
 CE_MAXLEN = int(os.environ.get("CE_MAXLEN") or (256 if DEVICE == "cpu" else 384))   # ranker input length (256 for the CPU ranker)
+BUCKETS = sorted(int(x) for x in os.environ.get("CE_BUCKETS", "").split(",") if x.strip())   # fixed input lengths (off: one per batch)
 _OLD_NCAND = 30   # candidates handed to the 4B (40 cost 1.1 s per rerank on 2026-11-04; set 1 had every found answer within 20)
 
 
@@ -1607,10 +1608,20 @@ def _ce_score(q, res, d, tok, m, nosumm, top=None):
             got = {i: CE_CACHE[k] for i, k in enumerate(keys) if k in CE_CACHE}
         miss = [i for i in range(len(keys)) if i not in got]
         if miss:
-            b = tok([q] * len(miss), [part[i] for i in miss], padding=True, truncation=True, max_length=CE_MAXLEN,
-                    return_tensors="pt").to(m.device)
+            qs_, ds_ = [q] * len(miss), [part[i] for i in miss]
+            if BUCKETS:
+                # a few fixed shapes only (CE_BUCKETS, e.g. 128,256,384, and a full batch of CE_STEP): the Apple GPU builds an
+                # execution graph per input shape, and a new length per batch made each question pay for new ones (Macs, 11/9:
+                # 256 instead of 384 tokens saved no time, fp16 5%, one batch of 30 was 1.6 s slower)
+                longest = max(len(x) for x in tok(qs_, ds_, truncation=True, max_length=CE_MAXLEN)["input_ids"])
+                L_ = next((b_ for b_ in BUCKETS if b_ >= longest), CE_MAXLEN)
+                full = max(len(miss), int(os.environ.get("CE_STEP_MPS") or 10))   # the batch filled up to one size with copies
+                b = tok(qs_ + qs_[:1] * (full - len(miss)), ds_ + ds_[:1] * (full - len(miss)), padding="max_length",
+                        truncation=True, max_length=L_, return_tensors="pt").to(m.device)
+            else:
+                b = tok(qs_, ds_, padding=True, truncation=True, max_length=CE_MAXLEN, return_tensors="pt").to(m.device)
             t_m = time.time()
-            got.update(zip(miss, torch.sigmoid(m(**b).logits.view(-1).float()).cpu().tolist()))
+            got.update(zip(miss, torch.sigmoid(m(**b).logits.view(-1).float()).cpu().tolist()[:len(miss)]))
             if GOV is not None:   # the model's own time per candidate (cached scores left out): heat or sharing shows as a slowdown
                 GOV.rerank_time(time.time() - t_m, int(b["input_ids"].numel()))
         with CE_CACHE_LOCK:
@@ -1637,6 +1648,8 @@ def _ce_score(q, res, d, tok, m, nosumm, top=None):
             n = len(sc)
         else:
             sc = run(docs[:n])
+    if getattr(_ST, "d", None) is not None:   # how many candidates the reranker really scored: a Mac's 3 s budget can stop
+        _ST.d["ce_n"] = float(n)               # before 30, and the answer then depends on timing (#74; Mac Air, 11/9)
     if m.device.type == "cpu" and d not in CE_RATE:
         # the rate is measured once (the warm-up's full-size batch) and then kept: learned from each question, it made the
         # number of candidates, and so the answer, depend on the question before (#66: rank 1, then rank 8 a moment later)
@@ -2109,8 +2122,9 @@ def _stage_timers():
 
 def _slow_line(res, mode, total):
     d = getattr(_ST, "d", None) or {}
-    st = {k: int(v * 1000) for k, v in sorted(d.items(), key=lambda kv: -kv[1]) if v >= 0.01}
-    line = "FINDR_SLOW " + json.dumps({"ms": int(total * 1000), "route": mode, "n": len(res.get("results") or []), "stages": st})
+    st = {k: int(v * 1000) for k, v in sorted(d.items(), key=lambda kv: -kv[1]) if v >= 0.01 and k != "ce_n"}
+    extra = {"ce_n": int(d["ce_n"])} if "ce_n" in d else {}   # a count, not a time
+    line = "FINDR_SLOW " + json.dumps({"ms": int(total * 1000), "route": mode, "n": len(res.get("results") or []), **extra, "stages": st})
     print(line, flush=True)
     try:   # also in the data folder's logs, where the tester guide looks (#67: CLI serve printed it to the terminal only)
         lg = Path(os.environ.get("FINDR_DATA") or (Path.home() / ".findr")) / "logs" / "slow.log"
