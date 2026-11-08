@@ -126,7 +126,7 @@ async function folders(s: AppState) {
 
 // ---------- indexing ----------
 // People wait more easily when they see progress that is honest, can already do something useful, and stay in control.
-const TIPS = ['지난달 받은 견적서', '작년 여름 바다에서 찍은 사진', '최종본 말고 그 직전 판', '회의 전에 고친 발표 자료', '카톡으로 받은 계약서 스캔', '소각로 48톤이라고 적힌 매뉴얼']
+const TIPS = ['지난달 받은 견적서', '작년 여름 바다에서 찍은 사진', '최종본 말고 그 직전 판', '회의 전에 고친 발표 자료', '카톡으로 받은 계약서 스캔', '출장비 한도가 적힌 규정']
 const CAN: [string, string, string][] = [   // stage, what the person can do once it is ready, what is happening meanwhile
   ['names', '파일 이름으로 찾기', '파일 목록을 만드는 중'],
   ['namevec', '비슷한 말로 이름 찾기', '이름의 뜻을 파악하는 중'],
