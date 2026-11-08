@@ -1908,6 +1908,19 @@ def serve(f, port):
     httpd = ThreadingHTTPServer(("127.0.0.1", port), H)
     if os.environ.get("FINDR_READY_LINE"):
         print(os.environ["FINDR_READY_LINE"], flush=True)
+    if os.environ.get("FINDR_WARM", "1") == "1":   # the first question loaded the reranker and GPU kernels: 2.3 s instead of 0.2 s
+        def warm():
+            try:
+                t = time.time()
+                with SEARCH_LOCK:
+                    f.search("지난달 회의 자료", mode="xce", k=10)
+                    if getattr(f, "ng", None) is None and _has_facts(f):   # understanding-first route: its planner loads once
+                        from ng import NG
+                        f.ng = NG(f)
+                print(f"FINDR_WARM {time.time() - t:.1f}s", flush=True)
+            except Exception as e:   # a failed warm-up only means the first question is slower
+                print(f"FINDR_WARM failed {type(e).__name__}", flush=True)
+        threading.Thread(target=warm, daemon=True).start()
     httpd.serve_forever()
 
 
