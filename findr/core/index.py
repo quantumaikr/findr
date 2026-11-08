@@ -910,6 +910,22 @@ def _ocr_copy_of(con, fid, path, size, deep):
     return None
 
 
+def photos_to_read(rows, deep, engine):
+    """which photos the text recognizer reads now. rows: (id, path), newest first. A deep run reads them all. A first pass
+    reads screenshot-like names, and with the system's own recognizer (macOS Vision, Windows OCR) also the newest
+    FINDR_OCR_PHOTOS photos (300): on a Mac Air (11/9) half of 50 random photos in the person's own folders carried text worth
+    finding (screenshots, product pages, slides, posters, notes) and Vision read one in 0.17 s, yet 1 of 1,443 had any text
+    in the index, because the deep run that reads the rest had not come"""
+    if deep:
+        return list(rows)
+    first = [r for r in rows if SHOTLIKE.search(r[1])]
+    if engine in ("vision", "windows"):
+        n = int(os.environ.get("FINDR_OCR_PHOTOS") or 300)
+        have = {r[0] for r in first}
+        first += [r for r in rows if r[0] not in have][:max(0, n)]
+    return first
+
+
 def ocr_wave(con, root, first_pages=None, deep_pages=50):
     """scanned PDFs and screenshots now; every photo on a deep run. Each file is read once (files.ocr).
     First pass: the first OCR_FIRST_PAGES pages of a PDF (files.ocr = 3 when pages are left); a deep run reads the rest.
@@ -941,9 +957,10 @@ def ocr_wave(con, root, first_pages=None, deep_pages=50):
               AND ((COALESCE(f.ocr,0)=0 AND (SELECT COALESCE(sum(length(c.text)),0) FROM chunks c WHERE c.file=f.id) < 200)
                    OR (? AND f.ocr=?))
               ORDER BY f.mtime DESC""", (like_pre(pre), 1 if deep else 0, OCR_PARTIAL))]
-    imgs = [(i, s) for i, s, e in con.execute("SELECT id, path, ext FROM files WHERE tier=3 AND COALESCE(ocr,0)=0 AND path LIKE ? ESCAPE '\\' AND size < 30000000 "
-                                              "ORDER BY mtime DESC", (like_pre(pre),)) if (e or "").lower() in PHOTO_EXT and (deep or SHOTLIKE.search(s))
+    rows = [(i, s) for i, s, e in con.execute("SELECT id, path, ext FROM files WHERE tier=3 AND COALESCE(ocr,0)=0 AND path LIKE ? ESCAPE '\\' AND size < 30000000 "
+                                              "ORDER BY mtime DESC", (like_pre(pre),)) if (e or "").lower() in PHOTO_EXT
             and not cloud_only_path(s)]   # an online-only photo is not downloaded for OCR (a deep run fetched whole photo libraries)
+    imgs = photos_to_read(rows, deep, ocr_engine())
     if not pdfs and not imgs:
         return
     t0, got, chars, copied = time.time(), 0, 0, 0
