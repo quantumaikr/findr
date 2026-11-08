@@ -231,10 +231,70 @@ def _stem(name):
     return s.lower()
 
 
+_GROUP = {e: g for g, es in {"slides": (".pptx", ".ppt", ".key", ".odp"), "doc": (".docx", ".doc", ".hwp", ".hwpx", ".pages", ".odt", ".pdf"),
+                              "sheet": (".xlsx", ".xls", ".csv", ".numbers", ".ods")}.items() for e in es}
+
+
+def _grams(s, digits=True):
+    """character trigrams of a name or text, letters (and digits) only (Korean names have few spaces). Names are compared
+    without digits: session numbers, years and dates ('08.' / '17.') are what differs between runs of the same course"""
+    t = re.sub(r"[\W_]+" if digits else r"[\W_\d]+", "", unicodedata.normalize("NFC", s or "").lower())
+    return {t[i:i + 3] for i in range(len(t) - 2)} or ({t} if t else set())
+
+
+def _overlap(a, b):
+    """share of the smaller set found in the other: '08. 강화학습' is all inside '17. 언어모델 실용강의 - 강화학습'"""
+    return len(a & b) / min(len(a), len(b)) if a and b else 0.0
+
+
+SIMILAR_MAX, SIBLING_MAX = 10, 3000   # at most 10 similar files; a parent with more files than this: the same folder only
+
+
+def _similar(con, fid, name, ext, folder, head, mt, seen):
+    """files that may be another version without sharing the name (#122 follow-up, field pilot): the same subject in the
+    same folder or a sibling folder (a course run again: '1차 … / 08. 강화학습' and '2차 … / 17. … 강화학습'), by name or
+    opening text, and another file of the same kind made the same day in the same folder (a contest entry saved under a
+    new name). Each with why and how close"""
+    parent = folder.rsplit("/", 1)[0] if "/" in folder else ""
+    pre = (parent or folder) + "/"
+    rows = con.execute("SELECT id, name, ext, path, mtime FROM files WHERE tier IN (1,3) AND replace(nfc(path), '\\', '/') LIKE ? ESCAPE '!'",
+                       (pre.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%",)).fetchall()
+    def place(p2):
+        d = _norm(p2).rsplit("/", 1)[0]
+        return "same" if d == folder else ("sibling" if parent and d.rsplit("/", 1)[0] == parent else None)
+    if len(rows) > SIBLING_MAX:   # a parent like the home or Downloads folder: siblings are not one project
+        rows = [r for r in rows if place(r[3]) == "same"]
+    ng, hg, day, grp = _grams(_stem(name), False), _grams(head[:700]), _day(mt), _GROUP.get((ext or "").lower())
+    out = []
+    for f2, n2, e2, p2, mt2 in rows:
+        where = place(p2)
+        if f2 in seen or not where:
+            continue
+        sim_n = _overlap(ng, _grams(_stem(n2), False))
+        why, score = None, 0.0
+        if sim_n >= 0.6:
+            why, score = f"비슷한 이름 {sim_n:.2f}", sim_n
+        elif where == "same" and day and _day(mt2) == day and grp and _GROUP.get((e2 or "").lower()) == grp:
+            why, score = "같은 날 같은 폴더", 0.55
+        if why is None and hg and sim_n >= 0.2:   # some name in common: the opening text decides
+            h2 = (con.execute("SELECT text FROM chunks WHERE file=? AND n=0", (f2,)).fetchone() or [""])[0] or ""
+            sim_h = _overlap(hg, _grams(h2[:700]))
+            if sim_h >= 0.5:
+                why, score = f"비슷한 앞부분 {sim_h:.2f}", sim_h
+        if why:
+            out.append({"relation": "similar", "name": n2, "path": p2, "modified": _day(mt2), "why": why,
+                        "folder": "같은 폴더" if where == "same" else "이웃 폴더", "score": round(score, 2)})
+    out.sort(key=lambda x: -x["score"])
+    return out[:SIMILAR_MAX]
+
+
 def versions(path: str) -> dict:
     """The same document's other files on this PC, so the right one can be picked: exact copies anywhere (same format,
-    size and text), other versions in the same folder (v2, 최종, (1), dates in the name), and files with the same name in
-    other folders. Each with its folder and modified date. Use it when a result may be a copy, a draft or last year's."""
+    size and text), other versions in the same folder (v2, 최종, (1), dates in the name), files with the same name in
+    other folders, and up to 10 'similar' files that may be another version under another name: the same subject in this
+    folder or a sibling folder (a course given again, by name or opening text) and another file of the same kind made the
+    same day in this folder. Each with its folder and modified date ('similar' also with why and how close). Use it when
+    a result may be a copy, a draft, last year's or another run of the same course or event."""
     con = _db()
     if con is None:
         return {"error": "findr has no index on this PC yet"}
@@ -259,7 +319,9 @@ def versions(path: str) -> dict:
     out.sort(key=lambda x: x["modified"], reverse=True)   # newest first, then grouped: copies, versions, elsewhere
     out.sort(key=lambda x: {"copy": 0, "version": 1}.get(x["relation"], 2))
     me = con.execute("SELECT mtime FROM files WHERE id=?", (fid,)).fetchone()[0]
-    return {"file": {"name": name, "path": fp, "modified": _day(me)}, "others": out[:30],
+    sim = _similar(con, fid, name, ext, folder, head, me, seen)   # after the named ones: maybe another version, with why
+    out = out[:30] + sim
+    return {"file": {"name": name, "path": fp, "modified": _day(me)}, "others": out,
             "note": "" if out else "No other copy or version of this file is indexed."}
 
 

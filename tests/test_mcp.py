@@ -104,3 +104,61 @@ def test_versions_finds_copies_versions_and_namesakes(pc):
     assert rel["/d/work/plan/plan_v2.docx"] == "version" and rel["/d/work/plan/plan_v1.docx"] == "version"
     assert [x["relation"] for x in r["others"]][0] == "copy"
     assert "error" in pc.versions("/nowhere.docx")
+
+
+
+@pytest.fixture
+def lectures(tmp_path, monkeypatch):
+    """a course given twice (sibling folders), a contest folder with two entries saved the same day, and unrelated files"""
+    monkeypatch.setenv("FINDR_HOME", str(tmp_path)); monkeypatch.setenv("FINDR_APP_PORT", "9")
+    import findr.paths
+    importlib.reload(findr.paths)
+    m = importlib.reload(importlib.import_module("findr.mcp_server"))
+    con = sqlite3.connect(str(tmp_path / "index.db"))
+    con.executescript("""CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT, name TEXT, ext TEXT, size INT, mtime REAL, tier INT);
+        CREATE TABLE chunks(id INTEGER PRIMARY KEY, file INT, n INT, text TEXT);""")
+    day = 1700049600   # noon UTC (2023-11-15): +1 h and +2 h stay on the same date in every time zone the tests run in (CI is UTC)
+    later = day + 40 * 86400
+    rows = [(1, "/d/강의/1차 과정/08. 강화학습.key", ".key", day, "강화학습 에이전트 보상 탐험률 할인률"),
+            (2, "/d/강의/2차 과정/17. 실용강의 - 강화학습.key", ".key", later, "강화학습 에이전트 보상 탐험률"),     # the course again
+            (3, "/d/강의/2차 과정/03. 자연어 전처리.key", ".key", later, "토큰화 형태소 분석"),                 # another subject
+            (4, "/d/강의/1차 과정/09. 정책 경사.key", ".key", day, "에이전트 보상 정책 경사 강화학습 기초"),   # same opening ideas
+            (10, "/d/대회/2023 팀가_발표.pptx", ".pptx", day + 3600, "배경 및 목적 제작계획"),
+            (11, "/d/대회/2023 팀나_최종 제출.pptx", ".pptx", day + 7200, "다른 팀의 발표 내용"),             # same day, other name
+            (12, "/d/대회/참가 신청서.hwp", ".hwp", day + 7200, "신청서 양식"),                               # same day, not slides
+            (13, "/d/대회/2023 팀다_발표.pptx", ".pptx", later, "다음 달 발표")]                              # another day
+    for i, p, e, mt, t in rows:
+        con.execute("INSERT INTO files VALUES(?,?,?,?,?,?,1)", (i, p, p.rsplit("/", 1)[1], e, 100 + i, mt))
+        con.execute("INSERT INTO chunks VALUES(?,?,0,?)", (i, i, t))
+    con.commit(); con.close()
+    return m
+
+
+def test_versions_similar_finds_the_course_given_again(lectures):
+    r = lectures.versions("/d/강의/1차 과정/08. 강화학습.key")
+    sim = {x["name"]: x for x in r["others"] if x["relation"] == "similar"}
+    assert "17. 실용강의 - 강화학습.key" in sim and sim["17. 실용강의 - 강화학습.key"]["folder"] == "이웃 폴더"
+    assert sim["17. 실용강의 - 강화학습.key"]["why"].startswith("비슷한 이름") and sim["17. 실용강의 - 강화학습.key"]["score"] >= 0.6
+    assert "03. 자연어 전처리.key" not in sim   # another subject in the sibling folder
+
+
+def test_versions_similar_finds_another_entry_saved_the_same_day(lectures):
+    r = lectures.versions("/d/대회/2023 팀가_발표.pptx")
+    sim = {x["name"]: x["why"] for x in r["others"] if x["relation"] == "similar"}
+    assert sim.get("2023 팀나_최종 제출.pptx") == "같은 날 같은 폴더"
+    assert "참가 신청서.hwp" not in sim   # same day, but not slides
+    assert "2023 팀다_발표.pptx" not in sim   # another team, another day: only the year and '발표' in common
+
+
+def test_versions_similar_is_capped_and_skips_crowded_parents(lectures, monkeypatch, tmp_path):
+    import sqlite3 as sq
+    con = sq.connect(str(tmp_path / "index.db"))
+    for i in range(40):   # forty more runs of the course in sibling folders
+        p = f"/d/강의/{i + 3}차 과정/08. 강화학습.key"
+        con.execute("INSERT INTO files VALUES(?,?,?,?,?,?,1)", (100 + i, p, "08. 강화학습 복습.key", ".key", 1, 1700000000 + i))
+    con.commit(); con.close()
+    sim = [x for x in lectures.versions("/d/강의/1차 과정/08. 강화학습.key")["others"] if x["relation"] == "similar"]
+    assert len(sim) == lectures.SIMILAR_MAX
+    monkeypatch.setattr(lectures, "SIBLING_MAX", 5)   # a crowded parent (the home or Downloads folder): the same folder only
+    sim = [x for x in lectures.versions("/d/강의/1차 과정/08. 강화학습.key")["others"] if x["relation"] == "similar"]
+    assert sim and all(x["folder"] == "같은 폴더" for x in sim)
