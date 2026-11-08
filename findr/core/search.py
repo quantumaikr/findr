@@ -1662,7 +1662,52 @@ def explore_json(f):
     return c[1]
 
 
+_ST = threading.local()   # per-request stage times, for the slow-question line
+SLOW_MS = int(os.environ.get("FINDR_SLOW_MS") or 1500)
+
+
+def _stage_timers():
+    """time the main stages of a search, so a rare slow question can say where its time went (FINDR_SLOW, no question text)"""
+    def wrap(owner, name):
+        fn = getattr(owner, name, None)
+        if fn is None or getattr(fn, "_timed", False):
+            return
+        def w(*a, **kw):
+            t = time.time()
+            try:
+                return fn(*a, **kw)
+            finally:
+                d = getattr(_ST, "d", None)
+                if d is not None:
+                    d[name] = d.get(name, 0.0) + time.time() - t
+        w._timed = True
+        setattr(owner, name, w)
+    for n in ("refresh", "qvec", "_search", "name_floor", "version_first"):
+        wrap(Finder, n)
+    mod = sys.modules[__name__]
+    for n in ("parse", "_epi_read", "ce_scores", "add_probs"):
+        wrap(mod, n)
+    import gc
+    gc_t = {}
+    def on_gc(phase, info):   # a collection pauses whatever stage is running: count it on its own
+        if phase == "start":
+            gc_t[threading.get_ident()] = time.time()
+        else:
+            t = gc_t.pop(threading.get_ident(), None); d = getattr(_ST, "d", None)
+            if t is not None and d is not None:
+                k = f"gc{info.get('generation', '')}"; d[k] = d.get(k, 0.0) + time.time() - t
+    gc.callbacks.append(on_gc)
+
+
+def _slow_line(res, mode, total):
+    d = getattr(_ST, "d", None) or {}
+    st = {k: int(v * 1000) for k, v in sorted(d.items(), key=lambda kv: -kv[1]) if v >= 0.01}
+    print("FINDR_SLOW " + json.dumps({"ms": int(total * 1000), "route": mode, "n": len(res.get("results") or []), "stages": st}), flush=True)
+
+
 def serve(f, port):
+    _stage_timers()
+
     class H(BaseHTTPRequestHandler):
         def reply(self, code, body, ct):
             self.send_response(code); self.send_header("Content-Type", ct)
@@ -1789,7 +1834,9 @@ def serve(f, port):
                 no_facts = mode == "ng" and not _has_facts(f)   # '이해 우선' on an index without work facts: no such table -> 500 (#32)
                 if no_facts:
                     mode = "xce"   # the reranker answers, and route / the /refine cache say so
+                t_req = time.time(); _ST.d = {}
                 with SEARCH_LOCK:
+                  _ST.d["lock_wait"] = time.time() - t_req
                   global EVAL_NOW
                   try:
                     pin = self.headers.get("X-Findr-Today")
@@ -1814,6 +1861,9 @@ def serve(f, port):
                     with SEARCH_LOCK:
                         res = personal().apply(f, q_, res)
                 res = add_probs(res)
+                if time.time() - t_req > SLOW_MS / 1000:
+                    _slow_line(res, mode, time.time() - t_req)
+                _ST.d = None
                 if len(_LAST) > 50:
                     _LAST.clear()
                 _LAST[(q_, mode)] = res
