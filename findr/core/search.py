@@ -565,6 +565,23 @@ class Finder:
             return []
         return [f_ for (f_,) in self.con.execute(f"SELECT id FROM files WHERE id IN ({','.join('?' * len(sets))}) ORDER BY mtime DESC LIMIT ?", (*sets, limit))]
 
+    def xling_named(self, q, limit=50):
+        """files whose NAME carries every idea of a Korean question through XLING, one at least by translation, newest first.
+        The rescue in the top 10 is not enough when neither the meaning nor the word search brought the name in
+        ('갤럭시 광고 문구' -> Galaxy_Ad_Copy.docx: no Korean word of the question is in it)"""
+        ideas = xling_ideas(q)
+        if not ideas:
+            return []
+        self.load_scan()
+        cids = [cid for cid, nm, tr in self.name_rows if tr != 2
+                and all(any(sp in nm for sp in idea) for idea in ideas)   # cheap substring pass first: 100k names
+                and xling_cover(nm, ideas) == (True, True)]
+        if not cids or len(cids) > limit:   # a pair of common words is not a name search
+            return []
+        qm = ",".join("?" * len(cids))
+        return [f_ for (f_,) in self.con.execute(
+            f"SELECT f.id FROM chunks c JOIN files f ON f.id=c.file WHERE c.id IN ({qm}) ORDER BY f.mtime DESC", cids)]
+
     def coverage(self, text, top):
         """share of the question's content words (2+ chars, particles stripped) present in the file's name, path or text"""
         ws = {w.lower() for w in self.content_words(text)}
@@ -945,6 +962,14 @@ class Finder:
                 j = xling_name_first(q, r["results"])   # Korean words, English name: Remote_Access_Design.pdf (#19)
                 if j:
                     r["results"] = [r["results"][j]] + r["results"][:j] + r["results"][j + 1:]; r["xling"] = 1
+                elif r["results"] and xling_ideas(q) and not xling_cover(r["results"][0].get("name"), xling_ideas(q))[0]:
+                    xf = self.xling_named(q)   # not in the top 10: from all names (field: 0.2.13 found it only below rank 10)
+                    if xf:
+                        at = next((i for i, x in enumerate(r["results"]) if x["fid"] == xf[0]), None)
+                        top_ = [r["results"].pop(at)] if at is not None else self.files_out(xf[:1])
+                        if top_:
+                            top_[0]["why"] = (top_[0].get("why") or []) + ["이름에 찾는 뜻이 모두 있음(영어)"]
+                            r["results"] = (top_ + r["results"])[:k]; r["xling"] = 2
                 # version questions last: a page that quotes the question ('…최종본이 아닙니다') must not undo the version choice
                 if PREVQ.search(q):   # "최종본 말고 그 직전 판": the version right before the latest
                     r["results"] = self.version_first(q, r["results"])
@@ -1609,13 +1634,13 @@ XLING = {
 _XL_JOSA = re.compile(r"(으로|에서|에게|이랑|하고|까지|부터|이나|은|는|이|가|을|를|의|에|로|와|과|도|만|랑)$")
 
 
-def xling_name_first(q, res, top=10):
-    """index (in res[:top], > 0) of the file whose name covers every idea of a Korean question through XLING,
-    when at least one idea needed a translation and #1's name does not cover them; else 0"""
+def xling_ideas(q):
+    """the ideas of a Korean question, each with the spellings that count for it in a file name (XLING);
+    [] for a question without Korean or with fewer than two ideas"""
     words = re.findall(r"[가-힣]{2,}|[A-Za-z][A-Za-z0-9]+", q)
     if not words or not any(re.match(r"[가-힣]", w) for w in words):
-        return 0
-    ideas = []   # each idea: the spellings that count for it in a name
+        return []
+    ideas = []
     for w in words:
         if re.match(r"[A-Za-z]", w):
             ideas.append([w.lower()]); continue
@@ -1623,21 +1648,25 @@ def xling_name_first(q, res, top=10):
         if XLING.get(stem) == "" or XLING.get(w) == "":
             continue   # 자료, 문서, 파일 …: not an idea of the content
         ideas.append([stem] + (XLING.get(stem) or "").split())
-    if len(ideas) < 2:
-        return 0
+    return ideas if len(ideas) >= 2 else []
 
-    def cover(x):
-        import unicodedata as _ud
-        nm = _ud.normalize("NFC", x.get("name") or "").lower()
-        hit = [next((sp for sp in idea if (sp in nm if len(sp) > 3 or re.match(r"[가-힣]", sp)
-                                           else re.search(rf"(?<![a-z]){re.escape(sp)}(?![a-z])", nm))), None) for idea in ideas]
-        return all(hit), any(h and re.match(r"[a-z]", h) and h != idea[0] for h, idea in zip(hit, ideas))
 
-    if not res or cover(res[0])[0]:
+def xling_cover(name, ideas):
+    """(the name carries every idea, at least one of them by an English translation)"""
+    nm = unicodedata.normalize("NFC", name or "").lower()
+    hit = [next((sp for sp in idea if (sp in nm if len(sp) > 3 or re.match(r"[가-힣]", sp)
+                                       else re.search(rf"(?<![a-z]){re.escape(sp)}(?![a-z])", nm))), None) for idea in ideas]
+    return all(hit), any(h and re.match(r"[a-z]", h) and h != idea[0] for h, idea in zip(hit, ideas))
+
+
+def xling_name_first(q, res, top=10):
+    """index (in res[:top], > 0) of the file whose name covers every idea of a Korean question through XLING,
+    when at least one idea needed a translation and #1's name does not cover them; else 0"""
+    ideas = xling_ideas(q)
+    if not ideas or not res or xling_cover(res[0].get("name"), ideas)[0]:
         return 0
     for j, x in enumerate(res[1:top], 1):
-        full, translated = cover(x)
-        if full and translated:
+        if xling_cover(x.get("name"), ideas) == (True, True):
             return j
     return 0
 
