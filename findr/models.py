@@ -121,6 +121,11 @@ def pull(folders, token=None):
         pats = [p for f in own for p in ([f"{f}/*.json", f"{f}/model_int8.onnx"] if f == "rank" and cpu else [f"{f}/*"])]
         # a CPU-only PC ranks with the int8 model (543 MB); a GPU PC never uses it
         snapshot_download(OWN, local_dir=paths.MODELS, allow_patterns=pats, ignore_patterns=None if cpu else ["*.onnx"], token=token)
+    for f in folders:   # the public models (meaning search, photos): without them the engine would fetch them at search time
+        if f in PUBLIC and not have(f):
+            repo, files, why = PUBLIC[f]
+            print(f"  {why}: {repo} 받는 중 ...", flush=True)
+            snapshot_download(repo, local_dir=paths.MODELS / f, allow_patterns=files, token=token)
 
 
 def pull_rank_int8(token=None):
@@ -135,11 +140,6 @@ def pull_rank_fp32(token=None):
     from huggingface_hub import snapshot_download
     print("  재정렬 모델(전체 정밀도) 받는 중 ...", flush=True)
     snapshot_download(OWN, local_dir=paths.MODELS, allow_patterns=["rank/*"], ignore_patterns=["*.onnx"], token=token)
-    for f in folders:
-        if f in PUBLIC and not have(f):
-            repo, files, why = PUBLIC[f]
-            print(f"  {why}: {repo} 받는 중 ...", flush=True)
-            snapshot_download(repo, local_dir=paths.MODELS / f, allow_patterns=files, token=token)
 
 
 def llama_server():
