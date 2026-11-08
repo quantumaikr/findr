@@ -1742,6 +1742,28 @@ def _slow_line(res, mode, total):
     print("FINDR_SLOW " + json.dumps({"ms": int(total * 1000), "route": mode, "n": len(res.get("results") or []), "stages": st}), flush=True)
 
 
+def _local_request(h):
+    """a browser on this PC itself: only then may the page open files here. A request through a tunnel or proxy carries
+    its forwarding header and is refused, even though it arrives from 127.0.0.1"""
+    return h.client_address[0] in ("127.0.0.1", "::1") and not any(
+        h.headers.get(x) for x in ("CF-Connecting-IP", "X-Forwarded-For", "Forwarded", "X-Real-IP"))
+
+
+def open_on_pc(path, reveal=False):
+    """open a file with its program, or show it in its folder, as the desktop app does"""
+    import subprocess
+    p = str(Path(path))
+    if os.name == "nt":
+        if reveal:
+            subprocess.Popen(["explorer", f"/select,{p}"])
+        else:
+            os.startfile(p)
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", p] if reveal else ["open", p])
+    else:
+        subprocess.Popen(["xdg-open", str(Path(p).parent) if reveal else p])
+
+
 def serve(f, port):
     _stage_timers()
 
@@ -1755,6 +1777,10 @@ def serve(f, port):
         def do_GET(self):
             if urlparse(self.path).path == "/healthz":   # for the watchdog: says nothing but "ok"
                 return self.reply(200, b"ok", "text/plain")
+            if urlparse(self.path).path == "/canopen":   # the page shows 열기 / 폴더 only in a browser on this PC
+                if not self.authed():
+                    return
+                return self.reply(200, json.dumps({"local": _local_request(self)}).encode(), "application/json")
             if urlparse(self.path).path == "/progress":   # indexing still running: the page shows where it stands
                 if not self.authed():
                     return
@@ -1937,6 +1963,23 @@ def serve(f, port):
                 f_ = Path(os.environ.get("FINDR_DATA") or Path.home() / ".findr") / "pause"
                 f_.write_text("1") if on else f_.unlink(missing_ok=True)
                 return self.reply(200, json.dumps({"ok": True, "paused": on}).encode(), "application/json")
+            if self.headers.get("X-Findr") == "1" and urlparse(self.path).path == "/open":   # 열기 / 폴더 in a browser on this PC
+                if not _local_request(self):
+                    return self.reply(403, b'{"ok": false, "why": "remote"}', "application/json")
+                try:
+                    r = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 8192)) or b"{}")
+                    path_, reveal = str(r["path"]), bool(r.get("reveal"))
+                except Exception:
+                    return self.reply(400, b'{"ok": false}', "application/json")
+                with SEARCH_LOCK:
+                    known = f.con.execute("SELECT 1 FROM files WHERE path=?", (path_,)).fetchone()
+                if not known:   # only files of the index: the page cannot be used to start arbitrary programs
+                    return self.reply(404, b'{"ok": false, "why": "not indexed"}', "application/json")
+                try:
+                    open_on_pc(path_, reveal)
+                except OSError as e:
+                    return self.reply(500, json.dumps({"ok": False, "why": type(e).__name__}).encode(), "application/json")
+                return self.reply(200, b'{"ok": true}', "application/json")
             if self.headers.get("X-Findr") != "1" or urlparse(self.path).path != "/correct":
                 return self.reply(403, b"{}", "application/json")
             n = int(self.headers.get("Content-Length") or 0)

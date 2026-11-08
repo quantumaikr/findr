@@ -208,6 +208,8 @@ function pipeline(r){
  return st.map((s,i)=>(i?'<span class="ar"></span>':'')+'<span class="st" style="animation-delay:'+(i*70)+'ms">'+esc(s[0])+' <b>'+esc(s[1])+'</b></span>').join('');
 }
 const APP=!!(window.__TAURI__&&window.__TAURI__.core);   // inside the desktop app: open files and folders directly
+let LOCAL=false;   // a browser on this PC: the engine opens files for it (never through a tunnel)
+if(!APP)fetch('/canopen').then(r=>r.json()).then(j=>{LOCAL=!!j.local;if(LOCAL&&last)list()}).catch(()=>{});
 // indexing: a small live chip in the status line; it opens a panel with what can be found now (search works meanwhile)
 (function(){
  const ST=[['names','이름으로 찾기','파일 목록을 만드는 중'],['namevec','비슷한 말로 이름 찾기','이름의 뜻을 파악하는 중'],
@@ -278,7 +280,7 @@ function list(){
   '<div><div class="nm"><span class="rank">'+(i+1)+'</span>'+(x.prob!=null?'<span class="odds" style="background:'+(x.prob>=.7?'var(--acc)':x.prob>=.3?'#c27a2c':'#8a8780')+'">'+Math.round(x.prob*100)+'%</span>':'')+hl(base(x.path))+'</div><div class="path">'+
   d.split('/').map((seg,j,a)=>'<span data-dir="'+esc(a.slice(0,j+1).join('/'))+'">'+esc(seg)+'</span>').join(' / ')+'</div>'+
   (x.why&&x.why.length?'<div class="why">'+x.why.map(esc).join(' · ')+'</div>':'')+(x.snippet?'<div class="snip">'+hl(x.snippet)+'</div>':'')+'</div>'+
-  '<div class="side"><span title="'+esc(x.date)+'">'+ago(x.date)+'</span><span>'+fmt(x.size)+'</span><div class="act">'+(APP?'<button data-open="'+i+'">열기</button><button data-reveal="'+i+'">폴더</button>':'')+'<button data-copy="'+i+'">경로 복사</button><button data-ok="'+i+'">✔ 맞음</button><button data-no="'+i+'">✘ 아님</button></div></div></div>'}).join('')+
+  '<div class="side"><span title="'+esc(x.date)+'">'+ago(x.date)+'</span><span>'+fmt(x.size)+'</span><div class="act">'+(APP||LOCAL?'<button data-open="'+i+'">열기</button><button data-reveal="'+i+'">폴더</button>':'')+'<button data-copy="'+i+'">경로 복사</button><button data-ok="'+i+'">✔ 맞음</button><button data-no="'+i+'">✘ 아님</button></div></div></div>'}).join('')+
   (rs.length?'<div style="text-align:center;margin-top:10px"><button class="act" id="none" style="border:1px solid var(--line);background:transparent;border-radius:8px;padding:6px 12px;color:var(--mut)">✘ 찾는 파일이 여기 없음</button></div>':'');
 }
 function facets(rs){
@@ -291,8 +293,11 @@ document.addEventListener('click',e=>{
  const fk=e.target.closest('[data-kind]');if(fk){fKind=fKind===fk.dataset.kind?null:fk.dataset.kind;document.querySelectorAll('[data-kind]').forEach(x=>x.classList.toggle('on',x.dataset.kind===fKind));list();return}
  const fd=e.target.closest('[data-fdir]');if(fd){fDir=fDir===fd.dataset.fdir?null:fd.dataset.fdir;document.querySelectorAll('[data-fdir]').forEach(x=>x.classList.toggle('on',x.dataset.fdir===fDir));list();return}
  const sd=e.target.closest('[data-dir]');if(sd){fDir=sd.dataset.dir;list();toast('폴더로 거름: '+fDir.split('/').slice(-2).join('/'));return}
- const op=e.target.closest('[data-open],[data-reveal]');if(op&&APP){const x=filtered()[+(op.dataset.open!=null?op.dataset.open:op.dataset.reveal)];
-  window.__TAURI__.core.invoke('open_path',{path:x.path,reveal:op.dataset.reveal!=null}).catch(err=>toast(String(err)));return}
+ const op=e.target.closest('[data-open],[data-reveal]');if(op&&(APP||LOCAL)){const x=filtered()[+(op.dataset.open!=null?op.dataset.open:op.dataset.reveal)],rv=op.dataset.reveal!=null;
+  if(APP){window.__TAURI__.core.invoke('open_path',{path:x.path,reveal:rv}).catch(err=>toast(String(err)));return}
+  fetch('/open',{method:'POST',headers:{'X-Findr':'1','Content-Type':'application/json'},body:JSON.stringify({path:x.path,reveal:rv})})
+   .then(r=>r.ok?toast(rv?'폴더를 열었습니다':'파일을 열었습니다'):r.json().then(j=>toast('열지 못했습니다'+(j.why=='not indexed'?': 색인에 없는 파일':''))))
+   .catch(err=>toast(String(err)));return}
  const cp=e.target.closest('[data-copy]');if(cp){copy(filtered()[+cp.dataset.copy].path);return}
  const no=e.target.closest('[data-no]');if(no){const x=filtered()[+no.dataset.no];x.no=true;fb('reject',x.path,last.results.indexOf(x)+1,x.prob);list();toast('기록: 이 파일은 아님');return}
  const ok=e.target.closest('[data-ok]');if(ok){const x=filtered()[+ok.dataset.ok];fb('hit',x.path,last.results.indexOf(x)+1,x.prob);last.picked=1;ok.classList.add('done');ok.textContent='✔ 기록됨';
