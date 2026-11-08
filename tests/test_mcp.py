@@ -47,4 +47,60 @@ def test_mcp_server_lists_tools(tmp_path):
             async with ClientSession(r, w) as s:
                 await s.initialize()
                 return sorted(t.name for t in (await s.list_tools()).tools)
-    assert asyncio.run(go()) == ["read_file", "search_files"]
+    assert asyncio.run(go()) == ["list_folder", "read_file", "search_files", "versions"]
+
+
+@pytest.fixture
+def pc(tmp_path, monkeypatch):
+    """a small PC: a project folder with versions and a copy elsewhere, photos with no text, a spreadsheet"""
+    monkeypatch.setenv("FINDR_HOME", str(tmp_path)); monkeypatch.setenv("FINDR_APP_PORT", "9")
+    import findr.paths
+    importlib.reload(findr.paths)
+    m = importlib.reload(importlib.import_module("findr.mcp_server"))
+    con = sqlite3.connect(str(tmp_path / "index.db"))
+    con.executescript("""CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT, name TEXT, ext TEXT, size INT, mtime REAL, tier INT);
+        CREATE TABLE chunks(id INTEGER PRIMARY KEY, file INT, n INT, text TEXT);
+        CREATE VIRTUAL TABLE fts USING fts5(name, path, text, content='', contentless_delete=1, tokenize='trigram');""")
+    rows = [(1, "/d/work/plan/plan_v1.docx", ".docx", 100, 1700000000, "first plan"),
+            (2, "/d/work/plan/plan_v2.docx", ".docx", 120, 1710000000, "second plan"),
+            (3, "/d/work/plan/plan_final.docx", ".docx", 130, 1720000000, "the final plan"),
+            (4, "/d/old/plan_final.docx", ".docx", 130, 1720000500, "the final plan"),        # the same file, copied
+            (5, "/d/work/trip/day1/IMG_0001.jpg", ".jpg", 999, 1715000000, None),
+            (6, "/d/work/trip/day1/IMG_0002.jpg", ".jpg", 998, 1715000100, None),
+            (7, "/d/work/budget plan.xlsx", ".xlsx", 50, 1716000000, "budget plan numbers")]
+    for i, p, e, s, mt, t in rows:
+        con.execute("INSERT INTO files VALUES(?,?,?,?,?,?,1)", (i, p, p.rsplit("/", 1)[1], e, s, mt))
+        if t:
+            con.execute("INSERT INTO chunks VALUES(?,?,0,?)", (i, i, t))
+            con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (i, p.rsplit("/", 1)[1], p, t))
+    con.commit(); con.close()
+    return m
+
+
+def test_kind_filter_keeps_only_that_format(pc):
+    r = pc.search_files("plan", kind="sheet")
+    assert [x["name"] for x in r["results"]] == ["budget plan.xlsx"] and r["filters"] == {"kind": "sheet"}
+    assert all(x["name"].endswith(".docx") for x in pc.search_files("plan", kind="word")["results"])
+    assert pc.search_files("plan", kind="pdf")["results"] == [] and "list_folder" in pc.search_files("plan", kind="pdf")["note"]
+
+
+def test_folder_and_period_filters(pc):
+    r = pc.search_files("plan", folder="/d/work/plan", since="2024-01-01")
+    assert {x["name"] for x in r["results"]} == {"plan_v2.docx", "plan_final.docx"}   # v1 is from 2023, the copy is in /d/old
+
+
+def test_list_folder_shows_photos_without_text_and_subfolders(pc):
+    r = pc.list_folder("/d/work/trip/day1")
+    assert [x["name"] for x in r["files"]] == ["IMG_0002.jpg", "IMG_0001.jpg"]   # newest first
+    top = pc.list_folder("/d/work")
+    assert {d["name"]: d["files"] for d in top["folders"]} == {"plan": 3, "trip": 2} and [x["name"] for x in top["files"]] == ["budget plan.xlsx"]
+    assert pc.list_folder("/d/work/trip/day1/IMG_0001.jpg")["folder"] == "/d/work/trip/day1"   # a file: its folder
+
+
+def test_versions_finds_copies_versions_and_namesakes(pc):
+    r = pc.versions("/d/work/plan/plan_final.docx")
+    rel = {x["path"]: x["relation"] for x in r["others"]}
+    assert rel["/d/old/plan_final.docx"] == "copy"
+    assert rel["/d/work/plan/plan_v2.docx"] == "version" and rel["/d/work/plan/plan_v1.docx"] == "version"
+    assert [x["relation"] for x in r["others"]][0] == "copy"
+    assert "error" in pc.versions("/nowhere.docx")
