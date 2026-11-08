@@ -1515,6 +1515,7 @@ import math  # noqa: E402
 import threading  # noqa: E402
 import traceback  # noqa: E402
 SEARCH_LOCK = threading.Lock()   # the finder shares one DB connection, GPU models and per-search state: one search at a time
+READY = threading.Event()   # set when the warm-up is done: /healthz answers at once, /ready says when a question gets full speed (#68)
 MODES = {"auto", "ng", "xce", "base"}   # what the web page may ask for; 4B modes stay CLI-only
 MAX_Q = 300
 _CALIB = None
@@ -1826,6 +1827,8 @@ def serve(f, port):
         def do_GET(self):
             if urlparse(self.path).path == "/healthz":   # for the watchdog: says nothing but "ok"
                 return self.reply(200, b"ok", "text/plain")
+            if urlparse(self.path).path == "/ready":   # 'answers' is not 'ready' (#68): the page says so while the engine warms up
+                return self.reply(200, json.dumps({"ready": READY.is_set()}).encode(), "application/json")
             if urlparse(self.path).path == "/canopen":   # the page shows 열기 / 폴더 only in a browser on this PC
                 if not self.authed():
                     return
@@ -2104,7 +2107,11 @@ def serve(f, port):
                 print(f"FINDR_WARM {time.time() - t:.1f}s", flush=True)
             except Exception as e:   # a failed warm-up only means the first question is slower
                 print(f"FINDR_WARM failed {type(e).__name__}", flush=True)
+            finally:
+                READY.set()
         threading.Thread(target=warm, daemon=True).start()
+    else:
+        READY.set()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:   # Ctrl+C: one line, not a traceback (#67); the helper servers stop with the process
