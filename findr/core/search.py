@@ -547,6 +547,23 @@ class Finder:
                 ws.append(w)
         return ws
 
+    def scan_text(self, like, seconds=None, every=20000):
+        """files whose text holds a 2-letter word, read without an index. After a deep run (920k pieces) one such question took
+        24-31 s on a Mac (사진, 예산, 계약) and the time showed in no stage. Two bounds: stop at 201 files (more than 200 is a
+        common word, which literal_files drops anyway: the same answer, at once), and stop reading after LIT_SCAN_S (1 s) for a
+        rare word on a large index (then names and paths alone)"""
+        t0 = time.time(); limit = float(os.environ.get("LIT_SCAN_S") or 1.0) if seconds is None else seconds
+        self.con.set_progress_handler(lambda: int(time.time() - t0 > limit), every)   # checked every N SQLite steps
+        try:
+            out = {f_ for (f_,) in self.con.execute("SELECT DISTINCT file FROM chunks WHERE text LIKE ? ESCAPE '\\' LIMIT 201", (like,))}
+        except sqlite3.OperationalError:   # interrupted at the time limit
+            out = set()
+        finally:
+            self.con.set_progress_handler(None, 0)
+            if getattr(_ST, "d", None) is not None:   # shown in FINDR_SLOW: this time had no stage before
+                _ST.d["literal_scan"] = time.time() - t0
+        return out
+
     def literal_files(self, text, limit=30):
         """for a 1-3 word question: files whose name, path or text contains every word (case-insensitive), newest first"""
         ws = self.content_words(text)
@@ -560,7 +577,7 @@ class Finder:
                 fs |= {f_ for (f_,) in self.con.execute("SELECT DISTINCT c.file FROM fts JOIN chunks c ON c.id = fts.rowid WHERE fts MATCH ? LIMIT 5000",
                                                         ('"' + w.replace('"', '') + '"',))}
             elif len(ws) == 1:   # a 2-char single keyword ("대산"): the trigram index cannot hold it, scan the text once
-                fs |= {f_ for (f_,) in self.con.execute("SELECT DISTINCT file FROM chunks WHERE text LIKE ? ESCAPE '\\'", (like,))}
+                fs |= self.scan_text(like)
             sets = fs if sets is None else sets & fs
             if not sets:
                 return []
@@ -1444,6 +1461,24 @@ def _ce_load(d):
     CE[d] = (tok, m)
 
 
+import collections  # noqa: E402
+import hashlib  # noqa: E402
+import threading as _th  # noqa: E402
+
+# reranker scores by (model, question, candidate text): people ask the same thing again, the page asks again for more results,
+# and one question scores overlapping candidates in its repair passes. The text is the key, so an edited file is scored anew.
+# The number of candidates scored does not change with the cache: the same question keeps the same answer (#74).
+CE_CACHE = collections.OrderedDict()
+CE_CACHE_MAX = int(os.environ.get("CE_CACHE") or 50000)   # 0: off
+CE_CACHE_LOCK = _th.Lock()   # the warm-up scores outside the search lock
+
+
+def _ce_key(d, q, doc):
+    if not CE_CACHE_MAX:
+        return object()   # never found: every score is computed
+    return hashlib.blake2b(f"{d}\x00{q}\x00{doc}".encode("utf-8", "replace"), digest_size=16).digest()
+
+
 def _ce_score(q, res, d, tok, m, nosumm, top=None):
     import torch
     if nosumm:   # the stage-A reranker was trained on name | folder | opening text
@@ -1465,8 +1500,22 @@ def _ce_score(q, res, d, tok, m, nosumm, top=None):
     t_ = time.time()
 
     def run(part):
-        b = tok([q] * len(part), part, padding=True, truncation=True, max_length=CE_MAXLEN, return_tensors="pt").to(m.device)
-        return torch.sigmoid(m(**b).logits.view(-1).float()).cpu().tolist()
+        # scores already computed for this question and this text come from the cache; only the rest go to the model
+        keys = [_ce_key(d, q, s) for s in part]
+        with CE_CACHE_LOCK:   # hits are taken now: another thread may push them out before this one is done
+            got = {i: CE_CACHE[k] for i, k in enumerate(keys) if k in CE_CACHE}
+        miss = [i for i in range(len(keys)) if i not in got]
+        if miss:
+            b = tok([q] * len(miss), [part[i] for i in miss], padding=True, truncation=True, max_length=CE_MAXLEN,
+                    return_tensors="pt").to(m.device)
+            got.update(zip(miss, torch.sigmoid(m(**b).logits.view(-1).float()).cpu().tolist()))
+        with CE_CACHE_LOCK:
+            out = [got[i] for i in range(len(keys))]
+            for i, k in enumerate(keys):
+                CE_CACHE[k] = out[i]; CE_CACHE.move_to_end(k)
+            while len(CE_CACHE) > CE_CACHE_MAX:
+                CE_CACHE.popitem(last=False)
+        return out
 
     with torch.no_grad():
         if m.device.type == "mps":

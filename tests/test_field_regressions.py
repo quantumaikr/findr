@@ -103,3 +103,34 @@ def test_upgrade_skips_where_the_gpu_self_check_chose_small(tmp_path, monkeypatc
     assert cli._upgrade_why_not(db) == ""
     monkeypatch.setattr(models, "gpu", lambda: ("cuda", 24.0))
     assert cli._upgrade_why_not(db) == ""
+
+
+def test_mac_starts_small_and_measures_after_the_download(tmp_path, monkeypatch):
+    """an Apple GPU installs the small meaning model (both field Macs ran the large one 12-13.5x slower and fell back after
+    downloading 1.2 GB and measuring for minutes); the idle-time upgrade downloads first, then measures: asked before the
+    download, a missing model was judged slow for good"""
+    sys.path.insert(0, str(CORE.parent.parent))
+    from findr import cli, models, paths
+    monkeypatch.setattr(models, "gpu", lambda: ("mps", 0.0))
+    monkeypatch.setattr(models, "ram_gb", lambda: 16.0)
+    _, _, want = models.plan()
+    assert "multilingual-e5-small" in want and "embeddinggemma-2" not in want
+    monkeypatch.setattr(models, "ram_gb", lambda: 32.0)
+    assert "checker" in models.plan()[2]   # a 32 GB Mac still gets the side-by-side checker
+    monkeypatch.setattr(models, "gpu", lambda: ("cuda", 16.0))
+    assert "embeddinggemma-2" in models.plan()[2]   # an NVIDIA GPU keeps the large model from the start
+
+    monkeypatch.setattr(models, "gpu", lambda: ("mps", 0.0))
+    monkeypatch.setattr(paths, "HOME", tmp_path); monkeypatch.setattr(paths, "MODELS", tmp_path / "models")
+    db = tmp_path / "index.db"
+    c = sqlite3.connect(db); c.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)")
+    c.execute("INSERT INTO meta VALUES('encoder', 'e5-small')"); c.commit(); c.close()
+    monkeypatch.setattr(cli, "_ram_gb", lambda: 16.0)
+    asked = []
+    monkeypatch.setattr(models, "big_ok", lambda: asked.append(1) or False)
+    assert cli._upgrade_why_not(db) == "" and asked == []   # not measured yet: no verdict before the model is here
+    pulled = []
+    monkeypatch.setattr(models, "pull", lambda fs, **kw: pulled.extend(fs))
+    a = type("A", (), {"db": str(db), "minutes": 1})()
+    assert cli.cmd_upgrade(a) == 3 and pulled == ["embeddinggemma-2"] and asked   # downloaded, measured, slow: stays small
+    assert (tmp_path / "upgrade_off").exists()
