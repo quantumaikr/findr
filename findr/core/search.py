@@ -1751,7 +1751,17 @@ def _stage_timers():
 def _slow_line(res, mode, total):
     d = getattr(_ST, "d", None) or {}
     st = {k: int(v * 1000) for k, v in sorted(d.items(), key=lambda kv: -kv[1]) if v >= 0.01}
-    print("FINDR_SLOW " + json.dumps({"ms": int(total * 1000), "route": mode, "n": len(res.get("results") or []), "stages": st}), flush=True)
+    line = "FINDR_SLOW " + json.dumps({"ms": int(total * 1000), "route": mode, "n": len(res.get("results") or []), "stages": st})
+    print(line, flush=True)
+    try:   # also in the data folder's logs, where the tester guide looks (#67: CLI serve printed it to the terminal only)
+        lg = Path(os.environ.get("FINDR_DATA") or (Path.home() / ".findr")) / "logs" / "slow.log"
+        lg.parent.mkdir(parents=True, exist_ok=True)
+        if lg.exists() and lg.stat().st_size > 1_000_000:
+            lg.unlink()
+        with open(lg, "a", encoding="utf-8") as fo:
+            fo.write(time.strftime("%Y-%m-%d %H:%M:%S ") + line + "\n")
+    except OSError:
+        pass
 
 
 def _local_request(h):
@@ -2068,7 +2078,10 @@ def serve(f, port):
             except Exception as e:   # a failed warm-up only means the first question is slower
                 print(f"FINDR_WARM failed {type(e).__name__}", flush=True)
         threading.Thread(target=warm, daemon=True).start()
-    httpd.serve_forever()
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:   # Ctrl+C: one line, not a traceback (#67); the helper servers stop with the process
+        print("검색 화면을 껐습니다.", flush=True)
 
 
 def main():
