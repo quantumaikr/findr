@@ -577,7 +577,7 @@ class Finder:
             if any(xling_cover(x.get("name"), ideas)[0] for x in res[:10]):
                 return []
             cids = [cid for cid, nm, tr in self.name_rows if tr != 2
-                    and all(any(sp in nm for sp in idea) for idea in ideas)   # cheap substring pass first: 100k names
+                    and all(any(sp[:1] == "~" or sp in nm for sp in idea) for idea in ideas)   # cheap substring pass first: 100k names
                     and xling_cover(nm, ideas) == (True, True)]
             if len(cids) > limit:   # a pair of common words is not a name search
                 return []
@@ -1637,6 +1637,41 @@ XLING = {
     "자료": "", "문서": "", "파일": "", "관련": "", "내": "", "그": "", "거": "", "것": "", "처리": "", "하기": "", "찾기": "",
 }
 _XL_JOSA = re.compile(r"(으로|에서|에게|이랑|하고|까지|부터|이나|은|는|이|가|을|를|의|에|로|와|과|도|만|랑)$")
+# a loanword sounds like the English name word (히스토그램 ~ histogram, 넘파이 ~ numpy): both reduced to consonants, so no list
+# has to hold every tool and product name. Korean: initial/final consonants (ㅇ final = ng), ㅎ dropped; English: c/g hard,
+# th t, tion sn, r silent before a consonant (카트 ~ cart), l = r, voiced = voiceless
+_CHO = ["k", "k", "n", "t", "t", "l", "m", "p", "p", "s", "s", "", "j", "j", "j", "k", "t", "p", "h"]
+_JONG = ["", "k", "k", "k", "n", "n", "n", "t", "l", "k", "m", "p", "l", "l", "p", "l", "m", "p", "p", "t", "t", "N", "t", "t", "k", "t", "p", "t"]
+_NOT_LOAN = re.compile(r"(기|는|다|고|요|서|며|던|게|지|면|한|된|할|들|님|해|했|하|려|본|봐|운|된)$")   # verb endings: 불러오기 is not 'block'
+XL_GENERIC = {"실습", "코드", "데이터", "분석", "연구", "개발", "정리"}   # rarely in a name (relax: optional)
+
+
+def ko_sound(w):
+    out = []
+    for ch in w:
+        c = ord(ch) - 0xAC00
+        if not 0 <= c < 11172:
+            return ""
+        out += [_CHO[c // 588], _JONG[c % 28]]
+    return re.sub(r"(.)\1+", r"\1", "".join(out).replace("h", ""))
+
+
+import functools  # noqa: E402
+
+
+@functools.lru_cache(maxsize=200000)
+def en_sound(t):
+    t = re.sub(r"ng(?![aeiou])", "N", t.lower())
+    t = re.sub(r"(.)\1+", r"\1", t); t = re.sub(r"[ts]ion", "sn", t); t = re.sub(r"c(?=[eiy])", "s", t)
+    t = t.replace("ph", "p").replace("tch", "j").replace("ch", "j").replace("sh", "s").replace("th", "t").replace("ck", "k").replace("gh", "")
+    t = re.sub(r"r(?![aeiouy])", "", t)
+    t = t.translate(str.maketrans({"c": "k", "q": "k", "g": "k", "d": "t", "b": "p", "f": "p", "v": "p", "z": "s", "r": "l", "x": "ks"}))
+    return re.sub(r"(.)\1+", r"\1", re.sub(r"[aeiouywh]", "", t))
+
+
+def _sounds_in(sk, nm):
+    """a name word of 4+ letters that sounds like the loanword (or holds it, for a 4+ consonant loanword: instacartorders)"""
+    return any(en_sound(t) == sk or (len(sk) >= 4 and sk in en_sound(t)) for t in re.findall(r"[a-z]{4,}", nm))
 
 
 def xling_ideas(q, relax=False):
@@ -1655,9 +1690,15 @@ def xling_ideas(q, relax=False):
         stem = w if w in XLING else _XL_JOSA.sub("", w)
         if XLING.get(stem) == "" or XLING.get(w) == "":
             continue   # 자료, 문서, 파일 …: not an idea of the content
-        if relax and not XLING.get(stem):
+        if not stem:
+            continue   # a particle alone (에서)
+        # sound spellings are off unless XLING_SOUND=1: the GPU PC gate moved nothing, the field sets decide (2026-11-08)
+        sk = "" if XLING.get(stem) or _NOT_LOAN.search(stem) or os.environ.get("XLING_SOUND") != "1" else ko_sound(stem)
+        sp = (XLING.get(stem) or "").split() + (["~" + sk] if len(sk) >= 3 else [])
+        if relax and (not sp or stem in XL_GENERIC):
             continue
-        ideas.append([stem] + (XLING.get(stem) or "").split())
+        # relax: a word with only a sound spelling may be a native word (경사도 sounds like nothing): it counts when it matches
+        ideas.append((["?"] if relax and not XLING.get(stem) else []) + [stem] + sp)
     return ideas if len(ideas) >= 2 else []
 
 
@@ -1670,11 +1711,15 @@ def xling_sets(q):
 
 
 def xling_cover(name, ideas):
-    """(the name carries every idea, at least one of them by an English translation)"""
+    """(the name carries every idea, at least one of them by an English translation or sound); an idea starting with '?'
+    is optional, and at least two ideas must be carried"""
     nm = unicodedata.normalize("NFC", name or "").lower()
-    hit = [next((sp for sp in idea if (sp in nm if len(sp) > 3 or re.match(r"[가-힣]", sp)
+    opt = [idea[:1] == ["?"] for idea in ideas]
+    ideas = [idea[1:] if o else idea for idea, o in zip(ideas, opt)]
+    hit = [next((sp for sp in idea if (_sounds_in(sp[1:], nm) if sp[:1] == "~" else sp in nm if len(sp) > 3 or re.match(r"[가-힣]", sp)
                                        else re.search(rf"(?<![a-z]){re.escape(sp)}(?![a-z])", nm))), None) for idea in ideas]
-    return all(hit), any(h and re.match(r"[a-z]", h) and h != idea[0] for h, idea in zip(hit, ideas))
+    full = all(h or o for h, o in zip(hit, opt)) and sum(bool(h) for h in hit) >= 2
+    return full, any(h and h != idea[0] for h, idea in zip(hit, ideas))
 
 
 def xling_name_first(q, res, top=10):
