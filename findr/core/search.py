@@ -1379,6 +1379,18 @@ DOCKIND = re.compile(r"회의록|계약서|견적서|발주서|명세서|보고�
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic"}
 
 
+def format_first(q, rs):
+    """the format the question names, at the very end (KIND_GATE=1): later stages (repair across the whole index, history,
+    versions, cross-language names, personal) bring files in without the search's own format filter; on a Mac
+    '강의 자료 pdf' showed .key files at 2-5 (11/9). Files in the asked format keep their order and go first; the rest
+    follow (kept, not dropped)"""
+    exts = parse(q)["exts"]
+    if not exts:
+        return rs
+    fit = lambda x: os.path.splitext(x.get("name") or x.get("path") or "")[1].lower() in exts
+    return [x for x in rs if fit(x)] + [x for x in rs if not fit(x)]
+
+
 def collapse_copies(con, res):
     """the same file saved twice (a download kept twice, 'name (1)', a copy in another folder) is one thing to a person:
     one line, the best-ranked copy, the others under it as 'copies'. Seen on all three real PCs (11/9): a copy took #1
@@ -2385,6 +2397,8 @@ def serve(f, port):
                 if os.environ.get("DUP_COLLAPSE", "0") == "1":
                     with SEARCH_LOCK:
                         res = collapse_copies(f.con, res)
+                if res.get("results") and os.environ.get("KIND_GATE", "0") == "1":
+                    res["results"] = format_first(q_, res["results"])
                 # the page's '서버' time: the whole request, not the search alone (a Mac page showed 서버 3.4 s · 화면 7.1 s and
                 # the rest had no name: the index refresh check before the search and the steps after it were left out)
                 res["search_ms"] = int(res.get("ms") or 0); res["ms"] = max(res["search_ms"], int((time.time() - t_req) * 1000))
