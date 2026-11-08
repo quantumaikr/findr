@@ -41,14 +41,9 @@ jobs:
       - name: Bundle uv (the Python manager the app uses on first run)
         shell: bash
         run: |
-          mkdir -p app/src-tauri/binaries && cd app/src-tauri/binaries
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            curl -LsSf -o uv.zip https://github.com/astral-sh/uv/releases/latest/download/uv-${{ matrix.triple }}.zip
-            unzip -o -q uv.zip && mv uv.exe uv-${{ matrix.triple }}.exe && rm -f uv.zip uvx.exe uvw.exe
-          else
-            curl -LsSf https://github.com/astral-sh/uv/releases/latest/download/uv-${{ matrix.triple }}.tar.gz | tar xz
-            mv uv-${{ matrix.triple }}/uv uv-${{ matrix.triple }} && rm -rf uv-${{ matrix.triple }}/
-          fi
+          bash .github/get-uv.sh ${{ matrix.triple }} app/src-tauri/binaries
+          cd app/src-tauri/binaries
+          if [ "${{ runner.os }}" = "Windows" ]; then mv uv.exe uv-${{ matrix.triple }}.exe; else mv uv uv-${{ matrix.triple }}; fi
           ls -la
 
       - name: Install app dependencies
