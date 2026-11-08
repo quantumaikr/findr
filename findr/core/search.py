@@ -1383,21 +1383,32 @@ CE_RATE = {}   # seconds per candidate on the CPU, per reranker
 
 def ce_scores(q, res, d=None, nosumm=None):
     """cross-encoder (bge-reranker-v2-m3, 568M): one batched pass over all candidates. d: model dir (cached per dir)"""
-    import torch
-    from transformers import AutoModelForSequenceClassification, AutoTokenizer
     d = d or os.environ.get("CE_DIR", str(Path(os.environ.get("FINDR_MODELS") or (Path.home() / ".findr" / "models")) / "rank"))
     nosumm = bool(os.environ.get("CE_NOSUMM")) if nosumm is None else nosumm
     if d not in CE:
-        tok = AutoTokenizer.from_pretrained(d)
-        m = (AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float16).to(DEVICE) if DEVICE == "cuda"
-             else AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float32).to(DEVICE) if DEVICE == "mps"
-             else _cpu_ranker_for(d, lambda: AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float32))).eval()
-        CE[d] = (tok, m)
-        nb = Path(d) / "none_bias.txt"   # a none-aware reranker carries its learned 'no answer' score
-        if nb.exists():
-            import math
-            CE_BIAS[d] = 1 / (1 + math.exp(-float(nb.read_text().strip())))
+        with _CE_LOCK:   # the warm-up loads it outside the search lock: a question at the same moment must not load a second copy
+            if d not in CE:
+                _ce_load(d)
     tok, m = CE[d]
+    return _ce_score(q, res, d, tok, m, nosumm)
+
+
+def _ce_load(d):
+    import torch
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+    tok = AutoTokenizer.from_pretrained(d)
+    m = (AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float16).to(DEVICE) if DEVICE == "cuda"
+         else AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float32).to(DEVICE) if DEVICE == "mps"
+         else _cpu_ranker_for(d, lambda: AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float32))).eval()
+    nb = Path(d) / "none_bias.txt"   # a none-aware reranker carries its learned 'no answer' score
+    if nb.exists():
+        import math
+        CE_BIAS[d] = 1 / (1 + math.exp(-float(nb.read_text().strip())))
+    CE[d] = (tok, m)
+
+
+def _ce_score(q, res, d, tok, m, nosumm):
+    import torch
     if nosumm:   # the stage-A reranker was trained on name | folder | opening text
         docs = [f"{x['name']} | {'/'.join(x['path'].replace(chr(92), '/').split('/')[-3:-1])} | {x.get('head', '')[:700]}" for x in res]
     else:
@@ -1515,6 +1526,7 @@ import math  # noqa: E402
 import threading  # noqa: E402
 import traceback  # noqa: E402
 SEARCH_LOCK = threading.Lock()   # the finder shares one DB connection, GPU models and per-search state: one search at a time
+_CE_LOCK = threading.Lock()   # loading a reranker (once per model folder)
 READY = threading.Event()   # set when the warm-up is done: /healthz answers at once, /ready says when a question gets full speed (#68)
 MODES = {"auto", "ng", "xce", "base"}   # what the web page may ask for; 4B modes stay CLI-only
 MAX_Q = 300
@@ -1972,6 +1984,9 @@ def serve(f, port):
                   finally:
                     EVAL_NOW = None; EPI.TODAY = None
                 res["route"] = mode
+                wait_ = (_ST.d or {}).get("lock_wait", 0.0)
+                if wait_ >= 0.05:   # the time the person waited counts: a question queued behind another one or the warm-up
+                    res["wait_ms"] = int(wait_ * 1000); res["ms"] = int(res.get("ms") or 0) + res["wait_ms"]   # (Mac 에어: 13.9 s shown as 5.1)
                 if no_facts:
                     res["info"] = "이 PC의 색인에는 업무 정보(사람·기관·금액 등)가 없어 정밀 검색으로 찾았습니다."
                 if personal() is not None and res.get("results"):
@@ -2096,12 +2111,13 @@ def serve(f, port):
         def warm():
             try:
                 t = time.time()
+                # the reranker at full size (NCAND candidates, the longest input): it loads, compiles its kernels for that
+                # shape and, on a CPU, measures its rate once. A plain search may score few candidates, or none on an index
+                # still being built (#66: FINDR_WARM 0.1s, then 20 s on the first question; #67: 3 s more on Apple GPU).
+                # Outside the search lock: it uses no index, so fast-mode questions are answered meanwhile (Mac 에어: 3.4 s wait)
+                ce_scores("지난달 회의 자료", [{"name": "warm.txt", "path": "/warm/warm.txt", "head": "가나다라 " * 400,
+                                               "summary": ""} for _ in range(NCAND)])
                 with SEARCH_LOCK:
-                    # the reranker at full size (NCAND candidates, the longest input): it loads, compiles its kernels for that
-                    # shape and, on a CPU, measures its rate once. A plain search may score few candidates, or none on an index
-                    # still being built (#66: FINDR_WARM 0.1s, then 20 s on the first question; #67: 3 s more on Apple GPU)
-                    ce_scores("지난달 회의 자료", [{"name": "warm.txt", "path": "/warm/warm.txt", "head": "가나다라 " * 400,
-                                                   "summary": ""} for _ in range(NCAND)])
                     f.search("지난달 회의 자료", mode="xce", k=10)
                     if getattr(f, "ng", None) is None and _has_facts(f):   # understanding-first route: its planner loads once
                         from ng import NG
