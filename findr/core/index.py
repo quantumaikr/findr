@@ -1323,6 +1323,39 @@ def embed(con, model, names_only=False):
                         + (f", later pieces left for a deep run {later})" if later else ")"))
 
 
+def user_idle_seconds():
+    """seconds since the person last used the keyboard or mouse; None when this PC cannot tell"""
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class LII(ctypes.Structure):
+                _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+            li = LII(); li.cbSize = ctypes.sizeof(LII)
+            if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(li)):
+                return None
+            return ((ctypes.windll.kernel32.GetTickCount() - li.dwTime) & 0xFFFFFFFF) / 1000
+        if sys.platform == "darwin":
+            out = subprocess.run(["ioreg", "-c", "IOHIDSystem"], capture_output=True, text=True, timeout=5).stdout
+            m = re.search(r'"HIDIdleTime" = (\d+)', out)
+            return int(m.group(1)) / 1e9 if m else None
+        out = subprocess.run(["xprintidle"], capture_output=True, text=True, timeout=5).stdout.strip()
+        return int(out) / 1000 if out.isdigit() else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+LOOK_EVERY = 5   # seconds between looks at the keyboard and mouse during an idle-time run
+
+
+def person_is_back(within):
+    """the app's idle-time runs give the PC back: true when the keyboard or mouse was used in the last `within` seconds"""
+    if not within:
+        return False
+    idle = user_idle_seconds()
+    return idle is not None and idle < within
+
+
 def upgrade(con, target, minutes=50, bs=None):
     """compute `target` vectors next to the current ones (column emb2), at most `minutes` per run; when all are there,
     switch in one transaction (emb <- emb2, meta encoder <- target). Returns 0 switched / 2 more runs needed / 1 nothing to do."""
@@ -1346,22 +1379,35 @@ def upgrade(con, target, minutes=50, bs=None):
         enc.bs = int(os.environ.get("FINDR_BATCH") or 8)   # small batches on the CPU: memory stays low, each run stops on time
     t0 = time.time(); stop = t0 + minutes * 60; did = 0
     total = con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL").fetchone()[0]
+    # the app's idle-time run stops when the person comes back (FINDR_STOP_ON_INPUT = seconds of recent input that count):
+    # on an 8 GB laptop a 10-minute run kept 2.7 GB and half the cores while the person searched. Smaller steps so it notices soon.
+    back = float(os.environ.get("FINDR_STOP_ON_INPUT") or 0)
+    step = 16 if back else 64
+    last = {k: v for k, v in _last_upgrade().items() if k in ("rate", "hours_left")}   # read now: progress below rewrites the file
+    looked = 0.0
     while True:
         rows = con.execute("""SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
-                              WHERE c.emb IS NOT NULL AND c.emb2 IS NULL ORDER BY (c.n > 1), f.mtime DESC, c.n LIMIT 64""").fetchall()
+                              WHERE c.emb IS NOT NULL AND c.emb2 IS NULL ORDER BY (c.n > 1), f.mtime DESC, c.n LIMIT ?""", (step,)).fetchall()
         if not rows:
             break
-        if time.time() > stop:
+        returned = False
+        if back and time.time() - looked >= LOOK_EVERY:   # not every step: on a fast GPU 16 pieces take a fraction of a second
+            looked = time.time(); returned = person_is_back(back)
+        if time.time() > stop or returned:
             left = con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL AND emb2 IS NULL").fetchone()[0]
             rate = did / max(time.time() - t0, 1e-6)
+            if returned:   # a run cut short (often while the model was still loading) says nothing about the speed: keep the
+                # last run's estimate. Measured here, 0 pieces would read as 'thousands of hours' and turn the upgrade off for good
+                print(f"FINDR_UPGRADE paused {total - left}/{total} | the person is back after {did} pieces", flush=True)
+                progress_upgrade(target, total - left, total, back=True, **last); return 2
             print(f"FINDR_UPGRADE paused {total - left}/{total} | {rate:.1f} pieces/s | about {left / max(rate, 1e-6) / 3600:.1f} h of idle time left", flush=True)
             progress_upgrade(target, total - left, total, rate=round(rate, 2), hours_left=round(left / max(rate, 1e-6) / 3600, 1)); return 2
         with torch.no_grad():
             v = emb512(enc, [f"{label(Path(p))}\n{t}"[:1200] for _, t, p in rows]).cpu().numpy().astype(np.float16)
         con.executemany("UPDATE chunks SET emb2=? WHERE id=?", [(x.tobytes(), cid) for x, (cid, _, _) in zip(v, rows)])
         con.commit(); did += len(rows)
-        if did % 640 < 64:
-            progress_upgrade(target, total - con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL AND emb2 IS NULL").fetchone()[0], total)
+        if did % 640 < step:
+            progress_upgrade(target, total - con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL AND emb2 IS NULL").fetchone()[0], total, **last)
     with con:   # every vector has its counterpart: switch at once (search reloads when the recorded encoder changes)
         con.execute("UPDATE chunks SET emb=emb2 WHERE emb IS NOT NULL")
         con.execute("UPDATE chunks SET emb2=NULL")
@@ -1370,6 +1416,14 @@ def upgrade(con, target, minutes=50, bs=None):
     progress_upgrade(target, total, total, switched=True)
     print(f"FINDR_UPGRADE switched to {target}: {total} vectors in {time.time() - t0:.0f}s this run", flush=True)
     return 0
+
+
+def _last_upgrade():
+    d = os.environ.get("FINDR_DATA")
+    try:
+        return json.loads(Path(d, "upgrade.json").read_text(encoding="utf-8")) if d else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def progress_upgrade(target, done, total, **kw):
