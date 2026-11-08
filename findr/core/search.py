@@ -139,6 +139,7 @@ def today_now():
 
 def parse(q, now=None):
     now = now or today_now(); exts, soft, since, until, lib = set(), set(), None, None, False
+    soft_time = False
     rest = q
     for pat, ex in KINDS:
         m = re.search(word(pat), q, re.I)
@@ -169,7 +170,9 @@ def parse(q, now=None):
                    (r"최근|요즘", lambda m: (day0 - dt.timedelta(14), None))]:
         m = re.search(pat, rest)
         if m:
-            since, until = f(m); rest = rest.replace(m.group(0), " "); break
+            since, until = f(m); rest = rest.replace(m.group(0), " ")
+            soft_time = any(pat == y[0] for y in years)   # 작년, 재작년: people misplace a year; a fallback keeps the answer
+            break
     if since and until and (until - since) <= dt.timedelta(days=1):   # a single day: hours narrow it ("어제 오후 3시쯤", "새벽")
         h = re.search(r"(오전|오후)\s*(\d{1,2})\s*시", q); part = re.search(r"새벽|아침|점심|저녁|밤", q)
         if h:
@@ -182,7 +185,8 @@ def parse(q, now=None):
         lib = True
     rest = re.sub(word(STOP), " ", rest); rest = re.sub(r"\s+", " ", rest).strip(" ?.,")
     rest = re.sub(r"(?:^|\s)(에|에서|의|을|를|이|가|은|는|로|으로|과|와|도|만|이랑|랑|쯤|경|정도|좀|것|거|최근|요즘)(?=\s|$)", " ", " " + rest).strip()   # particles left by a removed period
-    return {"exts": exts, "soft": soft - exts, "since": since, "until": until, "lib": lib, "text": rest or q, "only_cond": not rest}
+    return {"exts": exts, "soft": soft - exts, "since": since, "until": until, "lib": lib, "text": rest or q, "only_cond": not rest,
+            "soft_time": soft_time}
 
 
 FKINDS = ["계약서", "견적서", "발주서", "거래명세서", "회의록", "업무보고", "출장보고서", "클레임보고서", "점검일지", "교육보고",
@@ -896,6 +900,11 @@ class Finder:
         # for 10 or 30 and got 5, and answers at ranks 6-10 disappeared (#66 rerun)
         n_fetch = len(LABELS) if rer == "pick1" else (max(NCAND, k) if rer == "ce" else NCAND)
         r = self._search(q, p, text, eng, n_fetch if use4b else k, t0, late)
+        if p.get("soft_time") and not r["results"]:
+            # 작년 / 재작년 with nothing saved then: people misplace a year (Mac, 11/9: a file from three years back asked as
+            # 작년 vanished from rank 3 to an empty list). Search without the period; the end says no file is from it
+            r = self._search(q, dict(p, since=None, until=None), text, eng, n_fetch if use4b else k, t0, late)
+            r["time_miss"] = True
         if use4b and r["results"]:
             ids = [x["fid"] for x in r["results"]]; qm = ",".join("?" * len(ids))
             sm = dict(self.con.execute(f"SELECT file, summary FROM cards WHERE file IN ({qm})", ids).fetchall())

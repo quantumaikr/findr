@@ -35,3 +35,13 @@ def test_period_holds_at_the_end_and_shows_its_years(monkeypatch):
     assert [x["name"] for x in out] == ["발표.pptx", "발표2.pdf", "a.py", "b.py"]   # inside the period first, the rest kept
     assert search.show(search.parse("작년에 만든 발표자료"))["기간"] == "2025-01-01~2026-01-01"
     assert search.period_first("발표자료", rs) == rs                                   # no period: nothing moves
+
+
+def test_relative_years_are_soft(monkeypatch):
+    """작년 / 재작년 may be misremembered (a file three years old asked as 작년): marked soft, so an empty period falls back"""
+    monkeypatch.setenv("TIME_WORDS", "1")
+    assert search.parse("작년 공모전 발표 자료", now=NOW)["soft_time"] is True
+    assert search.parse("재작년 회의록", now=NOW)["soft_time"] is True
+    assert search.parse("3개월 전 회의록", now=NOW)["soft_time"] is False    # other periods keep their filter as before
+    src = open(search.__file__, encoding="utf-8").read()
+    assert 'if p.get("soft_time") and not r["results"]:' in src and 'r["time_miss"] = True' in src
