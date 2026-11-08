@@ -417,6 +417,7 @@ def chat_json(prompt, max_tokens):
 
 class Finder:
     def __init__(self, db, model="bge-m3"):
+        self.db_uri = Path(db).expanduser().resolve().as_uri() + "?mode=ro"   # the reload thread reads on its own connection
         self.con = sqlite3.connect(Path(db).expanduser(), check_same_thread=False)
         import unicodedata as _ud
         self.con.create_function("nfc", 1, lambda s: _ud.normalize("NFC", s) if s else s, deterministic=True)
@@ -441,7 +442,9 @@ class Finder:
         print(f"FINDR_READY chunks {len(self.ids)} packages {len(self.pkgs)}", flush=True)
 
     def refresh(self, every=60):
-        """an index that grew while the page was open (background indexing): pick up new vectors without a restart"""
+        """an index that grew while the page was open (background indexing): pick up new vectors without a restart.
+        The question only looks whether the index changed; reading the vectors happens on a thread, and the question is
+        answered from the vectors already loaded (#67: questions during indexing stalled 8-11 s in the reload)"""
         now = time.time()
         if now - getattr(self, "_seen_at", 0) < every:
             return
@@ -450,20 +453,40 @@ class Finder:
         if dv == getattr(self, "_dv", None):
             return   # nothing new: skip the count below, a full scan of chunks (~25 s on a 5 GB index, every minute) (#21)
         self._dv = dv
-        n = self.con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL").fetchone()[0]
-        top = self.con.execute("SELECT max(id) FROM chunks").fetchone()[0] or 0
-        from enc_eg2 import encoder_of, make_encoder
-        e_ = encoder_of(self.con)
-        if n == len(self.ids) and top == getattr(self, "_top", top) and e_ == self.encoder:   # (an idle-time upgrade switches the encoder, counts unchanged)
-            self._top = top
-            return
-        if e_ in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and e_ != self.encoder:   # the index now records another encoder (#9)
-            self.encoder = e_; self.enc = make_encoder(e_, DEVICE, max_len=128)
-        rows = self.con.execute("SELECT c.id, c.emb FROM chunks c WHERE c.emb IS NOT NULL").fetchall()
-        self.ids = np.array([r[0] for r in rows], dtype=np.int64)
-        self.M = np.stack([np.frombuffer(r[1], np.float16) for r in rows]).astype(np.float32) if rows else np.zeros((0, len(self.qvec("준비"))), np.float32)
-        self.Mg = None; self.name_rows = None; self._top = top
-        print(f"FINDR_RELOAD vectors {len(self.ids)}", flush=True)
+        if getattr(self, "_reloading", False):
+            return   # the thread already running picks this up when it reads
+        self._reloading = True
+        threading.Thread(target=self._reload, daemon=True).start()
+
+    def _reload(self):
+        """read the vectors on its own connection, then swap them in at once (a search sees the old set or the new one)"""
+        try:
+            from enc_eg2 import encoder_of, make_encoder
+            con = sqlite3.connect(self.db_uri, uri=True, check_same_thread=False)
+            try:
+                n = con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL").fetchone()[0]
+                top = con.execute("SELECT max(id) FROM chunks").fetchone()[0] or 0
+                e_ = encoder_of(con)
+                if n == len(self.ids) and top == getattr(self, "_top", top) and e_ == self.encoder:   # (an idle-time upgrade switches the encoder, counts unchanged)
+                    self._top = top
+                    return
+                enc = make_encoder(e_, DEVICE, max_len=128) if e_ in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and e_ != self.encoder else None
+                rows = con.execute("SELECT c.id, c.emb FROM chunks c WHERE c.emb IS NOT NULL").fetchall()
+            finally:
+                con.close()
+            ids = np.array([r[0] for r in rows], dtype=np.int64)
+            M = np.stack([np.frombuffer(r[1], np.float16) for r in rows]).astype(np.float32) if rows else None
+            with SEARCH_LOCK:
+                if enc is not None:   # the index now records another encoder (#9)
+                    self.encoder = e_; self.enc = enc
+                self.ids = ids
+                self.M = M if M is not None else np.zeros((0, len(self.qvec("준비"))), np.float32)
+                self.Mg = None; self.name_rows = None; self._top = top
+            print(f"FINDR_RELOAD vectors {len(ids)}", flush=True)
+        except Exception as e:   # a failed reload keeps the vectors the page already has
+            print(f"FINDR_RELOAD failed {type(e).__name__}", flush=True)
+        finally:
+            self._reloading = False
 
     def load_scan(self):
         if getattr(self, "name_rows", None) is not None:
