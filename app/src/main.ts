@@ -19,7 +19,9 @@ async function route() {
   clear()
   const s = await invoke<AppState>('app_state')
   const h = location.hash.slice(1)
-  if (!s.ready) return h === 'setup' || s.update ? setup(s) : welcome(s)   // a newer engine in the app: update without asking
+  // an update that could not finish (offline, a new dependency) keeps the installed engine usable for this session
+  let later = false; try { later = sessionStorage.getItem('findr.updateLater') === '1' } catch { /* no storage */ }
+  if (!s.ready && !(s.update && later)) return h === 'setup' || s.update ? setup(s) : welcome(s)   // a newer engine in the app: update without asking
   if (h === 'settings') return settings(s)
   if ((h === 'index' || h === 'deep') && s.folders.length) return indexing(s.folders, h === 'deep')
   if (h === 'folders' || !s.indexed) return folders(s)
@@ -84,8 +86,12 @@ async function setup(s: AppState) {
     }
     if (cur) mark(cur, 'fail', '실패')
     document.getElementById('msg')!.innerHTML = `<div class="notice err">${esc(e.payload.message)}</div>
-      <div class="actions"><button class="primary" id="retry">다시 시도</button></div>`
+      <div class="actions"><button class="primary" id="retry">다시 시도</button>${s.update ? '<button id="later">지금은 이전 버전으로 검색</button>' : ''}</div>`
     document.getElementById('retry')!.onclick = () => { route() }
+    document.getElementById('later')?.addEventListener('click', () => {
+      try { sessionStorage.setItem('findr.updateLater', '1') } catch { /* no storage */ }
+      location.hash = 'search'; route()
+    })
   }))
   mark('vcrt', 'run', '진행 중'); cur = 'vcrt'
   invoke('setup_runtime')
@@ -98,7 +104,10 @@ async function folders(s: AppState) {
     <div class="card"><div class="row"><div class="spinner"></div><span class="muted">폴더를 살펴보는 중입니다</span></div></div>`
   let roots: Root[] = []
   try { roots = JSON.parse(await invoke<string>('list_roots')) } catch (e) {
-    view.querySelector('.card')!.innerHTML = `<div class="notice err">폴더 목록을 읽지 못했습니다: ${esc(String(e))}</div>`; return
+    view.querySelector('.card')!.innerHTML = `<div class="notice err">폴더 목록을 읽지 못했습니다: ${esc(String(e))}</div>
+      <div class="actions"><button class="primary" id="rr">다시 시도</button>${s.indexed ? '<button id="bk">검색으로</button>' : ''}</div>`;
+    document.getElementById('rr')!.onclick = () => { route() }
+    document.getElementById('bk')?.addEventListener('click', () => { location.hash = 'search' }); return
   }
   const chosen = new Set(s.folders.length ? s.folders : roots.map(r => r.path))
   const extra = s.folders.filter(f => !roots.some(r => r.path === f)).map(f => ({ order: 9, label: '추가한 폴더', path: f }))
@@ -247,6 +256,10 @@ async function search() {
     view.innerHTML = `<h1>검색 엔진을 켜지 못했습니다</h1><div class="notice err">${esc(String(e))}</div>
       <div class="actions"><button class="primary" id="retry">다시 시도</button><button id="set">설정</button></div>`
     document.getElementById('retry')!.onclick = () => { route() }
+    document.getElementById('later')?.addEventListener('click', () => {
+      try { sessionStorage.setItem('findr.updateLater', '1') } catch { /* no storage */ }
+      location.hash = 'search'; route()
+    })
     document.getElementById('set')!.onclick = () => { location.hash = 'settings' }
   }
 }

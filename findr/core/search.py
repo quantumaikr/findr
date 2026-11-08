@@ -258,7 +258,10 @@ def _cpu_ranker(m):
 
 def _has_facts(f):
     """the understanding-first route reads work facts; an index built without them uses the reranker route"""
-    if getattr(f, "_facts_ok", None) is None:
+    # "no facts" is asked again every 5 minutes: a server started while the first index was still running kept 이해 우선 off
+    # until a restart
+    if getattr(f, "_facts_ok", None) is None or (not f._facts_ok and time.time() - getattr(f, "_facts_t", 0) > 300):
+        f._facts_t = time.time()
         try:
             f._facts_ok = bool(f.con.execute("SELECT 1 FROM facts LIMIT 1").fetchone())
         except Exception:
@@ -1798,7 +1801,10 @@ def distinct_words(ws):
 
 def _has_facts(f):
     """the understanding-first route reads work facts; an index built without them uses the reranker route"""
-    if getattr(f, "_facts_ok", None) is None:
+    # "no facts" is asked again every 5 minutes: a server started while the first index was still running kept 이해 우선 off
+    # until a restart
+    if getattr(f, "_facts_ok", None) is None or (not f._facts_ok and time.time() - getattr(f, "_facts_t", 0) > 300):
+        f._facts_t = time.time()
         try:
             f._facts_ok = bool(f.con.execute("SELECT 1 FROM facts LIMIT 1").fetchone())
         except Exception:
@@ -1938,6 +1944,8 @@ def open_on_pc(path, reveal=False):
     """open a file with its program, or show it in its folder, as the desktop app does"""
     import subprocess
     p = str(Path(path))
+    if not Path(p).exists():   # moved or deleted since it was indexed: say so (macOS "open" reported success for nothing)
+        raise FileNotFoundError(p)
     if os.name == "nt":
         if reveal:
             subprocess.Popen(["explorer", f"/select,{p}"])
@@ -2010,12 +2018,15 @@ def serve(f, port):
             u = urlparse(self.path)
             if u.path == "/fb":   # user's verdict on a search: kept only on this PC, becomes the gold set
                 qs = parse_qs(u.query)
-                rec = {k: qs.get(k, [""])[0][:MAX_Q] for k in ("q", "mode", "path", "rank", "verdict", "prob", "first_rank", "secs", "page")}
-                rec["shown"] = [x[:MAX_Q] for x in qs.get("shown", [""])[0].split(chr(10)) if x][:30]   # what the person saw, in order
+                # paths whole (cut at 300 they matched no file on deep Windows folders, so ✔/✘ was never learned)
+                rec = {k: qs.get(k, [""])[0][:4096 if k == "path" else MAX_Q] for k in ("q", "mode", "path", "rank", "verdict", "prob", "first_rank", "secs", "page")}
+                rec["shown"] = [x[:4096] for x in qs.get("shown", [""])[0].split(chr(10)) if x][:30]   # what the person saw, in order
                 rec["tried"] = [x[:MAX_Q] for x in qs.get("tried", [""])[0].split(chr(10)) if x][:8]   # earlier requests in this session
                 fbp = Path(os.environ.get("FINDR_DATA") or (Path.home() / ".findr")) / "feedback.jsonl"
-                if rec["verdict"] not in ("hit", "none", "reject") or (fbp.exists() and fbp.stat().st_size > 5_000_000):
+                if rec["verdict"] not in ("hit", "none", "reject"):
                     return self.reply(400, b'{"ok": false}', "application/json")
+                if fbp.exists() and fbp.stat().st_size > 5_000_000:   # set aside, keep learning (it used to refuse every click from then on)
+                    fbp.rename(fbp.with_name(f"feedback.{dt.datetime.now():%Y%m%d%H%M%S}.jsonl"))
                 rec["time"] = dt.datetime.now().isoformat(timespec="seconds")
                 with open(Path(os.environ.get("FINDR_DATA") or (Path.home() / ".findr")) / "feedback.jsonl", "a", encoding="utf-8") as fo:
                     fo.write(json.dumps(rec, ensure_ascii=False) + chr(10))
@@ -2036,6 +2047,9 @@ def serve(f, port):
                 if u.path == "/learned/forget":
                     i = parse_qs(u.query).get("i", [""])[0]
                     M.forget(None if i == "all" else int(i) if i.isdigit() else -1)
+                    # back to /learned: a reload of /learned/forget?i=N forgot the entry that had moved into slot N
+                    self.send_response(303); self.send_header("Location", "/learned"); self.send_header("Content-Length", "0")
+                    self.end_headers(); return
                 with SEARCH_LOCK:
                     ids = {r["chosen"] for r in M.rows if r.get("chosen")} | {x for r in M.rows for x in r.get("rejected", [])}
                     names = {i_: n for i_, n in f.con.execute(f"SELECT id, name FROM files WHERE id IN ({','.join('?' * len(ids))})", list(ids))} if ids else {}
@@ -2063,6 +2077,8 @@ def serve(f, port):
                 with SEARCH_LOCK:
                     prompt, n = XP.v2_prompt(f, q_, res, today_now())
                 out = XP._chat(XP.SYS2, prompt, 80)
+                if not out:   # the checker did not answer (not running, timed out): the page must not say it looked
+                    return self.reply(200, json.dumps({"changed": False, "skipped": "checker"}).encode(), "application/json; charset=utf-8")
                 new = XP.v2_pick(res, out, n)
                 tr = (new.get("trail") or [{}])[0]
                 for c in new["results"]:

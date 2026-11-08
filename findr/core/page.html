@@ -125,7 +125,7 @@ const EX={'막연하게 말해도':['지난달에 고객사에 보낸 견적서'
  '여러 버전 중 하나':['계약서 최종본 말고 그 전 판','발표 자료 중 한 장 요약 말고 전체 버전'],
  '없으면 없다고':['남극 기지 방문 일정표','1998년 월드컵 응원 포스터 원본']};
 const PH=['기억나는 대로 물어보세요 — 예: 지난주에 만든 보고서','예: 그만둔 직원이 맡았던 견적서','예: 음성 받아쓰기 설치하는 스크립트','예: 품질 매뉴얼 개정 5판'];
-let mode='auto', last=null, sel=-1, fKind=null, fDir=null;
+let mode='auto', last=null, sel=-1, fKind=null, fDir=null, seq=0;   // seq: only the newest question's answer is shown
 const store={get(k,d){try{const v=JSON.parse(localStorage.getItem(k));return v==null?d:v}catch(e){return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}};
 const esc=s=>(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const BS=String.fromCharCode(92);
@@ -170,11 +170,11 @@ $('#groups').innerHTML=Object.entries(EX).map(([k,v])=>'<div class="grp"><h3>'+k
 $('#groups').onclick=e=>{const b=e.target.closest('[data-ex]');if(b){q.value=b.dataset.ex;go()}};
 // search
 async function go(){
- const qq=q.value.trim(); if(!qq)return; $('#empty').style.display='none'; fKind=fDir=null;
+ const qq=q.value.trim(); if(!qq)return; const my=++seq; $('#empty').style.display='none'; fKind=fDir=null;
  if(last&&last.q0&&last.q0!==qq&&!last.picked)tried.push(last.q0); if(tried.length>8)tried=tried.slice(-8);
  $('#res').innerHTML='<div class="skel"></div><div class="skel"></div><div class="skel"></div>'; $('#pipe').innerHTML='';$('#notice').innerHTML='';$('#under').innerHTML='';$('#meta').textContent='';
  const t0=performance.now(); $('#spd').classList.remove('on');
- try{const r=await (await fetch('/api?'+new URLSearchParams({q:qq,mode,k:30}))).json(); r._rt=Math.round(performance.now()-t0); if(r.error){$('#res').innerHTML='';$('#notice').innerHTML='<div class="notice">'+esc(r.error)+'</div>';return} if(DEMO&&r.results)r.results=r.results.filter(x=>!/googledrive/i.test(x.path)); last=r; last.q0=qq; last.first=(r.results||[]).map(x=>x.path); last.t0=Date.now(); if(DEMO)speed(r); sel=-1;
+ try{const r=await (await fetch('/api?'+new URLSearchParams({q:qq,mode,k:30}))).json(); if(my!==seq)return; r._rt=Math.round(performance.now()-t0); if(r.error){$('#res').innerHTML='';$('#notice').innerHTML='<div class="notice">'+esc(r.error)+'</div>';return} if(DEMO&&r.results)r.results=r.results.filter(x=>!/googledrive/i.test(x.path)); last=r; last.q0=qq; last.first=(r.results||[]).map(x=>x.path); last.t0=Date.now(); if(DEMO)speed(r); sel=-1;
   show(r); remember(qq,mode,r.results&&r.results[0]?base(r.results[0].path):''); refine(qq,r)}
  catch(e){$('#res').innerHTML='';$('#notice').innerHTML='<div class="notice">검색 서버에 연결하지 못했습니다.</div>'}
 }
@@ -212,7 +212,7 @@ const APP=!!(window.__TAURI__&&window.__TAURI__.core);   // inside the desktop a
 let LOCAL=false;   // a browser on this PC: the engine opens files for it (never through a tunnel)
 if(!APP)fetch('/canopen').then(r=>r.json()).then(j=>{LOCAL=!!j.local;if(LOCAL&&last)list()}).catch(()=>{});
 // the engine answers at once but warms up for a few seconds after a start: say so instead of a silent first wait (#68)
-(function waitReady(n){fetch('/ready').then(r=>r.json()).then(j=>{const m=$('#meta');if(!j.ready){if(!last&&m)m.textContent='검색 엔진을 준비하는 중입니다… 곧 바로 답합니다';if(n<120)setTimeout(()=>waitReady(n+1),1000)}else if(!last&&m)m.textContent=''}).catch(()=>{})})(0);
+(function waitReady(n){fetch('/ready').then(r=>r.json()).then(j=>{const m=$('#meta');if(!j.ready){if(!last&&m)m.textContent='검색 엔진을 준비하는 중입니다… 곧 바로 답합니다';if(n<900)setTimeout(()=>waitReady(n+1),n<120?1000:3000)}else if(!last&&m)m.textContent=''}).catch(()=>{})})(0);
 // indexing: a small live chip in the status line; it opens a panel with what can be found now (search works meanwhile)
 (function(){
  const ST=[['names','이름으로 찾기','파일 목록을 만드는 중'],['namevec','비슷한 말로 이름 찾기','이름의 뜻을 파악하는 중'],
@@ -273,7 +273,7 @@ function show(r){
  $('#notice').innerHTML=(r.note?'<div class="notice">'+esc(r.note)+'</div>':'')+(r.info?'<div class="refine">ⓘ '+esc(r.info)+'</div>':'');
  facets(r.results||[]); list(true);
 }
-function filtered(){return (last&&last.results||[]).filter(x=>(!fKind||kindOf(x.path)[2]===fKind)&&(!fDir||dir(x.path).startsWith(fDir)))}
+function filtered(){return (last&&last.results||[]).filter(x=>(!fKind||kindOf(x.path)[2]===fKind)&&(!fDir||dir(x.path)===fDir||dir(x.path).startsWith(fDir+'/')))}   // '보고서' is not '보고서2024'
 // fresh: a new answer fades in. Every later redraw (the second look, 열기 turning on, filters, ✘) draws the cards as they
 // are: a redraw that replayed the fade emptied the whole list for a moment, a few seconds after the results (field, Mac)
 function list(fresh){
@@ -301,22 +301,23 @@ document.addEventListener('click',e=>{
  const op=e.target.closest('[data-open],[data-reveal]');if(op&&(APP||LOCAL)){const x=filtered()[+(op.dataset.open!=null?op.dataset.open:op.dataset.reveal)],rv=op.dataset.reveal!=null;
   if(APP){window.__TAURI__.core.invoke('open_path',{path:x.path,reveal:rv}).catch(err=>toast(String(err)));return}
   fetch('/open',{method:'POST',headers:{'X-Findr':'1','Content-Type':'application/json'},body:JSON.stringify({path:x.path,reveal:rv})})
-   .then(r=>r.ok?toast(rv?'폴더를 열었습니다':'파일을 열었습니다'):r.json().then(j=>toast('열지 못했습니다'+(j.why=='not indexed'?': 색인에 없는 파일':''))))
+   .then(r=>r.ok?toast(rv?'폴더를 열었습니다':'파일을 열었습니다'):r.json().then(j=>toast('열지 못했습니다'+(j.why=='not indexed'?': 색인에 없는 파일':j.why=='FileNotFoundError'?': 파일이 옮겨졌거나 지워졌습니다':''))))
    .catch(err=>toast(String(err)));return}
  const cp=e.target.closest('[data-copy]');if(cp){copy(filtered()[+cp.dataset.copy].path);return}
  const no=e.target.closest('[data-no]');if(no){const x=filtered()[+no.dataset.no];x.no=true;fb('reject',x.path,last.results.indexOf(x)+1,x.prob);list();toast('기록: 이 파일은 아님');return}
  const ok=e.target.closest('[data-ok]');if(ok){const x=filtered()[+ok.dataset.ok];fb('hit',x.path,last.results.indexOf(x)+1,x.prob);last.picked=1;ok.classList.add('done');ok.textContent='✔ 기록됨';
-  const h=hist();if(h[0]){h[0].hit=1;store.set('findr.hist',h);renderHist()}return}
+  const h=hist(),hi=h.find(y=>y.q===last.q0);if(hi){hi.hit=1;store.set('findr.hist',h);renderHist()}return}
  if(e.target.id==='none'){fb('none');toast('기록: 여기 없음');return}
 });
 function copy(p){try{navigator.clipboard.writeText(p).then(()=>toast('경로를 복사했습니다'),()=>toast(p))}catch(e){toast(p)}}
-function fb(v,p,k,pr){const L=last||{};fetch('/fb?'+new URLSearchParams({q:q.value,mode,path:p||'',rank:k||'',verdict:v,prob:pr==null?'':pr,
+// the question that made this list (not what is being typed now), and the route that answered it
+function fb(v,p,k,pr){const L=last||{};fetch('/fb?'+new URLSearchParams({q:L.q0||q.value,mode:L.route||mode,path:p||'',rank:k||'',verdict:v,prob:pr==null?'':pr,
  first_rank:(L.first&&p)?(L.first.indexOf(p)+1):'',secs:L.t0?Math.round((Date.now()-L.t0)/1000):'',page:'',
- shown:(L.results||[]).slice(0,30).map(x=>x.path).join(String.fromCharCode(10)),tried:tried.join(String.fromCharCode(10))})).then(()=>{if(v==='hit'){toast(k+'위가 정답으로 기록됐습니다');tried=[]}})}
+ shown:(L.results||[]).slice(0,30).map(x=>x.path).join(String.fromCharCode(10)),tried:tried.join(String.fromCharCode(10))})).then(r=>{if(!r.ok){toast('기록하지 못했습니다');return}if(v==='hit'){toast(k+'위가 정답으로 기록됐습니다');tried=[]}}).catch(()=>toast('기록하지 못했습니다'))}
 // keyboard
 document.addEventListener('keydown',e=>{
  if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();q.select();return}
- if(e.key==='Enter'&&document.activeElement===q){go();return}
+ if(e.key==='Enter'&&document.activeElement===q){if(e.isComposing||e.keyCode===229)return;go();return}   // Hangul: the Enter that ends a syllable is not a second search
  if(e.key==='Escape'){q.value='';q.focus();return}
  const cards=[...document.querySelectorAll('.card')];if(!cards.length)return;
  if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();sel=Math.max(0,Math.min(cards.length-1,sel+(e.key==='ArrowDown'?1:-1)));

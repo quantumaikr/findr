@@ -32,6 +32,7 @@ def test_present_models_are_not_fetched_again(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "MODELS", tmp_path / "models")
     for f in ("rank", "gate", "multilingual-e5-small"):
         (tmp_path / "models" / f).mkdir(parents=True); (tmp_path / "models" / f / "x").write_text("1")
+    (tmp_path / "models" / "rank" / "model_int8.onnx").write_text("1")   # the reranker counts with its weights (have())
     calls = _fake_hub(monkeypatch)
     models.pull(["rank", "gate", "multilingual-e5-small"])
     assert calls == []
