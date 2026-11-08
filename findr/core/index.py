@@ -179,6 +179,16 @@ def reread_for_new_readers(con):
     return n
 
 
+def _decode_text(b: bytes) -> str:
+    """converter output: UTF-8 (with or without BOM), else the Korean code page, else UTF-8 with the bad bytes dropped"""
+    for enc in ("utf-8-sig", "cp949"):
+        try:
+            return b.decode(enc)
+        except UnicodeDecodeError:
+            pass
+    return b.decode("utf-8", "ignore")
+
+
 def convert_old(p: Path):
     """hwp/doc/ppt/xls -> text with a local LibreOffice; cached by path, size and mtime (re-runs cost nothing)"""
     import hashlib
@@ -203,14 +213,17 @@ def convert_old(p: Path):
     ext = p.suffix.lower(); txt = ""; converted = False
     with tempfile.TemporaryDirectory() as td:
         src = Path(td) / ("in" + ext); shutil.copyfile(p, src)
-        target = "pdf" if ext in (".ppt", ".xls") else "txt:Text"
+        # plain 'txt:Text' is written in the system code page (cp949 on Korean Windows): read as UTF-8, every Korean
+        # character was dropped. Ask for UTF-8, and still read an older LibreOffice's output in the local code page
+        target = "pdf" if ext in (".ppt", ".xls") else "txt:Text (encoded):UTF8"
         try:
             subprocess.run(["soffice", "--headless", "--convert-to", target, "--outdir", td, str(src)], capture_output=True, timeout=120)
             converted = (Path(td) / ("in.pdf" if target == "pdf" else "in.txt")).exists()
             if target == "pdf" and converted:
-                txt = subprocess.run(["pdftotext", "-layout", str(Path(td) / "in.pdf"), "-"], capture_output=True, timeout=120).stdout.decode("utf-8", "ignore")
+                txt = subprocess.run(["pdftotext", "-enc", "UTF-8", "-layout", str(Path(td) / "in.pdf"), "-"],
+                                     capture_output=True, timeout=120).stdout.decode("utf-8", "ignore")
             elif converted:
-                txt = (Path(td) / "in.txt").read_text(encoding="utf-8", errors="ignore")
+                txt = _decode_text((Path(td) / "in.txt").read_bytes())
         except Exception as e:
             print("  convert fail", p.name, type(e).__name__, file=sys.stderr)
     cache.write_text(txt, encoding="utf-8")
