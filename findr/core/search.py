@@ -1274,7 +1274,11 @@ def photo_text_vec(q):
         _PHOTO_UP[:] = [time.time(), False]
         raise
     return np.frombuffer(base64.b64decode(o["vec"]), np.float16).astype(np.float32), float(o["scale"])
-NCAND = int(os.environ.get("NCAND") or (15 if DEVICE == "cpu" else 30))   # candidates reranked (15 for the CPU ranker, 2026-11-06)
+# candidates reranked. CPU: the first stage's top 5 only, a light check that keeps the 'not here' judgement and the
+# name / version rules (2026-11-08, 4 cores, 120 real-PC questions: 15 candidates 2.5 s median and 3.8 s slowest tenth,
+# 5 candidates within 1.5 s per question 1.1 s and 1.4 s at the same accuracy; no reranking 0.04 s but top-1 25 -> 17
+# and no 'not here' at all)
+NCAND = int(os.environ.get("NCAND") or (5 if DEVICE == "cpu" else 30))
 CE_MAXLEN = int(os.environ.get("CE_MAXLEN") or (256 if DEVICE == "cpu" else 384))   # ranker input length (256 for the CPU ranker)
 _OLD_NCAND = 30   # candidates handed to the 4B (40 cost 1.1 s per rerank on 2026-11-04; set 1 had every found answer within 20)
 
@@ -1382,7 +1386,7 @@ def ce_scores(q, res, d=None, nosumm=None):
     if m.device.type == "cpu" and CE_RATE.get(d):
         # one budget for the whole question (CE_TOTAL s): the first pass gets up to CE_BUDGET, and later passes (repair,
         # memory cues) only what is left, at least 3 candidates. Per-call budgets used to add up to 15-20 s on a laptop.
-        left = float(os.environ.get("CE_TOTAL") or 4) - (time.time() - _QT[0])
+        left = float(os.environ.get("CE_TOTAL") or 1.5) - (time.time() - _QT[0])   # 1.5 s per question (was 4: 3.8 s slowest tenth)
         cap = min(float(os.environ.get("CE_BUDGET") or 3), max(left, 0.0))
         n = min(n, max(3 if left < 1 else 5, int(cap / CE_RATE[d])))   # never more than there are (a small index has fewer than 5)
     t_ = time.time()
