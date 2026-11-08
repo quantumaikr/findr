@@ -347,6 +347,7 @@ def main():
       CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(name, path, text, content='', contentless_delete=1, tokenize='trigram');
       CREATE INDEX IF NOT EXISTS ch_file ON chunks(file);
       CREATE INDEX IF NOT EXISTS ch_n ON chunks(n, file);
+      CREATE INDEX IF NOT EXISTS ch_noemb ON chunks(n, file) WHERE emb IS NULL;   -- what embed() looks for: no full pass over vectors
       CREATE TABLE IF NOT EXISTS cards(file INTEGER PRIMARY KEY, outline TEXT, summary TEXT, done INT DEFAULT 0);""")
     if "pending" not in [r[1] for r in con.execute("PRAGMA table_info(files)")]:
         con.execute("ALTER TABLE files ADD COLUMN pending INT DEFAULT 0")
@@ -992,7 +993,8 @@ def remask(con):
     pat = hashlib.sha1((KEYLIKE.pattern + "|" + "|".join(KEYLIKE_HINTS)).encode()).hexdigest()[:16]
     seen = con.execute("SELECT value FROM meta WHERE key='mask_pattern'").fetchone()
     w = " OR ".join(["c.text LIKE ?"] * len(KEYLIKE_HINTS))
-    src = "chunks c" if not seen or seen[0] != pat else "mask_todo t JOIN chunks c ON c.id = t.id"
+    # CROSS JOIN keeps mask_todo outer: with a plain JOIN SQLite scanned every chunk (2.6 GB, ~5 s) to find an empty todo list
+    src = "chunks c" if not seen or seen[0] != pat else "mask_todo t CROSS JOIN chunks c ON c.id = t.id"
     rows = con.execute(f"SELECT c.id, c.file, c.text FROM {src} WHERE {w}", [f"%{h}%" for h in KEYLIKE_HINTS]).fetchall()
     for cid, fid, txt in rows:
         if txt and KEYLIKE.search(txt):
@@ -1283,11 +1285,6 @@ def embed(con, model, names_only=False):
     con.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
     if model in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and not con.execute("SELECT 1 FROM chunks WHERE emb IS NOT NULL LIMIT 1").fetchone():
         con.execute("INSERT OR REPLACE INTO meta VALUES('encoder', ?)", (model,)); con.commit()   # a new index records its encoder
-    enc = make_encoder(encoder_of(con)) if encoder_of(con) in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") else Enc(model)   # same encoder as the vectors already stored
-    if not isinstance(enc, EG2):
-        enc.tok.model_max_length = 512
-    if os.environ.get("FINDR_THREADS"):   # background indexing: leave CPU cores for the person's own work
-        torch.set_num_threads(max(1, int(os.environ["FINDR_THREADS"])))
     cap = int(os.environ.get("FINDR_FIRST_PIECES") or 0)   # first pass on a large PC: each file's opening pieces only
     if names_only:   # every file's name and folders, content or not (a file read later gets new pieces and vectors)
         rows = con.execute("""SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
@@ -1298,6 +1295,14 @@ def embed(con, model, names_only=False):
                           ORDER BY (c.n > 1), f.mtime DESC, c.n""").fetchall()   # every file's opening pieces first, newest first
     later = con.execute("SELECT count(*) FROM chunks c JOIN files f ON f.id=c.file WHERE c.emb IS NULL AND f.tier>0 "
                         "AND COALESCE(f.pending,0) IN (0,2) AND c.n >= ?", (cap,)).fetchone()[0] if cap > 0 and not names_only else 0
+    if not rows:   # nothing to embed: no encoder load (three loads cost ~7 s per run with nothing new)
+        con.commit(); print(f"FINDR_EMBED 0 chunks 0s (computed 0, identical skipped 0" + (f", later pieces left for a deep run {later})" if later else ")"))
+        return
+    enc = make_encoder(encoder_of(con)) if encoder_of(con) in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") else Enc(model)   # same encoder as the vectors already stored
+    if not isinstance(enc, EG2):
+        enc.tok.model_max_length = 512
+    if os.environ.get("FINDR_THREADS"):   # background indexing: leave CPU cores for the person's own work
+        torch.set_num_threads(max(1, int(os.environ["FINDR_THREADS"])))
     # identical inputs (a copied file, repeated boilerplate under the same name) are computed once
     groups = {}
     for cid, t, p in rows:
