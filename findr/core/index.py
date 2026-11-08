@@ -957,9 +957,9 @@ def ocr_wave(con, root, first_pages=None, deep_pages=50):
               AND ((COALESCE(f.ocr,0)=0 AND (SELECT COALESCE(sum(length(c.text)),0) FROM chunks c WHERE c.file=f.id) < 200)
                    OR (? AND f.ocr=?))
               ORDER BY f.mtime DESC""", (like_pre(pre), 1 if deep else 0, OCR_PARTIAL))]
-    rows = [(i, s) for i, s, e in con.execute("SELECT id, path, ext FROM files WHERE tier=3 AND COALESCE(ocr,0)=0 AND path LIKE ? ESCAPE '\\' AND size < 30000000 "
-                                              "ORDER BY mtime DESC", (like_pre(pre),)) if (e or "").lower() in PHOTO_EXT
-            and not cloud_only_path(s)]   # an online-only photo is not downloaded for OCR (a deep run fetched whole photo libraries)
+    rows = [(i, s) for i, s, e, z in con.execute("SELECT id, path, ext, size FROM files WHERE tier=3 AND COALESCE(ocr,0)=0 AND path LIKE ? ESCAPE '\\' AND size < 30000000 "
+                                                 "ORDER BY mtime DESC", (like_pre(pre),)) if (e or "").lower() in PHOTO_EXT
+            and not cloud_only_path(s) and not asset_like(s, z)]   # an online-only photo is not downloaded for OCR (a deep run fetched whole photo libraries)
     imgs = photos_to_read(rows, deep, ocr_engine())
     if not pdfs and not imgs:
         return
@@ -1046,6 +1046,23 @@ def remask(con):
 PHOTO_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".heic", ".heif"}
 
 
+def asset_like(path, size):
+    """an image that is not a photo: macOS '._' metadata files, and icons, sprites and logos (short side under 200 px).
+    On a developer's Mac (11/9) 73 of 100 image files were such assets and a photo model read them as cards and logos;
+    reading or embedding them only costs time. Only small files are opened (header only)"""
+    name = os.path.basename(path or "")
+    if name.startswith("._") or (size or 0) < 2048:
+        return True
+    if (size or 0) >= 150_000:
+        return False
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            return min(im.size) < 200
+    except Exception:
+        return False
+
+
 def heif_on():
     """iPhone photos (HEIC/HEIF) open like any other image once pillow-heif is installed"""
     try:
@@ -1073,8 +1090,8 @@ def embed_photos(con, url, bs=16):
     con.execute("CREATE TABLE IF NOT EXISTS photo_emb(file INTEGER PRIMARY KEY, emb BLOB, taken REAL)")
     if "taken" not in [r[1] for r in con.execute("PRAGMA table_info(photo_emb)")]:
         con.execute("ALTER TABLE photo_emb ADD COLUMN taken REAL")
-    rows = [(i, p) for i, p, e in con.execute("SELECT id, path, ext FROM files WHERE id NOT IN (SELECT file FROM photo_emb) ORDER BY mtime DESC")
-            if (e or "").lower() in PHOTO_EXT]
+    rows = [(i, p) for i, p, e, z in con.execute("SELECT id, path, ext, size FROM files WHERE id NOT IN (SELECT file FROM photo_emb) ORDER BY mtime DESC")
+            if (e or "").lower() in PHOTO_EXT and not asset_like(p, z)]   # icons and '._' files: no photo vector (found by name)
     t0, done = time.time(), 0
     for k in range(0, len(rows), bs):
         b = rows[k:k + bs]
