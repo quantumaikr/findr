@@ -820,7 +820,10 @@ class Finder:
             p["fids"] = fids
         # the 4B's English keywords run alongside the meaning search; they join the word search when ready
         late = POOL.submit(expand4b, q) if rer in ("list", "1tok") or mode.startswith("ex") else None
-        r = self._search(q, p, text, eng, (len(LABELS) if rer == "pick1" else NCAND) if use4b else k, t0, late)
+        # reranked routes fetch at least k candidates and score the first NCAND: with NCAND 5 on a CPU (#78) the page asked
+        # for 10 or 30 and got 5, and answers at ranks 6-10 disappeared (#66 rerun)
+        n_fetch = len(LABELS) if rer == "pick1" else (max(NCAND, k) if rer == "ce" else NCAND)
+        r = self._search(q, p, text, eng, n_fetch if use4b else k, t0, late)
         if use4b and r["results"]:
             ids = [x["fid"] for x in r["results"]]; qm = ",".join("?" * len(ids))
             sm = dict(self.con.execute(f"SELECT file, summary FROM cards WHERE file IN ({qm})", ids).fetchall())
@@ -828,7 +831,7 @@ class Finder:
             for x in r["results"]:
                 x["summary"] = sm.get(x["fid"]) or ""; x["head"] = hd.get(x["fid"]) or ""
             if rer == "ce":
-                sc = ce_scores(q, r["results"])
+                sc = ce_scores(q, r["results"], top=NCAND)
                 d_ = os.environ.get("CE_DIR", str(Path(os.environ.get("FINDR_MODELS") or (Path.home() / ".findr" / "models")) / "rank"))
                 keep = sorted(range(len(sc)), key=lambda i: -sc[i]); none = max(sc) < CE_BIAS.get(d_, CE_NONE)
                 for x, s_ in zip(r["results"], sc):
@@ -1381,8 +1384,9 @@ CE_BIAS = {}
 CE_RATE = {}   # seconds per candidate on the CPU, per reranker
 
 
-def ce_scores(q, res, d=None, nosumm=None):
-    """cross-encoder (bge-reranker-v2-m3, 568M): one batched pass over all candidates. d: model dir (cached per dir)"""
+def ce_scores(q, res, d=None, nosumm=None, top=None):
+    """cross-encoder (bge-reranker-v2-m3, 568M): one batched pass over the candidates. d: model dir (cached per dir).
+    top: score only the first `top`; the rest keep their first-stage order below them"""
     d = d or os.environ.get("CE_DIR", str(Path(os.environ.get("FINDR_MODELS") or (Path.home() / ".findr" / "models")) / "rank"))
     nosumm = bool(os.environ.get("CE_NOSUMM")) if nosumm is None else nosumm
     if d not in CE:
@@ -1390,7 +1394,7 @@ def ce_scores(q, res, d=None, nosumm=None):
             if d not in CE:
                 _ce_load(d)
     tok, m = CE[d]
-    return _ce_score(q, res, d, tok, m, nosumm)
+    return _ce_score(q, res, d, tok, m, nosumm, top)
 
 
 def _ce_load(d):
@@ -1407,7 +1411,7 @@ def _ce_load(d):
     CE[d] = (tok, m)
 
 
-def _ce_score(q, res, d, tok, m, nosumm):
+def _ce_score(q, res, d, tok, m, nosumm, top=None):
     import torch
     if nosumm:   # the stage-A reranker was trained on name | folder | opening text
         docs = [f"{x['name']} | {'/'.join(x['path'].replace(chr(92), '/').split('/')[-3:-1])} | {x.get('head', '')[:700]}" for x in res]
@@ -1416,13 +1420,15 @@ def _ce_score(q, res, d, tok, m, nosumm):
                 for x in res]
     # on the CPU: as many candidates as fit the time budget (CE_BUDGET s), learned from the previous queries;
     # the rest keep their first-stage order below the scored ones
-    n = len(docs)
+    n = len(docs) if top is None else min(len(docs), top)
     if m.device.type == "cpu" and CE_RATE.get(d):
         # one budget for the whole question (CE_TOTAL s): the first pass gets up to CE_BUDGET, and later passes (repair,
         # memory cues) only what is left, at least 3 candidates. Per-call budgets used to add up to 15-20 s on a laptop.
         left = float(os.environ.get("CE_TOTAL") or 1.5) - (time.time() - _QT[0])   # 1.5 s per question (was 4: 3.8 s slowest tenth)
         cap = min(float(os.environ.get("CE_BUDGET") or 3), max(left, 0.0))
-        n = min(n, max(3 if left < 1 else 5, int(cap / CE_RATE[d])))   # never more than there are (a small index has fewer than 5)
+        # at least 3 candidates, else what fits the time left: a 4-core 2019 laptop scores about 0.66 s a candidate, and a floor
+        # of 5 made every question 3.3 s against the 1.5 s budget (#66 rerun); a recent CPU still scores 5 within it
+        n = min(n, max(3, int(cap / CE_RATE[d])))
     t_ = time.time()
     with torch.no_grad():
         b = tok([q] * n, docs[:n], padding=True, truncation=True, max_length=CE_MAXLEN, return_tensors="pt").to(m.device)
