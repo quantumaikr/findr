@@ -565,22 +565,27 @@ class Finder:
             return []
         return [f_ for (f_,) in self.con.execute(f"SELECT id FROM files WHERE id IN ({','.join('?' * len(sets))}) ORDER BY mtime DESC LIMIT ?", (*sets, limit))]
 
-    def xling_named(self, q, limit=50):
+    def xling_named(self, q, res=(), limit=50):
         """files whose NAME carries every idea of a Korean question through XLING, one at least by translation, newest first.
         The rescue in the top 10 is not enough when neither the meaning nor the word search brought the name in
-        ('갤럭시 광고 문구' -> Galaxy_Ad_Copy.docx: no Korean word of the question is in it)"""
-        ideas = xling_ideas(q)
-        if not ideas:
-            return []
-        self.load_scan()
-        cids = [cid for cid, nm, tr in self.name_rows if tr != 2
-                and all(any(sp in nm for sp in idea) for idea in ideas)   # cheap substring pass first: 100k names
-                and xling_cover(nm, ideas) == (True, True)]
-        if not cids or len(cids) > limit:   # a pair of common words is not a name search
-            return []
-        qm = ",".join("?" * len(cids))
-        return [f_ for (f_,) in self.con.execute(
-            f"SELECT f.id FROM chunks c JOIN files f ON f.id=c.file WHERE c.id IN ({qm}) ORDER BY f.mtime DESC", cids)]
+        ('갤럭시 광고 문구' -> Galaxy_Ad_Copy.docx: no Korean word of the question is in it). Every idea first, then the
+        English-spelled ones alone; nothing when a name in the top 10 (res) already carries them"""
+        sets = xling_sets(q)
+        if sets:
+            self.load_scan()
+        for ideas in sets:
+            if any(xling_cover(x.get("name"), ideas)[0] for x in res[:10]):
+                return []
+            cids = [cid for cid, nm, tr in self.name_rows if tr != 2
+                    and all(any(sp in nm for sp in idea) for idea in ideas)   # cheap substring pass first: 100k names
+                    and xling_cover(nm, ideas) == (True, True)]
+            if len(cids) > limit:   # a pair of common words is not a name search
+                return []
+            if cids:
+                qm = ",".join("?" * len(cids))
+                return [f_ for (f_,) in self.con.execute(
+                    f"SELECT f.id FROM chunks c JOIN files f ON f.id=c.file WHERE c.id IN ({qm}) ORDER BY f.mtime DESC", cids)]
+        return []
 
     def coverage(self, text, top):
         """share of the question's content words (2+ chars, particles stripped) present in the file's name, path or text"""
@@ -962,8 +967,8 @@ class Finder:
                 j = xling_name_first(q, r["results"])   # Korean words, English name: Remote_Access_Design.pdf (#19)
                 if j:
                     r["results"] = [r["results"][j]] + r["results"][:j] + r["results"][j + 1:]; r["xling"] = 1
-                elif r["results"] and xling_ideas(q) and not xling_cover(r["results"][0].get("name"), xling_ideas(q))[0]:
-                    xf = self.xling_named(q)   # not in the top 10: from all names (field: 0.2.13 found it only below rank 10)
+                elif r["results"]:
+                    xf = self.xling_named(q, r["results"])   # not in the top 10: from all names (field: 0.2.13 found it only below rank 10)
                     if xf:
                         at = next((i for i, x in enumerate(r["results"]) if x["fid"] == xf[0]), None)
                         top_ = [r["results"].pop(at)] if at is not None else self.files_out(xf[:1])
@@ -1634,9 +1639,12 @@ XLING = {
 _XL_JOSA = re.compile(r"(으로|에서|에게|이랑|하고|까지|부터|이나|은|는|이|가|을|를|의|에|로|와|과|도|만|랑)$")
 
 
-def xling_ideas(q):
+def xling_ideas(q, relax=False):
     """the ideas of a Korean question, each with the spellings that count for it in a file name (XLING);
-    [] for a question without Korean or with fewer than two ideas"""
+    [] for a question without Korean or with fewer than two ideas.
+    relax: only the ideas a name can carry in English (words of the list, English words). People ask with words no
+    file name has ('히스토그램 그려 보는 실습': 그려, 보는), and each of them blocked the name (field, 0.2.13: 5 of 10 out of
+    the top 10)"""
     words = re.findall(r"[가-힣]{2,}|[A-Za-z][A-Za-z0-9]+", q)
     if not words or not any(re.match(r"[가-힣]", w) for w in words):
         return []
@@ -1647,8 +1655,18 @@ def xling_ideas(q):
         stem = w if w in XLING else _XL_JOSA.sub("", w)
         if XLING.get(stem) == "" or XLING.get(w) == "":
             continue   # 자료, 문서, 파일 …: not an idea of the content
+        if relax and not XLING.get(stem):
+            continue
         ideas.append([stem] + (XLING.get(stem) or "").split())
     return ideas if len(ideas) >= 2 else []
+
+
+def xling_sets(q):
+    """every idea first; then, if that drops some, only the ideas with an English spelling. The looser set is off unless
+    XLING_RELAX=1: on the GPU PC's held-out test set it moved one answer from rank 1 to 2 (2026-11-08); field sets decide"""
+    strict = xling_ideas(q)
+    loose = xling_ideas(q, relax=True) if os.environ.get("XLING_RELAX") == "1" else strict
+    return [i for i in (strict, loose if loose != strict else []) if i]
 
 
 def xling_cover(name, ideas):
@@ -1661,13 +1679,18 @@ def xling_cover(name, ideas):
 
 def xling_name_first(q, res, top=10):
     """index (in res[:top], > 0) of the file whose name covers every idea of a Korean question through XLING,
-    when at least one idea needed a translation and #1's name does not cover them; else 0"""
-    ideas = xling_ideas(q)
-    if not ideas or not res or xling_cover(res[0].get("name"), ideas)[0]:
+    when at least one idea needed a translation and #1's name does not cover them; else 0. Every idea first; the English-
+    spelled ideas alone only when no name in the top carries every idea ('원격 설계 메모.txt' for '원격 설계 메모' stays)"""
+    if not res:
         return 0
-    for j, x in enumerate(res[1:top], 1):
-        if xling_cover(x.get("name"), ideas) == (True, True):
-            return j
+    for ideas in xling_sets(q):
+        if xling_cover(res[0].get("name"), ideas)[0]:
+            return 0
+        for j, x in enumerate(res[1:top], 1):
+            if xling_cover(x.get("name"), ideas) == (True, True):
+                return j
+        if any(xling_cover(x.get("name"), ideas)[0] for x in res[1:top]):
+            return 0
     return 0
 
 

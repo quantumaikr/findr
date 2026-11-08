@@ -140,3 +140,18 @@ def test_xling_named_beyond_the_top_10(tmp_path):
     assert f.xling_named("갤럭시 배경화면") == []   # 배경화면 has no English entry: not every idea is carried
     assert f.xling_named("광고") == []   # one idea is not a name search
     assert search.xling_cover("갤럭시_광고_문구.hwp", search.xling_ideas("갤럭시 광고 문구")) == (True, False)   # same script
+
+
+def test_xling_words_no_name_has(monkeypatch):
+    """people ask with words no file name carries ('블러 적용해 보는 예제': 적용해, 보는); those no longer block the English name,
+    but a name that carries every word of the question, in Korean, still wins over the looser English match"""
+    monkeypatch.setenv("XLING_RELAX", "1")
+    res = [{"name": "notes.md"}, {"name": "readme.txt"}, {"name": "blur_example.py"}]
+    assert search.xling_name_first("블러 적용해 보는 예제", res) == 2
+    assert search.xling_sets("블러 적용해 보는 예제")[1] == [["블러", "blur"], ["예제", "example", "sample"]]
+    res2 = res + [{"name": "블러 적용해 보는 예제.ipynb"}]
+    assert search.xling_name_first("블러 적용해 보는 예제", res2) == 0   # the same-script name: left to the usual rules
+    assert search.xling_name_first("온누리식품 견적서", [{"name": "a.txt"}, {"name": "quote.pdf"}]) == 0   # one English idea
+    assert len(search.xling_sets("메모 정리")) == 1   # nothing translatable: no looser set (the strict one never fires)
+    monkeypatch.delenv("XLING_RELAX")
+    assert search.xling_name_first("블러 적용해 보는 예제", res) == 0   # off by default: every idea, as before
