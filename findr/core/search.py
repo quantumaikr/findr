@@ -680,6 +680,9 @@ class Finder:
 
     def photo_merge(self, q, r, fut, k, p=None):
         """photos whose content matches the request go first (a photo has no text for the reranker to read)"""
+        if not photos_wanted(q, p):
+            r["photo_skip"] = "kind"
+            return
         try:
             v, scale = fut.result(timeout=float(os.environ.get("PHOTO_WAIT", "1.0")))
         except Exception:
@@ -735,12 +738,19 @@ class Finder:
         words = name_words(q)
         if not words or not res:
             return res
+        # a format the question names holds here too: '강의 자료 pdf' is not the xlsx whose name says 강의자료 (real PC, 11/9)
+        fmt = parse(q)["exts"] if os.environ.get("KIND_GATE", "0") == "1" else set()
+        fits = lambda name: not fmt or os.path.splitext(name or "")[1].lower() in fmt
         key = lambda s: re.sub(r"[\s_\-.()\[\]]+", "", unicodedata.normalize("NFC", s or "").lower())
-        if all(w in key(res[0].get("name")) for w in words):
+        if all(w in key(res[0].get("name")) for w in words) and fits(res[0].get("name")):
             return res
         for i, x in enumerate(res[1:], 1):   # one already among the results: move it up
-            if all(w in key(x.get("name")) for w in words):
+            if all(w in key(x.get("name")) for w in words) and fits(x.get("name")):
                 return [res[i]] + res[:i] + res[i + 1:]
+        if fmt and not fits(res[0].get("name")):   # no name holds every word in that format: the first that fits goes first
+            j = next((i for i, x in enumerate(res) if fits(x.get("name"))), None)
+            if j is not None:
+                return [res[j]] + res[:j] + res[j + 1:]
         import unicodedata as _ud
         self.con.create_function("nfc", 1, lambda s: _ud.normalize("NFC", s) if s else s, deterministic=True)
         sql = ("SELECT id FROM files WHERE tier IN (1,3) AND " + " AND ".join(["lower(nfc(name)) LIKE ?"] * len(words))
@@ -749,7 +759,8 @@ class Finder:
             hit = [fid for (fid,) in self.con.execute(sql, [f"%{w}%" for w in words])]
         except sqlite3.OperationalError:
             return res
-        hit = [h for h in hit if all(w in key(self.con.execute("SELECT name FROM files WHERE id=?", (h,)).fetchone()[0]) for w in words)]
+        hit = [h for h in hit for nm in [self.con.execute("SELECT name FROM files WHERE id=?", (h,)).fetchone()[0]]
+               if all(w in key(nm) for w in words) and fits(nm)]
         if not hit:
             return res
         top = self.files_out(hit[:1])
@@ -1336,6 +1347,53 @@ from concurrent.futures import ThreadPoolExecutor  # noqa: E402
 POOL = ThreadPoolExecutor(8)
 PHOTO_URL = os.environ.get("PHOTO_URL", "")   # local photo model server (photo_srv.py); empty = photos by name only
 PHOTO_WORD = re.compile(r"사진|이미지|그림|스크린샷|캡처|캡쳐|찍은|찍었|셀카|풍경|photo|jpe?g|png", re.I)
+# a kind of document: a person asking for one means a document of that kind, not a picture that looks like the scene
+# (real PCs, 11/9: "회의록" brought five meeting photos over thirteen minutes; "강의 자료 pdf" a png first)
+DOCKIND = re.compile(r"회의록|계약서|견적서|발주서|명세서|보고서|계획서|제안서|신청서|지원서|승낙서|각서|확인서|증명서|"
+                     r"정관|양식|서식|서류|문서|공문|기안|규정|매뉴얼|안내문|공지|발표\s*자료|강의\s*자료|자료집|교안|논문|"
+                     r"이력서|명단|목록|리스트|영수증|청구서|내역|설문", re.I)
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic"}
+
+
+def collapse_copies(con, res):
+    """the same file saved twice (a download kept twice, 'name (1)', a copy in another folder) is one thing to a person:
+    one line, the best-ranked copy, the others under it as 'copies'. Seen on all three real PCs (11/9): a copy took #1
+    over its twin, and two slots of five. Same = same format, same size, same opening text (not names: '규정_v3' and
+    '규정_v3 (1)' are the same file, '규정_v2' is not)"""
+    rs = res.get("results") or []
+    fids = [x.get("fid") for x in rs if x.get("fid") is not None]
+    if len(fids) < 2:
+        return res
+    qm = ",".join("?" * len(fids))
+    meta = {fid: (ext, size, head) for fid, ext, size, head in con.execute(
+        f"SELECT f.id, f.ext, f.size, (SELECT text FROM chunks c WHERE c.file=f.id AND c.n=0) FROM files f WHERE f.id IN ({qm})", fids)}
+    seen, out = {}, []
+    for x in rs:
+        m = meta.get(x.get("fid"))
+        body = re.sub(r"^파일: .*?구조: ", "", (m[2] or "") if m else "")[:400]   # the header names the file: compare the text
+        k = (m[0], m[1], body) if m and m[1] and len(body) >= 20 else None
+        if k is not None and k in seen:
+            seen[k].setdefault("copies", []).append(x.get("path"))
+            continue
+        if k is not None:
+            seen[k] = x
+        out.append(x)
+    if len(out) < len(rs):
+        res = dict(res); res["results"] = out; res["copies_folded"] = len(rs) - len(out)
+    return res
+
+
+def photos_wanted(q, p):
+    """the question leaves room for a photo: it names no format other than images, and no kind of document unless it also
+    says photo ('회의 사진', '영수증 찍은 거'). KIND_GATE=1 turns this on (off by default until the real-PC runs agree)"""
+    if os.environ.get("KIND_GATE", "0") != "1":
+        return True
+    if PHOTO_WORD.search(q):
+        return True
+    exts = (p or {}).get("exts") or set()
+    if exts and not (exts & IMAGE_EXTS):
+        return False
+    return not DOCKIND.search(q)
 
 
 _PHOTO_UP = [0.0, False]   # (checked at, answering)
@@ -2279,6 +2337,9 @@ def serve(f, port):
                     with SEARCH_LOCK:
                         res = personal().apply(f, q_, res)
                 res = add_probs(res)
+                if os.environ.get("DUP_COLLAPSE", "0") == "1":
+                    with SEARCH_LOCK:
+                        res = collapse_copies(f.con, res)
                 # the page's '서버' time: the whole request, not the search alone (a Mac page showed 서버 3.4 s · 화면 7.1 s and
                 # the rest had no name: the index refresh check before the search and the steps after it were left out)
                 res["search_ms"] = int(res.get("ms") or 0); res["ms"] = max(res["search_ms"], int((time.time() - t_req) * 1000))
