@@ -28,8 +28,28 @@ def _key():
         return ""
 
 
+_DOWN = [0.0]   # until when the engine is taken as not running
+
+
+def _engine_up():
+    """a quick look before asking: on Windows a refused localhost connection takes ~2 s (it retries), so with the app
+    closed every search_files call waited 2 s before the index search. Not up: look again after 15 s"""
+    import socket
+    import time
+    if time.time() < _DOWN[0]:
+        return False
+    try:
+        socket.create_connection(("127.0.0.1", int(ENGINE.rsplit(":", 1)[1])), timeout=0.3).close()
+        return True
+    except OSError:
+        _DOWN[0] = time.time() + 15
+        return False
+
+
 def _engine_search(query, limit):
     """results from the running engine, or None when it is not up"""
+    if not _engine_up():
+        return None
     op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     import base64
     k = _key()   # the page's password: as the app's cookie and as HTTP Basic (any user name), whichever the engine takes
