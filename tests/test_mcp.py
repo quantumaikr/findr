@@ -117,7 +117,8 @@ def lectures(tmp_path, monkeypatch):
     con = sqlite3.connect(str(tmp_path / "index.db"))
     con.executescript("""CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT, name TEXT, ext TEXT, size INT, mtime REAL, tier INT);
         CREATE TABLE chunks(id INTEGER PRIMARY KEY, file INT, n INT, text TEXT);""")
-    day, later = 1700000000, 1700000000 + 40 * 86400
+    day = 1700049600   # noon UTC (2023-11-15): +1 h and +2 h stay on the same date in every time zone the tests run in (CI is UTC)
+    later = day + 40 * 86400
     rows = [(1, "/d/강의/1차 과정/08. 강화학습.key", ".key", day, "강화학습 에이전트 보상 탐험률 할인률"),
             (2, "/d/강의/2차 과정/17. 실용강의 - 강화학습.key", ".key", later, "강화학습 에이전트 보상 탐험률"),     # the course again
             (3, "/d/강의/2차 과정/03. 자연어 전처리.key", ".key", later, "토큰화 형태소 분석"),                 # another subject
