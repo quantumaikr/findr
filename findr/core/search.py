@@ -1584,6 +1584,8 @@ XLING = {
     "크롤링": "crawl crawling crawler", "크롤러": "crawler", "스크래핑": "scraping scrape", "셀레니움": "selenium",
     "웹캠": "webcam", "카메라": "camera", "번호판": "plate license", "손글씨": "handwriting mnist", "감정": "emotion sentiment",
     "추출": "extract extraction", "변환": "convert transform", "압축": "compress zip", "엑셀": "excel xlsx", "워드": "word docx",
+    "갤럭시": "galaxy", "아이폰": "iphone", "스마트폰": "smartphone phone mobile", "광고": "ad ads advert advertising", "문구": "copy",
+    "카피": "copy", "배너": "banner", "상세페이지": "detail page", "캠페인": "campaign", "브랜드": "brand", "로고": "logo",
     "자료": "", "문서": "", "파일": "", "관련": "", "내": "", "그": "", "거": "", "것": "", "처리": "", "하기": "", "찾기": "",
 }
 _XL_JOSA = re.compile(r"(으로|에서|에게|이랑|하고|까지|부터|이나|은|는|이|가|을|를|의|에|로|와|과|도|만|랑)$")
