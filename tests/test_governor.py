@@ -66,3 +66,17 @@ def test_nvidia_gpu_has_no_reranker_heat_signal(monkeypatch):
     for _ in range(8):
         g.rerank_time(0.010, 5000)
     assert g.sample()["signals"]["rerank_slowdown"] is None
+
+def test_container_memory_leaves_out_the_file_cache(monkeypatch):
+    """in a 3 GB limit, memory.current counted the file cache the kernel takes back first: available read as critical
+    with room to spare. Used = current - inactive_file, the reckoning container tools use."""
+    import builtins
+    import io
+    files = {"/proc/self/cgroup": "0::/t\n", "/sys/fs/cgroup/t/memory.max": str(3 * 2**30),
+             "/sys/fs/cgroup/t/memory.current": str(int(2.9 * 2**30)),
+             "/sys/fs/cgroup/t/memory.stat": f"anon 1\nfile 2\ninactive_file {int(0.8 * 2**30)}\n"}
+    real = builtins.open
+    monkeypatch.setattr(builtins, "open", lambda p, *a, **k: io.StringIO(files[p]) if p in files else real(p, *a, **k))
+    monkeypatch.setattr(governor.sys, "platform", "linux")
+    monkeypatch.setattr(governor, "_psutil", lambda: None)
+    assert abs(governor.mem_available_gb() - 0.9) < 0.01   # 3 - (2.9 - 0.8), not 0.1
