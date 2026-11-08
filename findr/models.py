@@ -122,6 +122,58 @@ def have(folder):
     return True
 
 
+# about how much each folder takes once downloaded (MB), for when the repository cannot be asked (offline, a company proxy):
+# the repositories' own file sizes on 2026-11-08 (rank without the int8 file, which is 543 MB on its own)
+APPROX_MB = {"rank": 1153, "rank-int8": 560, "gate": 1, "qu": 639, "embeddinggemma-2": 1526, "multilingual-e5-small": 510,
+             "checker": 1834, "kanana-2-v-decide-3b-2611": 7341}
+INDEX_ROOM_GB = 2.0   # room left for the first index to start (it grows to 1-6 GB on a whole PC, #67), besides the models
+
+
+def _patterns(folder):
+    """(repository, files to fetch, files to skip, size key) for one folder, as pull() fetches it"""
+    if folder in ("rank", "gate", "qu"):
+        cpu = gpu()[0] == "cpu"
+        if folder == "rank" and cpu:
+            return OWN, [f"{folder}/*.json", f"{folder}/model_int8.onnx"], None, "rank-int8"
+        return OWN, [f"{folder}/*"], None if cpu else ["*.onnx"], folder
+    repo, files, _ = PUBLIC[folder]
+    return repo, files, None, folder
+
+
+def _repo_bytes(repo, allow, ignore, token=None):
+    """bytes of the files snapshot_download would fetch with these patterns, from the repository's own file list"""
+    from fnmatch import fnmatch
+    from huggingface_hub import HfApi
+    info = HfApi().model_info(repo, files_metadata=True, token=token, timeout=10)
+    return sum(s.size or 0 for s in info.siblings
+               if (not allow or any(fnmatch(s.rfilename, p) for p in allow)) and not (ignore and any(fnmatch(s.rfilename, p) for p in ignore)))
+
+
+def download_plan(folders, token=None):
+    """[(folder, bytes, exact)] for the folders this PC does not have yet (have(): a half-done download counts as missing).
+    exact is False when the repository could not be asked and the size is the APPROX_MB estimate"""
+    out, sizes = [], {}
+    for f in folders:
+        if have(f) or (f not in PUBLIC and f not in ("rank", "gate", "qu")):
+            continue
+        repo, allow, ignore, key = _patterns(f)
+        try:
+            if (repo, tuple(allow or ()), tuple(ignore or ())) not in sizes:
+                sizes[(repo, tuple(allow or ()), tuple(ignore or ()))] = _repo_bytes(repo, allow, ignore, token)
+            out.append((f, sizes[(repo, tuple(allow or ()), tuple(ignore or ()))], True))
+        except Exception:   # offline, a proxy, a private repository without a token: the estimate keeps the check useful
+            out.append((f, APPROX_MB.get(key, 0) * 10 ** 6, False))
+    return out
+
+
+def disk_free(where=None):
+    """free bytes on the drive that holds the models folder (or its nearest existing parent: before the first setup)"""
+    p = Path(where or paths.MODELS)
+    while not p.exists() and p.parent != p:
+        p = p.parent
+    return shutil.disk_usage(p).free
+
+
 def pull(folders, token=None):
     from huggingface_hub import snapshot_download
     own = [f for f in folders if f in ("rank", "gate", "qu") and not have(f)]
