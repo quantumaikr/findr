@@ -139,7 +139,9 @@ def main():
     rep["engine"]["ready"] = bool(r.get("ready"))
     rep["engine"]["ready_wait_sec"] = round(time.time() - t0, 1)
     p, _ = eng.get("/progress", timeout=10)
-    rep["engine"]["indexing"] = bool(p) and "error" not in p and "text" not in p
+    # a run that is going: a stage other than done, written in the last 15 minutes (a finished run's record stays behind,
+    # and on Windows the engine cannot check its pid, so 'any record' said 색인 중 on an idle PC)
+    rep["engine"]["indexing"] = p.get("stage") not in (None, "done") and time.time() - (p.get("t") or 0) < 900
 
     rows = []
     for rnd in range(a.rounds):
