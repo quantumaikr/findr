@@ -35,6 +35,40 @@ macOS에서 "손상되었기 때문에 열 수 없습니다"가 나오면 터미
 xattr -cr /Applications/findr.app
 ```
 
+### 소스로 설치하기 (GitHub 최신 코드)
+
+진행자가 앱 대신 최신 코드로 시험하자고 하면 이 방법을 씁니다. 배포 전 수정이 바로 들어가 있습니다. git이 필요합니다. Windows에서 없으면 `winget install Git.Git`으로 설치하고, Mac에서는 터미널에서 `git --version`을 치면 설치 안내가 나옵니다.
+
+```powershell
+# Windows (PowerShell)
+git clone https://github.com/quantumaikr/findr
+cd findr
+powershell -ExecutionPolicy Bypass -File install.ps1
+.\findr doctor
+```
+
+```bash
+# macOS
+git clone https://github.com/quantumaikr/findr && cd findr
+bash install.sh
+./findr.sh doctor
+```
+
+설치 스크립트가 전용 파이썬, 검색 엔진, 모델을 받습니다. 사양에 따라 5~20분 걸리니 시간을 재 주세요. `doctor`가 모두 ✓이면 준비가 끝난 것입니다.
+
+이후 단계는 앱과 같고, 명령만 다릅니다. 아래는 Windows 기준이고, macOS는 `.\findr` 대신 `./findr.sh`를 씁니다.
+
+| 앱에서 | 소스 설치에서 |
+|---|---|
+| 폴더를 고르고 색인 시작 | `.\findr index` (PC 전체) 또는 `.\findr index D:\자료` |
+| 검색 화면 | 다른 창에서 `.\findr serve`를 실행하면 브라우저에 검색 화면이 열립니다. **색인이 끝나기 전에 켜서** 색인 중에도 검색되는지 봐 주세요 |
+| 앱 끄고 다시 켜기 | `serve` 창에서 Ctrl+C를 누른 뒤 다시 `.\findr serve` |
+| 데이터 폴더 | `doctor` 첫 줄에 나오는 경로. 로그는 그 안의 `logs` |
+
+- Windows 명령 프롬프트(cmd)에서는 `findr` 대신 `findr.cmd`로 실행합니다. 같은 이름의 폴더가 있어 `findr`만으로는 인식되지 않습니다.
+- 코드를 새로 받을 때는 `git pull` 뒤에 설치 스크립트를 **다시 실행**하세요. `git pull`만으로는 새 구성 요소가 설치되지 않습니다.
+- 소스 설치에는 앱의 첫 화면과 설정 화면이 없습니다. 6번(설정 둘러보기)은 건너뛰세요.
+
 ## 2. 처음 실행: 준비
 
 처음 실행하면 PC에 맞는 구성(검색 엔진, 모델)을 받습니다. 사양에 따라 **5~20분** 걸립니다.
@@ -88,13 +122,17 @@ xattr -cr /Applications/findr.app
 화면을 캡처하고, 아래 명령의 출력을 함께 보내 주세요. 명령은 Windows는 명령 프롬프트, Mac은 터미널에서 실행합니다.
 
 ```bat
-:: Windows
+:: Windows (앱)
 %LOCALAPPDATA%\findr\runtime\Scripts\python.exe -m findr doctor
+:: Windows (소스 설치: 저장소 폴더에서)
+findr.cmd doctor
 ```
 
 ```bash
-# macOS
+# macOS (앱)
 ~/.findr/runtime/bin/python -m findr doctor
+# macOS (소스 설치: 저장소 폴더에서)
+./findr.sh doctor
 ```
 
 로그는 데이터 폴더 안의 `logs`에 있습니다. 위치는 Windows `%LOCALAPPDATA%\findr\logs`, macOS `~/.findr/logs`입니다. 1.5초 넘게 걸린 질문은 로그에 `FINDR_SLOW` 줄이 남습니다. 이 줄에는 단계별 시간만 들어가고 질문 내용은 들어가지 않습니다.
@@ -121,7 +159,7 @@ xattr -cr /Applications/findr.app
 - 메모리:            GPU: 있음(이름: ) / 없음
 - 스마트 앱 컨트롤(Windows): 켜짐 / 꺼짐 / 모름
 - 회사망: 예 / 아니오
-- findr 버전:
+- findr 버전:              설치 방법: 앱 / 소스(git 커밋: )
 
 [설치와 준비]
 - 설치 시간:   분      경고에서 멈칫했나: 예 / 아니오
