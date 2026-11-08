@@ -1547,11 +1547,25 @@ def ce_scores(q, res, d=None, nosumm=None, top=None):
     return _ce_score(q, res, d, tok, m, nosumm, top)
 
 
+def _gte_load(d):
+    """a reranker whose architecture ships as code in its folder (gte-multilingual-reranker-base, 306M: about 2.3x faster than
+    the current one on a Mac, 11/9). Built from its config so its position and rotary tables are computed (loading through
+    the meta device under transformers 5.x left them as garbage), then its weights"""
+    import torch
+    from safetensors.torch import load_file
+    from transformers import AutoConfig, AutoModelForSequenceClassification
+    cfg = AutoConfig.from_pretrained(d, trust_remote_code=True)
+    m = AutoModelForSequenceClassification.from_config(cfg, trust_remote_code=True)
+    m.load_state_dict(load_file(str(Path(d) / "model.safetensors")), strict=False)
+    return m.to(torch.float16 if DEVICE == "cuda" else torch.float32).to(DEVICE)
+
+
 def _ce_load(d):
     import torch
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
     tok = AutoTokenizer.from_pretrained(d)
-    m = (AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float16).to(DEVICE) if DEVICE == "cuda"
+    m = (_gte_load(d) if (Path(d) / "modeling.py").exists() else
+         AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float16).to(DEVICE) if DEVICE == "cuda"
          else AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float32).to(DEVICE) if DEVICE == "mps"
          else _cpu_ranker_for(d, lambda: AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float32))).eval()
     nb = Path(d) / "none_bias.txt"   # a none-aware reranker carries its learned 'no answer' score
@@ -1586,7 +1600,10 @@ def _ce_score(q, res, d, tok, m, nosumm, top=None):
         # CE_TAIL=1: candidates past the first CE_TAIL_FROM (10) read a shorter opening (CE_TAIL_CHARS, 220). On a Mac the
         # time is the candidates times their length (M1 Pro alone: 10 x 200 tokens 0.35 s, 10 x 384 0.65 s, 30 x 384 1.9 s;
         # no shape or fp16 effect, 11/9); the page shows the first ten, and the rest still get scored, more cheaply
-        tail_from = int(os.environ.get("CE_TAIL_FROM") or 10) if os.environ.get("CE_TAIL", "0") == "1" else 10 ** 9
+        # on by default on an Apple GPU only (a Mac M1 Pro, 11/9: p50 2.37 -> 1.76 s, the 2 s line met, the known-file answers
+        # and their ranks unchanged, one point lost at rank 5 of a vague task); an NVIDIA GPU scores 30 in a few ms anyway
+        tail_on = os.environ.get("CE_TAIL", "1" if DEVICE == "mps" else "0") == "1"
+        tail_from = int(os.environ.get("CE_TAIL_FROM") or 10) if tail_on else 10 ** 9
         tail_n = int(os.environ.get("CE_TAIL_CHARS") or 220)
         docs = [f"{x['name']} | {'/'.join(x['path'].replace(chr(92), '/').split('/')[-3:-1])} | {x.get('head', '')[:700 if i < tail_from else tail_n]}"
                 for i, x in enumerate(res)]

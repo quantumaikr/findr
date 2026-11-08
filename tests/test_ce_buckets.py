@@ -43,3 +43,14 @@ def test_slow_line_counts_scored_candidates(capsys):
     out = capsys.readouterr().out
     assert '"ce_n": 30' in out and '"ce_n": 30000' not in out
     search._ST.d = None
+
+
+def test_tail_is_on_by_default_on_an_apple_gpu_only(monkeypatch):
+    res = [{"name": f"f{i}", "path": f"/d/f{i}", "head": "가" * 900} for i in range(14)]
+    monkeypatch.setattr(search, "CE_CACHE_MAX", 0)
+    monkeypatch.delenv("CE_TAIL", raising=False)
+    for dev, short in (("mps", True), ("cuda", False)):
+        monkeypatch.setattr(search, "DEVICE", dev)
+        Tok.seen = []
+        search._ce_score("q", res, "d", Tok(), Model(), True)
+        assert (max(len(s) for s in Tok.seen[10:]) < 260) is short
