@@ -70,7 +70,8 @@ def test_rtf_surrogate_pairs_and_group_scoped_fallbacks(tmp_path):
     assert moretext.rtf_text(p) == "😀 ok 생abc"
 
 
-def _fake_soffice(tmp_path, monkeypatch, make_output):
+def _fake_soffice(tmp_path, monkeypatch, make_output, enc=None):
+    """enc: the encoding LibreOffice writes in; by default what the filter asked for (UTF-8 when ':UTF8' is in it)"""
     import shutil, subprocess
     exe = tmp_path / "soffice"; exe.write_text("#!/bin/sh\n")
     monkeypatch.setattr(shutil, "which", lambda name: str(exe) if name == "soffice" else None)
@@ -81,7 +82,8 @@ def _fake_soffice(tmp_path, monkeypatch, make_output):
         if cmd[0] == "soffice":
             calls.append(cmd)
             if make_output:
-                (Path(cmd[cmd.index("--outdir") + 1]) / "in.txt").write_text(make_output)
+                e = enc or ("utf-8" if cmd[cmd.index("--convert-to") + 1].endswith(":UTF8") else "cp949")
+                (Path(cmd[cmd.index("--outdir") + 1]) / "in.txt").write_bytes(make_output.encode(e))
             return subprocess.CompletedProcess(cmd, 0, b"", b"")
         return real_run(cmd, **kw)
     monkeypatch.setattr(subprocess, "run", run)
@@ -98,6 +100,18 @@ def test_old_empty_cache_is_retried_and_failure_is_remembered(tmp_path, monkeypa
         f.write_text("an older soffice")                               # LibreOffice updated: try once more
     calls2 = _fake_soffice(tmp_path, monkeypatch, make_output="옛 문서 본문")
     assert index.convert_old(p) == "옛 문서 본문" and len(calls2) == 1
+
+
+def test_korean_survives_conversion(tmp_path, monkeypatch):
+    """Korean Windows: plain 'txt:Text' came out in cp949 and was read as UTF-8, so every Korean character was lost"""
+    monkeypatch.setenv("FINDR_DATA", str(tmp_path / "data"))
+    p = tmp_path / "보고서.doc"; p.write_bytes(b"\xd0\xcf\x11\xe0" + b"\0" * 600)
+    calls = _fake_soffice(tmp_path, monkeypatch, make_output="분기 매출 보고서")
+    assert index.convert_old(p) == "분기 매출 보고서"
+    assert calls[0][calls[0].index("--convert-to") + 1].endswith(":UTF8"), "ask LibreOffice for UTF-8"
+    q = tmp_path / "옛날.doc"; q.write_bytes(b"\xd0\xcf\x11\xe0" + b"\1" * 600)
+    _fake_soffice(tmp_path, monkeypatch, make_output="옛 계약서 본문", enc="cp949")   # an older LibreOffice ignores the option
+    assert index.convert_old(q) == "옛 계약서 본문"
 
 
 def test_really_empty_document_is_not_converted_again(tmp_path, monkeypatch):
