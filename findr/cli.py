@@ -238,9 +238,14 @@ def cmd_serve(a):
         os.environ.setdefault("FINDR_REFINE", "off")
     photo_url = ""
     if models.have("kanana-2-v-decide-3b-2611") and dev == "cuda" and not a.no_photo:
-        _start("photo", [sys.executable, str(paths.CORE / "photo_srv.py"), "--port", str(PORTS["photo"])], "photo_server.log")
-        if _wait(PORTS["photo"], "/", secs=300):
+        # the photo model takes 1-2 min to load. Search does not wait for it (it used to, up to 5 min, also when the server had
+        # died): photos are found by name until the server answers, then by what is in them
+        ph = _start("photo", [sys.executable, str(paths.CORE / "photo_srv.py"), "--port", str(PORTS["photo"])], "photo_server.log")
+        time.sleep(1)
+        if ph.poll() is None:
             photo_url = f"http://127.0.0.1:{PORTS['photo']}"; side.append("사진 내용")
+        else:
+            print(f"  사진 서버가 시작하지 못했습니다 (사진은 이름으로 찾음): {paths.LOGS / 'photo_server.log'}", flush=True)
     _engine_env(photo_url)
     os.environ.setdefault("FINDR_ENCODER", _encoder())   # the planned encoder, for an index still being built (#9)
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
