@@ -33,6 +33,9 @@ uv pip install --python .venv/bin/python -e .      # git pull은 새 의존성�
 - **새 설치를 시험할 때는 데이터 폴더를 따로 둡니다.** findr가 이미 있는 PC에서는 새로 clone해도 `install.sh`가 기본 `~/.findr`의 모델과 색인을 그대로 씁니다. 그러면 "처음 설치"와 "첫 색인"을 잴 수 없습니다. `install.sh`와 모든 명령에 `FINDR_HOME=<새 폴더>`를 붙이고, `exclude.txt`도 새 폴더에 둡니다(#67).
 - 메모리를 재기 전에, 예전 실행이 남긴 `multiprocessing` 도우미(`resource_tracker`, `spawn_main`, 부모 PID 1)를 정리합니다.
 - 백그라운드로 띄운 `serve`는 SIGINT를 무시할 수 있습니다(비대화형 셸). 이때는 SIGTERM으로 끕니다.
+- **잰 값 옆에는 그때 함께 켜져 있던 것을 적습니다**(서버, 색인, 다른 시험). 서버를 켠 채 잰 no-change `index` 155초를 그대로 보고했다가, 서버를 끄고 다시 재 보니 66~75초였던 적이 있습니다(#67). 모델 속도처럼 GPU를 쓰는 측정은 색인과 서버가 모두 꺼진 뒤에 합니다.
+- **끊김 시험(`kill -9`)은 임시 데이터 폴더에서 합니다.** `FINDR_HOME=<임시 폴더>`에 `FINDR_MODELS=<기존 데이터 폴더>/models`를 같이 주면 모델을 다시 받지 않고, 본 색인은 망가질 일이 없습니다.
+- `git worktree`에서 findr를 실행하면 findr는 그 worktree를 자기 폴더로 봅니다. 그래서 홈 폴더에 있는 실제 clone은 다시 색인 대상이 됩니다(#73). 시험 환경 때문에 생기는 일이고, 그 clone의 코드로 다시 색인하면 빠집니다.
 
 ## 4. 재기
 
@@ -41,6 +44,9 @@ uv pip install --python .venv/bin/python -e .      # git pull은 새 의존성�
 | PC마다 같은 기준으로: 준비 시간, 응답 시간, 결과 개수 | `tools/field_check.py` (아래) |
 | 맞는 파일이 몇 위인가, 얼마나 걸리는가 | `tools/acceptance.py` (아래) |
 | 느린 순간 프로세스가 무엇을 하는가 | macOS `sample <pid> 4`, 그 밖에는 `faulthandler.dump_traceback_later`. 추측하기 전에 스택을 본다 |
+| 코드를 고치지 않고 파이썬 줄 번호까지 | 아래 `sitecustomize.py`를 둔 폴더를 `PYTHONPATH`에 넣고 실행합니다. 자식 프로세스(`index_pc.py` → `index.py`, `serve`)까지 1~5초마다 프로세스별 파일에 스택이 남습니다(#80, #103을 이렇게 찾음) |
+| 느린 질문인데 `FINDR_SLOW`의 단계 합이 응답 시간보다 훨씬 작다 | 재지 않은 단계에서 시간이 가는 것입니다. 위 방법으로 스택을 봅니다. 0.2.15의 두 글자 질문에서는 단계 합 2.2초, 응답 9~11초였습니다(#103) |
+| 이름 검색이 언제부터 되는가 (서버 없이) | `findr.mcp_server._index_search(질문, 8)`을 2초마다 불러 정답 이름이 나오는 시각을 봅니다. 엔진을 켜지 않으므로 색인 시간에 영향이 없습니다 |
 | SQL이 표 전체를 읽는가 | `sqlite3 <db> "EXPLAIN QUERY PLAN <쿼리>"`에서 `SCAN`, `/usr/bin/time -p sqlite3 …`로 시간 (L15) |
 | 모델 한 단계의 속도 | 같은 입력으로 그 함수만, 워밍업 1회 뒤 중앙값 (L5) |
 | 단계별로 언제 무엇이 되는가 | `FINDR_STAGE` 출력과 `progress.json`의 시각 (L13) |
@@ -79,7 +85,8 @@ uv pip install --python .venv/bin/python -e .      # git pull은 새 의존성�
 
 - **비교는 같은 채점기로 합니다.** 직접 만든 스크립트는 경로로 맞추거나 "없다고 답해야 하는 질문"을 틀린 것으로 세기 쉽습니다. 실제로 15/16을 14/16으로 세어, 없던 퇴행을 의심한 적이 있습니다(#67). 기준은 `tools/acceptance.py`입니다.
 - **퇴행이 의심되면 옛 코드로 먼저 확인합니다.** 같은 색인을 기준 커밋의 `git worktree`로 띄워 같은 질문을 하면 몇 분이면 됩니다.
-- **응답 시간은 검색 화면(API)으로 잽니다.** `findr ask`는 실행할 때마다 모델과 색인을 새로 불러와 18~29초가 걸립니다. CPU에서는 순위도 화면과 다를 수 있습니다(#66).
+- **응답 시간은 검색 화면(API)으로 잽니다.** `findr ask`는 켜진 엔진이 있으면 그 엔진에 묻습니다(#77, 2.4초). 엔진이 없거나 `--local`이면 모델과 색인을 새로 불러와 18~29초가 걸리고, CPU에서는 순위도 화면과 다를 수 있습니다(#66).
+- 같은 질문을 되풀이하면 두 번째부터 재순위 점수 캐시(#102)가 듭니다. 응답 시간은 서버를 켠 뒤 **첫 번째 질문**과 **되풀이**를 나눠 적습니다.
 - `FINDR_SLOW` 줄은 CLI `serve`에서는 터미널에만 나옵니다. 출력을 파일로 남겨 두세요: `./findr.sh serve 2>&1 | tee <데이터 폴더>/logs/serve.log`
 
 ## 5. 증상으로 찾기
@@ -102,7 +109,33 @@ uv pip install --python .venv/bin/python -e .      # git pull은 새 의존성�
 | `--deep`이 첫 색인이 말한 남은 조각보다 몇 배 오래 걸림 | 첫 색인에서 읽지 않은 긴 문서 뒷부분이 남은 수에 안 들어감 | L13 | #67 |
 | 서버를 켠 뒤 첫 질문만 약 3초 더 걸림 (`ce_scores`) | 미리 준비(#50)가 실제 크기의 재순위 묶음을 데우지 않음 (추정) | — | #67 |
 | 색인 중 가끔 질문이 15초, `FINDR_SLOW`의 `refresh`가 8~11초 | 새 벡터가 저장되면 다음 질문이 전체를 다시 불러옴 | L15 | #67 |
-| Apple GPU에서 `doctor`가 쓰지 않는 큰 모델을 ✓로 표시 | `models.plan()`이 자가 시험(`big_ok`)을 안 봄 | L1 | #67 |
+| Apple GPU에서 `doctor`가 쓰지 않는 큰 모델을 ✓로 표시 | `models.plan()`이 자가 시험(`big_ok`)을 안 봄 → `색인의 의미 모델` 줄 | L1 | #67, #87 |
+| 바뀐 것이 없는데 `index`가 1분 넘게, `content`에서 오래 | `remask()`가 매번 chunks 전체를 파이썬으로 검사 → 바뀐 조각만 검사 | L15 | #80 |
+| 한 낱말 두 글자 질문("사진", "예산")만 수십 초, 깊은 색인 뒤에 더 심함 | trigram에 안 잡히는 두 글자를 `chunks.text LIKE`로 전체 스캔 | L15 | #103 |
+| 한국어 질문인데 영어 이름 파일이 50위 밖 | 이름에 질문의 뜻 일부만 있음(제품명과 내용 한 낱말) → 모든 뜻을 요구하는 규칙이 안 맞음 | — | #19, #111 |
+
+### 코드를 고치지 않고 스택 찍기
+
+```python
+# <폴더>/sitecustomize.py — 시험용. 저장소에 넣지 않는다
+import faulthandler, os, sys, threading, time
+_out = os.environ.get("FH_OUT")
+if _out:
+    _f = open(os.path.join(_out, f"fh_{os.getpid()}.txt"), "w", buffering=1)
+    _f.write(f"argv {sys.argv}\n")
+    def _loop():
+        while True:
+            time.sleep(float(os.environ.get("FH_EVERY", "5")))
+            _f.write(f"\n=== {time.strftime('%H:%M:%S')}\n"); _f.flush()
+            faulthandler.dump_traceback(file=_f, all_threads=True)
+    threading.Thread(target=_loop, daemon=True).start()
+```
+
+```bash
+FH_OUT=/tmp/fh FH_EVERY=1 PYTHONPATH=<폴더> ./findr.sh serve --no-browser   # 또는 index
+```
+
+느린 구간의 시각에 해당하는 덤프에서, 같은 줄이 여러 번 나오는 곳이 원인입니다.
 
 ## 6. 보고
 
