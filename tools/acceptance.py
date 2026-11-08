@@ -46,7 +46,7 @@ def main():
     if a.slow and sys.platform == "darwin":
         out = subprocess.run(["lsof", f"-tiTCP:{a.port}", "-sTCP:LISTEN"], capture_output=True, text=True).stdout.split()
         srv = out[0] if out else None
-        Path("acceptance_slow").mkdir(exist_ok=True)
+        (data_dir() / "acceptance_slow").mkdir(parents=True, exist_ok=True)
 
     rows = []
     for rnd in range(a.rounds):
@@ -69,7 +69,7 @@ def main():
             threading.Thread(target=ask, daemon=True).start()
             sampled = ""
             if srv and not done.wait(a.slow):
-                f = Path("acceptance_slow") / f"r{rnd}_q{i}.txt"
+                f = data_dir() / "acceptance_slow" / f"r{rnd}_q{i}.txt"
                 subprocess.run(["sample", srv, "4", "-mayDie", "-file", str(f)], capture_output=True)
                 sampled = str(f)
             done.wait()
@@ -87,7 +87,9 @@ def main():
     with_answer = [r for r in rows if cases[r["i"] - 1].get("expect")]
     print(f"\nPASS {sum(r['ok'] for r in rows)}/{len(rows)} | rank 1 {sum(r['rank'] == 1 for r in with_answer)}/{len(with_answer)}"
           f" | median {secs[len(secs) // 2]} s, max {secs[-1]} s" + (f" | >{a.slow:g} s: {sum(s > a.slow for s in secs)}" if a.slow else ""))
-    Path("acceptance_result.json").write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
+    out = data_dir() / "acceptance_result.json"   # with the questions, in the data folder (FIELD_TESTING.md; #67: it went to the working folder)
+    out.write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"결과: {out}")
 
 
 if __name__ == "__main__":

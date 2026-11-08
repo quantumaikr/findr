@@ -21,6 +21,10 @@ from pathlib import Path
 
 import numpy as np
 
+if os.environ.get("FINDR_VERBOSE") != "1":   # the indexer is its own process: quiet as the CLI is ('Redirects are currently not supported', #67)
+    import logging
+    logging.getLogger("torch.distributed.elastic").setLevel(logging.ERROR)
+
 TEXT = {".md", ".txt", ".py", ".pyi", ".js", ".ts", ".jsx", ".tsx", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".ini",
         ".cfg", ".csv", ".tsv", ".log", ".html", ".htm", ".css", ".sh", ".ps1", ".bat", ".cmd", ".c", ".h", ".cpp", ".hpp",
         ".cu", ".cuh", ".java", ".go", ".rs", ".sql", ".xml", ".rst", ".ipynb", ".jinja", ".tex", ".r", ".m", ".lua", ""}
@@ -35,6 +39,10 @@ SECRET = re.compile(r"^(\.env(\..*)?|\.netrc|\.pgpass|\.git-credentials|id_(rsa|
 KEYLIKE = re.compile(r"(sk-[A-Za-z0-9_\-]{20,}|sk-ant-[A-Za-z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|hf_[A-Za-z0-9]{30,}"
                      r"|xox[abpr]-[A-Za-z0-9\-]{10,}|AIza[0-9A-Za-z_\-]{35}|-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"
                      r"|(?i:(api[_-]?key|secret|password|passwd|token)\s*[:=]\s*['\"]?)[^\s'\"]{12,})")
+# a fixed piece of text every KEYLIKE match contains: SQLite LIKE (ASCII case-insensitive, '_' any one character) keeps only the
+# chunks that may hold one, so the regex runs on a few rows instead of all of them (a run with no change scanned 920k chunks
+# in Python for 58 s, #67). Keep in step with KEYLIKE: tests/test_mask_prefilter.py checks every alternative is covered
+KEYLIKE_HINTS = ("sk-", "akia", "gh_", "hf_", "xox", "aiza", "private key", "api", "secret", "password", "passwd", "token")
 LIB = re.compile(r"/(site-packages|python_embeded|node_modules|__pycache__|\.git|dist-packages|\.venv|venv)(/|$)")
 SKIP_DIR = {".git", "__pycache__", "node_modules"}
 # 2026-11-05 (user's decision): not the user's files -> not indexed by default (--with-libs keeps the old behaviour)
@@ -899,15 +907,28 @@ def ocr_wave(con, root, first_pages=None, deep_pages=50):
 
 
 def remask(con):
-    """every run: any stored chunk that still holds a key-like value is masked, re-indexed and re-embedded"""
+    """every run: any stored chunk that still holds a key-like value is masked, re-indexed and re-embedded.
+    Triggers note every chunk whose text is written (inserted, or filled in place by a later stage); only those are looked at,
+    after one full look when the triggers are new or KEYLIKE changed. A run with no change scanned 920k chunks for 58 s (#67)"""
+    import hashlib
     hit = 0
-    for cid, fid, txt in con.execute("SELECT id, file, text FROM chunks").fetchall():
+    con.execute("CREATE TABLE IF NOT EXISTS mask_todo(id INTEGER PRIMARY KEY)")
+    con.execute("CREATE TRIGGER IF NOT EXISTS mask_ins AFTER INSERT ON chunks BEGIN INSERT OR IGNORE INTO mask_todo VALUES(NEW.id); END")
+    con.execute("CREATE TRIGGER IF NOT EXISTS mask_upd AFTER UPDATE OF text ON chunks BEGIN INSERT OR IGNORE INTO mask_todo VALUES(NEW.id); END")
+    pat = hashlib.sha1((KEYLIKE.pattern + "|" + "|".join(KEYLIKE_HINTS)).encode()).hexdigest()[:16]
+    seen = con.execute("SELECT value FROM meta WHERE key='mask_pattern'").fetchone()
+    w = " OR ".join(["c.text LIKE ?"] * len(KEYLIKE_HINTS))
+    src = "chunks c" if not seen or seen[0] != pat else "mask_todo t JOIN chunks c ON c.id = t.id"
+    rows = con.execute(f"SELECT c.id, c.file, c.text FROM {src} WHERE {w}", [f"%{h}%" for h in KEYLIKE_HINTS]).fetchall()
+    for cid, fid, txt in rows:
         if txt and KEYLIKE.search(txt):
             t = KEYLIKE.sub("[가림]", txt); name, path = con.execute("SELECT name, path FROM files WHERE id=?", (fid,)).fetchone()
             con.execute("DELETE FROM fts WHERE rowid=?", (cid,))
             con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(name), nfc(path), t))
             con.execute("UPDATE chunks SET text=?, emb=NULL WHERE id=?", (t, cid)); hit += 1
-    con.commit(); print(f"FINDR_MASK {hit} chunks masked")
+    con.execute("DELETE FROM mask_todo")   # (the masking above re-noted its own rows: already clean)
+    con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('mask_pattern', ?)", (pat,))
+    con.commit(); print(f"FINDR_MASK {hit} chunks masked ({'all' if src == 'chunks c' else 'new or changed'} chunks looked at)")
 
 
 PHOTO_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".heic", ".heif"}
