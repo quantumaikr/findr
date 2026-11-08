@@ -139,6 +139,7 @@ def today_now():
 
 def parse(q, now=None):
     now = now or today_now(); exts, soft, since, until, lib = set(), set(), None, None, False
+    soft_time = False
     rest = q
     for pat, ex in KINDS:
         m = re.search(word(pat), q, re.I)
@@ -149,7 +150,11 @@ def parse(q, now=None):
                 soft |= ex                                                # a topic word: keep it, boost the kind
     day0 = now.replace(hour=0, minute=0, second=0, microsecond=0)
     D = dt.timedelta
-    for pat, f in [(r"(\d+)\s*(개월|달)\s*(이내|안에|동안|사이|간)", lambda m: (day0 - D(30.44 * int(m.group(1))), None)),
+    yr = lambda n: (day0.replace(year=day0.year - n, month=1, day=1), day0.replace(year=day0.year - n + 1, month=1, day=1))
+    # calendar years as people say them (TIME_WORDS=1): "작년에 만든 발표자료" read no period at all (real PCs, 11/9)
+    years = [(r"재작년", lambda m: yr(2)), (r"작년|지난\s*해|지난해", lambda m: yr(1)), (r"올해|금년|이번\s*해", lambda m: (yr(0)[0], None))] \
+        if os.environ.get("TIME_WORDS", "0") == "1" else []
+    for pat, f in years + [(r"(\d+)\s*(개월|달)\s*(이내|안에|동안|사이|간)", lambda m: (day0 - D(30.44 * int(m.group(1))), None)),
                    (r"(\d+)\s*(개월|달)\s*전", lambda m: (day0 - D(30.44 * (int(m.group(1)) + 0.5)), day0 - D(30.44 * (int(m.group(1)) - 0.5)))),
                    (r"반년\s*전", lambda m: (day0 - D(30.44 * 7), day0 - D(30.44 * 5))),
                    (r"(\d+)\s*주\s*전", lambda m: (day0 - D(7 * int(m.group(1)) + 4), day0 - D(7 * int(m.group(1)) - 4))),
@@ -165,7 +170,9 @@ def parse(q, now=None):
                    (r"최근|요즘", lambda m: (day0 - dt.timedelta(14), None))]:
         m = re.search(pat, rest)
         if m:
-            since, until = f(m); rest = rest.replace(m.group(0), " "); break
+            since, until = f(m); rest = rest.replace(m.group(0), " ")
+            soft_time = any(pat == y[0] for y in years)   # 작년, 재작년: people misplace a year; a fallback keeps the answer
+            break
     if since and until and (until - since) <= dt.timedelta(days=1):   # a single day: hours narrow it ("어제 오후 3시쯤", "새벽")
         h = re.search(r"(오전|오후)\s*(\d{1,2})\s*시", q); part = re.search(r"새벽|아침|점심|저녁|밤", q)
         if h:
@@ -178,7 +185,8 @@ def parse(q, now=None):
         lib = True
     rest = re.sub(word(STOP), " ", rest); rest = re.sub(r"\s+", " ", rest).strip(" ?.,")
     rest = re.sub(r"(?:^|\s)(에|에서|의|을|를|이|가|은|는|로|으로|과|와|도|만|이랑|랑|쯤|경|정도|좀|것|거|최근|요즘)(?=\s|$)", " ", " " + rest).strip()   # particles left by a removed period
-    return {"exts": exts, "soft": soft - exts, "since": since, "until": until, "lib": lib, "text": rest or q, "only_cond": not rest}
+    return {"exts": exts, "soft": soft - exts, "since": since, "until": until, "lib": lib, "text": rest or q, "only_cond": not rest,
+            "soft_time": soft_time}
 
 
 FKINDS = ["계약서", "견적서", "발주서", "거래명세서", "회의록", "업무보고", "출장보고서", "클레임보고서", "점검일지", "교육보고",
@@ -892,6 +900,12 @@ class Finder:
         # for 10 or 30 and got 5, and answers at ranks 6-10 disappeared (#66 rerun)
         n_fetch = len(LABELS) if rer == "pick1" else (max(NCAND, k) if rer == "ce" else NCAND)
         r = self._search(q, p, text, eng, n_fetch if use4b else k, t0, late)
+        if p.get("soft_time") and not r["results"]:
+            # 작년 / 재작년 with nothing saved then: people misplace a year (Mac, 11/9: a file from three years back asked as
+            # 작년 vanished from rank 3 to an empty list). Search without the period; the end says no file is from it
+            r = self._search(q, dict(p, since=None, until=None), text, eng, n_fetch if use4b else k, t0, late)
+            r["time_miss"] = True
+        pre_period = list(r["results"]) if p["since"] and not r.get("time_miss") else None   # inside the period, before later stages
         if use4b and r["results"]:
             ids = [x["fid"] for x in r["results"]]; qm = ",".join("?" * len(ids))
             sm = dict(self.con.execute(f"SELECT file, summary FROM cards WHERE file IN ({qm})", ids).fetchall())
@@ -1060,6 +1074,16 @@ class Finder:
             r["ms"] = int(1000 * (time.time() - t0))
         if pfut is not None:
             self.photo_merge(q, r, pfut, k, p)
+        if pre_period and os.environ.get("TIME_WORDS", "0") == "1":
+            # later stages (repair across the whole index, history, cross-language and name passes) bring files from outside
+            # the period; on a Mac "작년에 만든 발표자료" ended with ten files of this year while the period held ten (11/9).
+            # Files of the period come first: those the stages kept, then the ones they pushed out, then the rest
+            a_ = p["since"].strftime("%Y-%m-%d %H:%M"); b_ = p["until"].strftime("%Y-%m-%d %H:%M") if p["until"] else "9999"
+            fit = lambda x: a_ <= (x.get("date") or "") < b_
+            now_ = [x for x in r["results"] if fit(x)]
+            have_ = {x.get("fid") for x in now_}
+            back_ = [x for x in pre_period if fit(x) and x.get("fid") not in have_]
+            r["results"] = (now_ + back_ + [x for x in r["results"] if not fit(x)])[:k]
         if not r["results"]:
             r["note"] = "조건에 맞는 파일이 없습니다."
         if cond is not None:
@@ -1636,9 +1660,23 @@ def rerank1tok(q, res):
 
 
 def show(p):
+    # a period across years shows its years: '01-01~01-01' read as one day for "작년" (Mac Air, 11/9)
+    f = "%Y-%m-%d" if p["since"] and p.get("until") and p["since"].year != p["until"].year else "%m-%d"
     return {"찾을 내용": p["text"], "형식": sorted(p["exts"]) or "전체",
-            "기간": f"{p['since']:%m-%d}~{p['until']:%m-%d}" if p["since"] and p["until"] else (f"{p['since']:%m-%d} 이후" if p["since"] else "전체"),
+            "기간": f"{p['since']:{f}}~{p['until']:{f}}" if p["since"] and p["until"] else (f"{p['since']:{f}} 이후" if p["since"] else "전체"),
             "라이브러리 포함": p["lib"]}
+
+
+def period_first(q, rs):
+    """the period the question names, at the very end (TIME_WORDS=1): a later stage looks for a word of the question across
+    the whole index, and on a Mac "작년에 만든 발표자료" brought this month's code files holding the word 작년 (11/9). Files
+    saved inside the period keep their order and go first; the rest follow (kept, not dropped)"""
+    p = parse(q)
+    if not p["since"]:
+        return rs
+    a, b = p["since"].strftime("%Y-%m-%d %H:%M"), p["until"].strftime("%Y-%m-%d %H:%M") if p["until"] else "9999"
+    fit = lambda x: a <= (x.get("date") or "") < b
+    return [x for x in rs if fit(x)] + [x for x in rs if not fit(x)]
 
 
 def winpath(s):
@@ -2337,6 +2375,13 @@ def serve(f, port):
                     with SEARCH_LOCK:
                         res = personal().apply(f, q_, res)
                 res = add_probs(res)
+                if res.get("results") and os.environ.get("TIME_WORDS", "0") == "1":
+                    res["results"] = period_first(q_, res["results"])
+                    p_ = parse(q_)
+                    if p_["since"] and res["results"] and not (p_["since"].strftime("%Y-%m-%d %H:%M") <= (res["results"][0].get("date") or "")
+                                                               < (p_["until"].strftime("%Y-%m-%d %H:%M") if p_["until"] else "9999")):
+                        # nothing saved in that period: say so (a Mac with no files from last year showed other years silently)
+                        res["note"] = "말씀하신 기간에 저장된 파일은 없습니다. 다른 시기의 비슷한 파일을 보여 드립니다."
                 if os.environ.get("DUP_COLLAPSE", "0") == "1":
                     with SEARCH_LOCK:
                         res = collapse_copies(f.con, res)
