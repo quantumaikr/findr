@@ -134,9 +134,9 @@ def extract(p: Path, limit):
         if ext in (".docx", ".xlsx", ".pptx", ".hwpx"):
             return ooxml_text(p, limit)
         raw = open(p, "rb").read(limit)
-        if b"\x00" in raw[:4096]:
+        if b"\x00" in raw[:4096] and raw[:2] not in (b"\xff\xfe", b"\xfe\xff"):   # binary, unless UTF-16 text with its BOM
             return ""
-        t = raw.decode("utf-8", "ignore")
+        t = _decode_text(raw)   # Korean Notepad files are often 'ANSI' (cp949) or '유니코드' (UTF-16)
         if ext in (".html", ".htm"):
             t = re.sub(r"(?s)<(script|style).*?</\1>", " ", t); t = re.sub(r"<[^>]+>", " ", t)
         if ext == ".ipynb":
@@ -179,13 +179,38 @@ def reread_for_new_readers(con):
     return n
 
 
+def _hangul_like(t: str) -> bool:
+    """bytes read as cp949 really were Korean: most non-ASCII characters are Hangul syllables (Latin-1 bytes read as cp949
+    come out as Hanja and symbols)"""
+    na = [c for c in t if ord(c) > 127]
+    return bool(na) and sum("가" <= c <= "힣" for c in na) >= 0.6 * len(na)
+
+
 def _decode_text(b: bytes) -> str:
-    """converter output: UTF-8 (with or without BOM), else the Korean code page, else UTF-8 with the bad bytes dropped"""
-    for enc in ("utf-8-sig", "cp949"):
+    """text of unknown encoding, as Notepad and converters write it: UTF-16 with a BOM ('유니코드'), UTF-8 (with or without
+    BOM), else this PC's code page ('ANSI'), else Korean cp949 when it reads as Korean, else UTF-8 dropping bad bytes.
+    b may be cut at a read limit: a character cut in half at the end does not count as a wrong guess"""
+    import codecs
+    import locale
+    if b[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return b.decode("utf-16", "ignore")
+    if b[:3] == codecs.BOM_UTF8:
+        b = b[3:]
+    sys_enc = (locale.getpreferredencoding(False) or "utf-8").lower()
+    cands = [("utf-8", 3, None)]
+    if codecs.lookup(sys_enc).name != "utf-8":
+        cands.append((sys_enc, 1, _hangul_like if codecs.lookup(sys_enc).name in ("cp949", "euc_kr") else None))
+    if codecs.lookup("cp949").name not in [codecs.lookup(e).name for e, _, _ in cands]:
+        cands.append(("cp949", 1, _hangul_like))
+    for enc, cut, ok in cands:
         try:
-            return b.decode(enc)
-        except UnicodeDecodeError:
-            pass
+            t = b.decode(enc)
+        except UnicodeDecodeError as e:
+            if e.start < len(b) - cut:
+                continue
+            t = b[:e.start].decode(enc, "ignore")
+        if ok is None or ok(t):
+            return t
     return b.decode("utf-8", "ignore")
 
 
