@@ -62,7 +62,7 @@ All numbers are measured on questions that were not used to tune findr. They dep
 | meaning of contents | 4.4 min |
 | full first index (scans left for idle time) | 4.4 min, down from 7 min in 0.2.8 |
 
-On a GPU PC, a real home folder of 4,780 files took 263 seconds for the whole first pass, text recognition included.
+On a GPU PC, a real home folder of 4,780 files took 263 seconds for the whole first pass, text recognition included. On native Windows 11 with an NVIDIA GPU and Defender scanning, a real documents folder of 1,540 files was searchable by name after about 1 s and done in 55 s, including 47 scanned PDFs read by the built-in Windows recognizer in 16 s.
 
 **Text recognition, per page** (Korean and English pages with known text)
 
@@ -72,7 +72,7 @@ On a GPU PC, a real home folder of 4,780 files took 263 seconds for the whole fi
 | macOS Vision | 99.8% | 0.85 s |
 | EasyOCR on 4 CPU cores, page scaled to 1600 px | 96% | 4.1 s |
 
-**Answer time.** On an NVIDIA GPU, the real PC above answers in 0.2 s for half the questions and within 0.4 s for nine in ten (clean install). On 4 CPU cores without a GPU, the same real PC answers in 2.2 s for half the questions and within about 4 s for nine in ten. Each question has a fixed time budget for the reranker, so a hard question does not run on. Without a GPU, questions are read by rules: the small reading model took 3 s per question on 4 cores, slower than it helps.
+**Answer time.** Windows and Linux give the same answers on the same index (checked on one PC, 120 questions); native Windows answers in 0.25 s (median) on an NVIDIA GPU and 2.5 s on 4 CPU cores. On an NVIDIA GPU, the real PC above answers in 0.2 s for half the questions and within 0.4 s for nine in ten (clean install). On 4 CPU cores without a GPU, the same real PC answers in 2.2 s for half the questions and within about 4 s for nine in ten. Each question has a fixed time budget for the reranker, so a hard question does not run on. Without a GPU, questions are read by rules: the small reading model took 3 s per question on 4 cores, slower than it helps.
 
 **Large indexes.** A Mac home folder of about 57,000 files (5.7 GB index) used to stall for about 25 s once a minute. After the fixes in 0.2.10, no search out of 48 took longer than 8 s.
 
@@ -104,7 +104,7 @@ Download the file for your system from the [releases page](https://github.com/qu
 | Fedora and similar | `findr-<version>-1.x86_64.rpm` |
 | Other Linux | `findr_<version>_amd64.AppImage` (make it executable, then run) |
 
-On the first run the app sets up what suits the PC: 5–20 minutes and 2–12 GB depending on the hardware. It then asks which folders to index, and moves to the search screen as soon as file names are in.
+On the first run the app sets up what suits the PC: 5–20 minutes and 2–18 GB depending on the hardware (a 16 GB NVIDIA GPU PC with photo search: 5 minutes and 17.6 GB, measured on Windows 11). It then asks which folders to index, and moves to the search screen as soon as file names are in.
 
 The installers are not code-signed yet, so the first launch may show a warning:
 
