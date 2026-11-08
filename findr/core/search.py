@@ -591,6 +591,7 @@ class Finder:
         ('갤럭시 광고 문구' -> Galaxy_Ad_Copy.docx: no Korean word of the question is in it). Every idea first, then the
         English-spelled ones alone; nothing when a name in the top 10 (res) already carries them"""
         sets = xling_sets(q)
+        self._xl_partial = False
         if sets:
             self.load_scan()
         for ideas in sets:
@@ -603,6 +604,20 @@ class Finder:
                 return []
             if cids:
                 qm = ",".join("?" * len(cids))
+                return [f_ for (f_,) in self.con.execute(
+                    f"SELECT f.id FROM chunks c JOIN files f ON f.id=c.file WHERE c.id IN ({qm}) ORDER BY f.mtime DESC", cids)]
+        if sets and os.environ.get("XLING_PARTIAL") == "1":   # no name carries every idea: the names that carry most of them
+            ideas = sets[0]
+            # the top 10 already holds a name that carries as much of the question (in Korean too: '…데이터 분석….ipynb' for
+            # '파이썬 데이터 분석 예제'): the first stage found the name, nothing to bring in ('data.py' would have been)
+            top_ = max((xling_carried(x.get("name"), ideas) for x in res[:10]), default=0)
+            scored = [(xling_partial(nm, ideas), xling_carried(nm, ideas), cid) for cid, nm, tr in self.name_rows if tr != 2
+                      and sum(any(sp[:1] == "~" or sp in nm for sp in idea[1:]) for idea in ideas) >= 2]   # cheap pass first
+            scored = [(n, c, cid) for n, c, cid in scored if n and c > top_]
+            best = max((n for n, _, _ in scored), default=0)
+            cids = [cid for n, _, cid in scored if n == best]
+            if cids and len(cids) <= limit:
+                qm = ",".join("?" * len(cids)); self._xl_partial = True
                 return [f_ for (f_,) in self.con.execute(
                     f"SELECT f.id FROM chunks c JOIN files f ON f.id=c.file WHERE c.id IN ({qm}) ORDER BY f.mtime DESC", cids)]
         return []
@@ -989,6 +1004,9 @@ class Finder:
                     r["results"] = [r["results"][j]] + r["results"][:j] + r["results"][j + 1:]; r["xling"] = 1
                 elif r["results"]:
                     xf = self.xling_named(q, r["results"])   # not in the top 10: from all names (field: 0.2.13 found it only below rank 10)
+                    if len(xf) > 1 and self._xl_partial:   # names that carry the same part of the question: their content decides
+                        pool_ = self.files_out(xf[:NCAND])   # ('<brand> 스마트폰 …': one product's copy deck, not another's)
+                        xf = [x["fid"] for _, x in sorted(zip(ce_scores(q, pool_), pool_), key=lambda t: -t[0])]
                     if xf:
                         at = next((i for i, x in enumerate(r["results"]) if x["fid"] == xf[0]), None)
                         top_ = [r["results"].pop(at)] if at is not None else self.files_out(xf[:1])
@@ -1784,16 +1802,39 @@ def xling_sets(q):
     return [i for i in (strict, loose if loose != strict else []) if i]
 
 
-def xling_cover(name, ideas):
-    """(the name carries every idea, at least one of them by an English translation or sound); an idea starting with '?'
-    is optional, and at least two ideas must be carried"""
+def _xling_hits(name, ideas):
+    """for each idea, the spelling of it found in the name (None if none), with the optional flags and the bare ideas"""
     nm = unicodedata.normalize("NFC", name or "").lower()
     opt = [idea[:1] == ["?"] for idea in ideas]
     ideas = [idea[1:] if o else idea for idea, o in zip(ideas, opt)]
     hit = [next((sp for sp in idea if (_sounds_in(sp[1:], nm) if sp[:1] == "~" else sp in nm if len(sp) > 3 or re.match(r"[가-힣]", sp)
                                        else re.search(rf"(?<![a-z]){re.escape(sp)}(?![a-z])", nm))), None) for idea in ideas]
+    return hit, opt, ideas
+
+
+def xling_cover(name, ideas):
+    """(the name carries every idea, at least one of them by an English translation or sound); an idea starting with '?'
+    is optional, and at least two ideas must be carried"""
+    hit, opt, ideas = _xling_hits(name, ideas)
     full = all(h or o for h, o in zip(hit, opt)) and sum(bool(h) for h in hit) >= 2
     return full, any(h and h != idea[0] for h, idea in zip(hit, ideas))
+
+
+def xling_partial(name, ideas):
+    """XLING_PARTIAL=1 (off by default): how many ideas the name carries by English translation, when it carries at least
+    half of a 3+ idea question and at least two of them in English; else 0. A file name is short and people describe more
+    than it holds: a question names the product, the kind of device and what the file is ('<brand> 스마트폰 광고 문구'), the
+    name keeps the brand and one word for the content ('<Brand>_<model>_copy deck'). Every-idea rules then never fire"""
+    if len(ideas) < 3:
+        return 0
+    hit, _, ideas = _xling_hits(name, ideas)
+    en = sum(1 for h, idea in zip(hit, ideas) if h and h != idea[0])
+    return en if en >= 2 and sum(bool(h) for h in hit) * 2 >= len(ideas) else 0
+
+
+def xling_carried(name, ideas):
+    """how many ideas of the question the name carries, in either script"""
+    return sum(bool(h) for h in _xling_hits(name, ideas)[0])
 
 
 def xling_name_first(q, res, top=10):

@@ -142,6 +142,43 @@ def test_xling_named_beyond_the_top_10(tmp_path):
     assert search.xling_cover("갤럭시_광고_문구.hwp", search.xling_ideas("갤럭시 광고 문구")) == (True, False)   # same script
 
 
+def test_xling_partial_names(tmp_path, monkeypatch):
+    """XLING_PARTIAL=1: a 3+ idea question whose file name keeps only some ideas ('갤럭시 스마트폰 광고 문구' for
+    Galaxy_X1_copy_deck.pptx: galaxy and copy, no ad, no phone) is found from all names when at least half the ideas are
+    carried, two of them in English. Off by default; a name that carries every idea still comes first; two ideas or one
+    English word are not enough; too many equally good names are not a name search"""
+    import sqlite3
+    con = sqlite3.connect(tmp_path / "i.db")
+    con.executescript("CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT, name TEXT, ext TEXT, size INT, mtime REAL, tier INT);"
+                      "CREATE TABLE chunks(id INTEGER PRIMARY KEY, file INT, n INT, text TEXT);")
+    rows = [(1, "Galaxy_X1_copy_deck_v1.pptx", 1, 1), (2, "Galaxy_X1_copy_deck_v2.pptx", 5, 1), (3, "galaxy_wallpaper.png", 9, 1),
+            (4, "Galaxy_copy_lib.py", 9, 2), (5, "copy_of_notes.txt", 9, 1)]
+    for fid, nm, mt, tier in rows:
+        con.execute("INSERT INTO files VALUES(?,?,?,?,1,?,?)", (fid, "/d/" + nm, nm, nm.rsplit(".", 1)[1], mt, tier))
+        con.execute("INSERT INTO chunks VALUES(?,?,0,'')", (fid * 10, fid))
+    f = search.Finder.__new__(search.Finder); f.con = con; f.name_rows = None
+    q = "갤럭시 스마트폰 광고 문구"
+    assert f.xling_named(q) == []   # off by default: every idea, as before
+    monkeypatch.setenv("XLING_PARTIAL", "1")
+    assert f.xling_named(q) == [2, 1]   # galaxy + copy (2 of 4, both in English), newest first; library file (tier 2) out
+    assert f.xling_named("갤럭시 광고 문구") == [2, 1]   # 2 of 3
+    assert f.xling_named("갤럭시 배경화면") == []   # two ideas: the every-idea rule decides, not this one
+    assert f.xling_named(q, [{"name": "Galaxy_copy_notes.md"}]) == []   # the top 10 already holds such a name
+    assert f.xling_named(q, [{"name": "갤럭시 광고 초안.hwp"}]) == []   # ... or one that carries as much in Korean
+    assert f.xling_named(q, [{"name": "광고_메모.txt"}]) == [2, 1]   # one idea in the top 10 is less than two
+    assert search.xling_partial("갤럭시_광고_문구_초안.hwp", search.xling_ideas(q)) == 0   # same script: no English idea
+    assert search.xling_partial("galaxy_wallpaper.png", search.xling_ideas(q)) == 0   # one English idea of four
+    for i in range(60):   # sixty names that carry the same two ideas: a pair of common words, not a name search
+        con.execute("INSERT INTO files VALUES(?,?,?,'txt',1,1,1)", (100 + i, f"/d/galaxy_copy_{i}.txt", f"galaxy_copy_{i}.txt"))
+        con.execute("INSERT INTO chunks VALUES(?,?,0,'')", (1000 + i, 100 + i))
+    f.name_rows = None
+    assert f.xling_named(q) == []
+    con.execute("INSERT INTO files VALUES(9,'/d/Galaxy_Ad_Copy.docx','Galaxy_Ad_Copy.docx','docx',1,2,1)")
+    con.execute("INSERT INTO chunks VALUES(90,9,0,'')"); f.name_rows = None
+    assert f.xling_named("갤럭시 광고 문구") == [9]   # every idea carried: the strict rule, before any partial one
+    assert f.xling_named(q) == [9]   # 3 of 4 beats the sixty names with 2 of 4: only the names that carry most count
+
+
 def test_xling_words_no_name_has(monkeypatch):
     """people ask with words no file name carries ('블러 적용해 보는 예제': 적용해, 보는); those no longer block the English name,
     but a name that carries every word of the question, in Korean, still wins over the looser English match"""
