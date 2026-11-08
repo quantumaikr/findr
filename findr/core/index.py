@@ -352,6 +352,14 @@ def main():
         con.execute("INSERT OR REPLACE INTO meta VALUES('encoder', ?)", (a.model,))   # known from the start: search works while indexing (#9)
     key = (lambda x: nfc(x).casefold()) if os.name == "nt" else nfc   # Windows folder names ignore case
     excl = {key(Path(x).as_posix()).rstrip("/") for x in os.environ.get("FINDR_EXCLUDE", "").split(os.pathsep) if x}
+    try:   # findr's own checkout and data folder inside a chosen folder: not the person's files (#66); a chosen root itself stays
+        from scope import own_dirs
+    except ImportError:
+        from .scope import own_dirs
+    for d in own_dirs():
+        k = key(d.as_posix()).rstrip("/")
+        if not any(key(Path(r).resolve().as_posix()).rstrip("/") in (k,) or key(Path(r).resolve().as_posix()).startswith(k + "/") for r in roots):
+            excl.add(k)
     if excl:   # folders this PC chose not to search (exclude.txt): files already indexed under them leave the index
         ids = [i for i, raw in con.execute("SELECT id, path FROM files") if (s := key(raw)) in excl or any(s.startswith(x + "/") for x in excl)]
         for fid in ids:

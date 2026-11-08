@@ -14,9 +14,9 @@ from . import paths
 
 OWN = os.environ.get("FINDR_MODEL_REPO", "quantumaikr/findr-models")   # rank/, gate/, qu/ (private while in testing)
 PUBLIC = {   # folder -> (repository, files or None for all, what it is for)
-    "embeddinggemma-2": ("google/embeddinggemma-2", None, "의미 검색 (GPU)"),
+    "embeddinggemma-2": ("google/embeddinggemma-2", None, "더 정확한 의미 검색 (큰 모델)"),
     "multilingual-e5-small": ("intfloat/multilingual-e5-small", ["*.json", "model.safetensors", "sentencepiece.bpe.model", "1_Pooling/*"],
-                              "의미 검색 (GPU 없는 PC)"),
+                              "의미 검색 (작은 모델)"),
     "checker": ("Qwen/Qwen3-1.7B-GGUF", ["Qwen3-1.7B-Q8_0.gguf"], "후보 나란히 비교 (GPU)"),
     "kanana-2-v-decide-3b-2611": ("kakaocorp/kanana-2-v-decide-3b-2611", None, "사진 내용 검색 (GPU 8GB 이상)"),
 }

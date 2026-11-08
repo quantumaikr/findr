@@ -417,6 +417,7 @@ def chat_json(prompt, max_tokens):
 
 class Finder:
     def __init__(self, db, model="bge-m3"):
+        self.db_uri = Path(db).expanduser().resolve().as_uri() + "?mode=ro"   # the reload thread reads on its own connection
         self.con = sqlite3.connect(Path(db).expanduser(), check_same_thread=False)
         import unicodedata as _ud
         self.con.create_function("nfc", 1, lambda s: _ud.normalize("NFC", s) if s else s, deterministic=True)
@@ -441,7 +442,9 @@ class Finder:
         print(f"FINDR_READY chunks {len(self.ids)} packages {len(self.pkgs)}", flush=True)
 
     def refresh(self, every=60):
-        """an index that grew while the page was open (background indexing): pick up new vectors without a restart"""
+        """an index that grew while the page was open (background indexing): pick up new vectors without a restart.
+        The question only looks whether the index changed; reading the vectors happens on a thread, and the question is
+        answered from the vectors already loaded (#67: questions during indexing stalled 8-11 s in the reload)"""
         now = time.time()
         if now - getattr(self, "_seen_at", 0) < every:
             return
@@ -450,20 +453,40 @@ class Finder:
         if dv == getattr(self, "_dv", None):
             return   # nothing new: skip the count below, a full scan of chunks (~25 s on a 5 GB index, every minute) (#21)
         self._dv = dv
-        n = self.con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL").fetchone()[0]
-        top = self.con.execute("SELECT max(id) FROM chunks").fetchone()[0] or 0
-        from enc_eg2 import encoder_of, make_encoder
-        e_ = encoder_of(self.con)
-        if n == len(self.ids) and top == getattr(self, "_top", top) and e_ == self.encoder:   # (an idle-time upgrade switches the encoder, counts unchanged)
-            self._top = top
-            return
-        if e_ in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and e_ != self.encoder:   # the index now records another encoder (#9)
-            self.encoder = e_; self.enc = make_encoder(e_, DEVICE, max_len=128)
-        rows = self.con.execute("SELECT c.id, c.emb FROM chunks c WHERE c.emb IS NOT NULL").fetchall()
-        self.ids = np.array([r[0] for r in rows], dtype=np.int64)
-        self.M = np.stack([np.frombuffer(r[1], np.float16) for r in rows]).astype(np.float32) if rows else np.zeros((0, len(self.qvec("준비"))), np.float32)
-        self.Mg = None; self.name_rows = None; self._top = top
-        print(f"FINDR_RELOAD vectors {len(self.ids)}", flush=True)
+        if getattr(self, "_reloading", False):
+            return   # the thread already running picks this up when it reads
+        self._reloading = True
+        threading.Thread(target=self._reload, daemon=True).start()
+
+    def _reload(self):
+        """read the vectors on its own connection, then swap them in at once (a search sees the old set or the new one)"""
+        try:
+            from enc_eg2 import encoder_of, make_encoder
+            con = sqlite3.connect(self.db_uri, uri=True, check_same_thread=False)
+            try:
+                n = con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL").fetchone()[0]
+                top = con.execute("SELECT max(id) FROM chunks").fetchone()[0] or 0
+                e_ = encoder_of(con)
+                if n == len(self.ids) and top == getattr(self, "_top", top) and e_ == self.encoder:   # (an idle-time upgrade switches the encoder, counts unchanged)
+                    self._top = top
+                    return
+                enc = make_encoder(e_, DEVICE, max_len=128) if e_ in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and e_ != self.encoder else None
+                rows = con.execute("SELECT c.id, c.emb FROM chunks c WHERE c.emb IS NOT NULL").fetchall()
+            finally:
+                con.close()
+            ids = np.array([r[0] for r in rows], dtype=np.int64)
+            M = np.stack([np.frombuffer(r[1], np.float16) for r in rows]).astype(np.float32) if rows else None
+            with SEARCH_LOCK:
+                if enc is not None:   # the index now records another encoder (#9)
+                    self.encoder = e_; self.enc = enc
+                self.ids = ids
+                self.M = M if M is not None else np.zeros((0, len(self.qvec("준비"))), np.float32)
+                self.Mg = None; self.name_rows = None; self._top = top
+            print(f"FINDR_RELOAD vectors {len(ids)}", flush=True)
+        except Exception as e:   # a failed reload keeps the vectors the page already has
+            print(f"FINDR_RELOAD failed {type(e).__name__}", flush=True)
+        finally:
+            self._reloading = False
 
     def load_scan(self):
         if getattr(self, "name_rows", None) is not None:
@@ -1274,7 +1297,11 @@ def photo_text_vec(q):
         _PHOTO_UP[:] = [time.time(), False]
         raise
     return np.frombuffer(base64.b64decode(o["vec"]), np.float16).astype(np.float32), float(o["scale"])
-NCAND = int(os.environ.get("NCAND") or (15 if DEVICE == "cpu" else 30))   # candidates reranked (15 for the CPU ranker, 2026-11-06)
+# candidates reranked. CPU: the first stage's top 5 only, a light check that keeps the 'not here' judgement and the
+# name / version rules (2026-11-08, 4 cores, 120 real-PC questions: 15 candidates 2.5 s median and 3.8 s slowest tenth,
+# 5 candidates within 1.5 s per question 1.1 s and 1.4 s at the same accuracy; no reranking 0.04 s but top-1 25 -> 17
+# and no 'not here' at all)
+NCAND = int(os.environ.get("NCAND") or (5 if DEVICE == "cpu" else 30))
 CE_MAXLEN = int(os.environ.get("CE_MAXLEN") or (256 if DEVICE == "cpu" else 384))   # ranker input length (256 for the CPU ranker)
 _OLD_NCAND = 30   # candidates handed to the 4B (40 cost 1.1 s per rerank on 2026-11-04; set 1 had every found answer within 20)
 
@@ -1382,7 +1409,7 @@ def ce_scores(q, res, d=None, nosumm=None):
     if m.device.type == "cpu" and CE_RATE.get(d):
         # one budget for the whole question (CE_TOTAL s): the first pass gets up to CE_BUDGET, and later passes (repair,
         # memory cues) only what is left, at least 3 candidates. Per-call budgets used to add up to 15-20 s on a laptop.
-        left = float(os.environ.get("CE_TOTAL") or 4) - (time.time() - _QT[0])
+        left = float(os.environ.get("CE_TOTAL") or 1.5) - (time.time() - _QT[0])   # 1.5 s per question (was 4: 3.8 s slowest tenth)
         cap = min(float(os.environ.get("CE_BUDGET") or 3), max(left, 0.0))
         n = min(n, max(3 if left < 1 else 5, int(cap / CE_RATE[d])))   # never more than there are (a small index has fewer than 5)
     t_ = time.time()
@@ -1752,7 +1779,17 @@ def _stage_timers():
 def _slow_line(res, mode, total):
     d = getattr(_ST, "d", None) or {}
     st = {k: int(v * 1000) for k, v in sorted(d.items(), key=lambda kv: -kv[1]) if v >= 0.01}
-    print("FINDR_SLOW " + json.dumps({"ms": int(total * 1000), "route": mode, "n": len(res.get("results") or []), "stages": st}), flush=True)
+    line = "FINDR_SLOW " + json.dumps({"ms": int(total * 1000), "route": mode, "n": len(res.get("results") or []), "stages": st})
+    print(line, flush=True)
+    try:   # also in the data folder's logs, where the tester guide looks (#67: CLI serve printed it to the terminal only)
+        lg = Path(os.environ.get("FINDR_DATA") or (Path.home() / ".findr")) / "logs" / "slow.log"
+        lg.parent.mkdir(parents=True, exist_ok=True)
+        if lg.exists() and lg.stat().st_size > 1_000_000:
+            lg.unlink()
+        with open(lg, "a", encoding="utf-8") as fo:
+            fo.write(time.strftime("%Y-%m-%d %H:%M:%S ") + line + "\n")
+    except OSError:
+        pass
 
 
 def _local_request(h):
@@ -2075,7 +2112,10 @@ def serve(f, port):
         threading.Thread(target=warm, daemon=True).start()
     else:
         READY.set()
-    httpd.serve_forever()
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:   # Ctrl+C: one line, not a traceback (#67); the helper servers stop with the process
+        print("검색 화면을 껐습니다.", flush=True)
 
 
 def main():
