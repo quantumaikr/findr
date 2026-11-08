@@ -2,8 +2,16 @@
 person's files through findr.
 
 Tools
-  search_files(query, limit)   the files most likely meant, with the odds, where they are and a short excerpt
+  search_files(query, limit, kind, since, until, folder)   the files most likely meant, with the odds, where they are and
+                               a short excerpt; optionally only one kind of file, a period, or one folder
   read_file(path, max_chars)   the text findr already read from one indexed file
+  list_folder(path, limit)     what one folder holds, newest first, and its subfolders: to look around the way a person
+                               does once a search shows roughly where something is (a photo with no text, a project folder)
+  versions(path)               the same document's other files: exact copies anywhere, other versions in its folder, the
+                               same name in other folders, with dates, so the latest or the original can be picked
+
+The last two and the filters came from real-PC runs (11/9): agents with search_files alone needed 2-4 calls, and said a
+kind filter, a folder view and a version view would have ended most of them in one.
 
 It asks the running search engine when it is up (full quality: meaning, reranking, odds). Without it, it searches the
 index directly by names and words. read_file returns only files in the index, from the text findr stored; it never opens
@@ -11,6 +19,7 @@ other paths. What the tools return goes to the assistant that called them, so th
 whether it leaves the PC."""
 import json
 import os
+import re
 import sqlite3
 import unicodedata
 import urllib.parse
@@ -83,17 +92,26 @@ def _day(mt):
         return ""
 
 
-def _index_search(query, limit):
-    """names and words straight from the index (the engine is not running)"""
+def _index_search(query, limit, exts=None, folder=""):
+    """names and words straight from the index (the engine is not running, or inside a filter the engine's list missed)"""
     con = _db()
     if con is None:
         return {"results": [], "note": "findr has not indexed this PC yet. Open the findr app, or run: findr index", "engine": "none"}
     words = [w for w in unicodedata.normalize("NFC", query).split() if len(w) >= 2][:6]
-    if not words:
+    if not words and not (exts or folder):
         return {"results": [], "note": "", "engine": "index"}
     seen, out = set(), []
-    sql = "SELECT id, path, name, mtime FROM files WHERE tier IN (1,3) AND " + " AND ".join(["lower(nfc(name)) LIKE ?"] * len(words)) + " ORDER BY mtime DESC LIMIT ?"
-    rows = con.execute(sql, [f"%{w.lower()}%" for w in words] + [limit]).fetchall()
+    extra, xargs = "", []
+    if exts:
+        extra += f" AND ext IN ({','.join('?' * len(exts))})"; xargs += sorted(exts)
+    if folder:
+        extra += " AND replace(nfc(path), '\\', '/') LIKE ? ESCAPE '\\'"
+        xargs.append(_norm(folder).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%")
+    # every word in the name; inside a filter, any word will do (the filter already narrows it)
+    join = " OR " if (exts or folder) else " AND "
+    namec = ("(" + join.join(["lower(nfc(name)) LIKE ?"] * len(words)) + ")") if words else "1"
+    sql = f"SELECT id, path, name, mtime FROM files WHERE tier IN (1,3) AND {namec}{extra} ORDER BY mtime DESC LIMIT ?"
+    rows = con.execute(sql, [f"%{w.lower()}%" for w in words] + xargs + [limit]).fetchall()
     try:   # words inside documents (3-letter index)
         fq = " OR ".join('"' + w.replace('"', "") + '"' for w in words if len(w) >= 3)
         if fq:
@@ -113,13 +131,136 @@ def _index_search(query, limit):
                                     "Open the findr app (or run: findr serve) for better results.", "engine": "index"}
 
 
-def search_files(query: str, limit: int = 8) -> dict:
+KINDS = {"pdf": {".pdf"}, "word": {".docx", ".doc", ".odt", ".rtf", ".pages"}, "hwp": {".hwp", ".hwpx"},
+         "slides": {".pptx", ".ppt", ".key", ".odp"}, "sheet": {".xlsx", ".xls", ".csv", ".numbers", ".ods"},
+         "image": {".jpg", ".jpeg", ".png", ".heic", ".webp", ".gif", ".bmp", ".tif", ".tiff"},
+         "text": {".txt", ".md"}, "audio": {".mp3", ".m4a", ".wav", ".aac", ".ogg"},
+         "video": {".mp4", ".mov", ".avi", ".mkv", ".webm"}}
+
+
+def _exts(kind):
+    """'pdf', 'slides', '.key' or 'image,pdf' -> the extensions; None for any"""
+    if not kind:
+        return None
+    out = set()
+    for k in str(kind).lower().replace(" ", "").split(","):
+        out |= KINDS.get(k, {k if k.startswith(".") else "." + k})
+    return out
+
+
+def _norm(p):
+    return unicodedata.normalize("NFC", str(p or "")).replace("\\", "/").rstrip("/")
+
+
+def _fits(x, exts, since, until, folder):
+    """one result against the filters (names, 'modified' dates as YYYY-MM-DD..., folder as a path prefix)"""
+    if exts and os.path.splitext(x.get("name") or "")[1].lower() not in exts:
+        return False
+    day = (x.get("modified") or "")[:10]
+    if since and (not day or day < since[:10]):
+        return False
+    if until and (not day or day > until[:10]):
+        return False
+    if folder and not _norm(x.get("path")).lower().startswith(_norm(folder).lower() + "/"):
+        return False
+    return True
+
+
+def search_files(query: str, limit: int = 8, kind: str = "", since: str = "", until: str = "", folder: str = "") -> dict:
     """Find files on this PC from a vague description, the way a person remembers them: what the file was about, roughly
     when, who sent it, which version ('the draft before the final'). Korean and English. Returns the likely files, best
     first, with 'chance' (0-1) that each is the one meant, where it is, when it was modified, and a short excerpt.
-    A note says when nothing is a sure match. Ask the person before opening or using a file they did not mean."""
+    A note says when nothing is a sure match. Ask the person before opening or using a file they did not mean.
+    Optional filters: kind (pdf, word, hwp, slides, sheet, image, text, audio, video, or extensions like '.key';
+    several with commas), since / until (YYYY-MM-DD, by modified date), folder (only inside this folder). Use them when
+    the person said the format, the period or the place, or when a first search came back with the wrong kind of file."""
     limit = max(1, min(int(limit or 8), 30))
-    return _engine_search(query, limit) or _index_search(query, limit)
+    exts = _exts(kind)
+    if not (exts or since or until or folder):
+        return _engine_search(query, limit) or _index_search(query, limit)
+    r = _engine_search(query, 50) or _index_search(query, 50, exts=exts, folder=folder)   # wider, then the filters
+    kept = [x for x in r["results"] if _fits(x, exts, since, until, folder)]
+    if len(kept) < limit:   # the index itself, inside the filters, for what the ranked list did not hold
+        seen = {x["path"] for x in kept}
+        kept += [x for x in _index_search(query, 50, exts=exts, folder=folder)["results"]
+                 if x["path"] not in seen and _fits(x, exts, since, until, folder)]
+    r = dict(r); r["results"] = kept[:limit]
+    r["filters"] = {k: v for k, v in (("kind", kind), ("since", since), ("until", until), ("folder", folder)) if v}
+    if not r["results"]:
+        r["note"] = "Nothing matched inside these filters. Try without one of them, or list_folder to look around."
+    return r
+
+
+def list_folder(path: str, limit: int = 50) -> dict:
+    """What one folder on this PC holds (as findr indexed it): its files, newest first, with dates and sizes, and its
+    subfolders with how many files each has. Give a folder, or a file to see the folder it is in. Use it to look around
+    once a search shows roughly where something is: photos and scans with no text, a project or event folder."""
+    con = _db()
+    if con is None:
+        return {"error": "findr has no index on this PC yet"}
+    limit = max(1, min(int(limit or 50), 200))
+    p = _norm(path)
+    if con.execute("SELECT 1 FROM files WHERE replace(nfc(path), '\\', '/') = ?", (p,)).fetchone():
+        p = p.rsplit("/", 1)[0]   # a file: its folder
+    pre = p + "/"
+    esc = pre.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    files, sub, here = [], {}, 0
+    for fp, name, size, mt in con.execute("SELECT path, name, size, mtime FROM files WHERE tier IN (1,3) AND "
+                                          "replace(nfc(path), '\\', '/') LIKE ? ESCAPE '\\' ORDER BY mtime DESC", (esc + "%",)):
+        rest = _norm(fp)[len(pre):]
+        if "/" in rest:
+            d = rest.split("/", 1)[0]; sub[d] = sub.get(d, 0) + 1
+        else:
+            here += 1
+            if len(files) < limit:
+                files.append({"name": name, "path": fp, "modified": _day(mt), "size": size})
+    if not files and not sub:
+        return {"folder": p, "files": [], "folders": [], "note": "findr has nothing indexed in this folder"}
+    return {"folder": p, "files": files, "more_files": here - len(files),
+            "folders": [{"name": d, "path": pre + d, "files": n} for d, n in sorted(sub.items(), key=lambda kv: -kv[1])]}
+
+
+_VMARK = re.compile(r"([._\- ]?(rev|v|ver)\.?\d+(\.\d+)?|[._\- ]?(old|orig|backup|final|draft|최종|진짜최종|초안|수정본?|백업|"
+                     r"복사본|사본|\d+차본?|copy)|\s*\(\d+\)|[._\-]\d{4,8})(?=[._\- ]|$)", re.I)
+
+
+def _stem(name):
+    s = os.path.splitext(unicodedata.normalize("NFC", name or ""))[0]
+    for _ in range(3):
+        s = _VMARK.sub("", s).strip(" ._-")
+    return s.lower()
+
+
+def versions(path: str) -> dict:
+    """The same document's other files on this PC, so the right one can be picked: exact copies anywhere (same format,
+    size and text), other versions in the same folder (v2, 최종, (1), dates in the name), and files with the same name in
+    other folders. Each with its folder and modified date. Use it when a result may be a copy, a draft or last year's."""
+    con = _db()
+    if con is None:
+        return {"error": "findr has no index on this PC yet"}
+    p = _norm(path)
+    row = con.execute("SELECT id, name, ext, size, path FROM files WHERE replace(nfc(path), '\\', '/') = ?", (p,)).fetchone()
+    if not row:
+        return {"error": "not a file in findr's index; use a path returned by search_files"}
+    fid, name, ext, size, fp = row
+    head = (con.execute("SELECT text FROM chunks WHERE file=? AND n=0", (fid,)).fetchone() or [""])[0] or ""
+    st, folder = _stem(name), p.rsplit("/", 1)[0]
+    out, seen = [], {fid}
+    if size:
+        for f2, n2, p2, mt in con.execute("SELECT f.id, f.name, f.path, f.mtime FROM files f WHERE f.ext=? AND f.size=? AND f.id<>? "
+                                          "AND (SELECT text FROM chunks c WHERE c.file=f.id AND c.n=0) IS ?", (ext, size, fid, head or None)):
+            out.append({"relation": "copy", "name": n2, "path": p2, "modified": _day(mt)}); seen.add(f2)
+    for f2, n2, p2, mt in con.execute("SELECT id, name, path, mtime FROM files WHERE tier IN (1,3) AND nfc(name) LIKE ?", (f"%{st[:20]}%",)):
+        if f2 in seen or _stem(n2) != st:
+            continue
+        seen.add(f2)
+        rel = "version" if _norm(p2).rsplit("/", 1)[0] == folder else "same name elsewhere"
+        out.append({"relation": rel, "name": n2, "path": p2, "modified": _day(mt)})
+    out.sort(key=lambda x: x["modified"], reverse=True)   # newest first, then grouped: copies, versions, elsewhere
+    out.sort(key=lambda x: {"copy": 0, "version": 1}.get(x["relation"], 2))
+    me = con.execute("SELECT mtime FROM files WHERE id=?", (fid,)).fetchone()[0]
+    return {"file": {"name": name, "path": fp, "modified": _day(me)}, "others": out[:30],
+            "note": "" if out else "No other copy or version of this file is indexed."}
 
 
 def read_file(path: str, max_chars: int = 4000) -> dict:
@@ -149,7 +290,11 @@ def main():
     except ImportError:   # 1.x
         from mcp.server.fastmcp import FastMCP as Server
     srv = Server("findr", instructions="Search the files on this person's PC by description (findr). "
-                                       "Use search_files first; read_file only for a path it returned.")
+                                       "Use search_files first (with kind / since / until / folder when the person said the "
+                                       "format, period or place); read_file only for a path it returned. To look around "
+                                       "where a result is, list_folder; to pick between copies, drafts and versions, versions.")
     srv.tool()(search_files)
     srv.tool()(read_file)
+    srv.tool()(list_folder)
+    srv.tool()(versions)
     srv.run()
