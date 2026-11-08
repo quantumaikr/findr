@@ -107,6 +107,24 @@ def _inside(p, k):
         return False
 
 
+_FINDR_NAME = re.compile(r'^\s*name\s*=\s*["\']findr(-ai)?["\']\s*$', re.M)
+
+
+def is_findr_checkout(d):
+    """a copy of the findr repository, whichever one is running: findr/core/ next to a pyproject.toml whose project is findr
+    (findr-ai). A second clone, an older install or a git worktree on the same PC is not the person's files either: its
+    tests and docs hold the example office questions findr is tried with ('회의록', '사업계획서') and outranked the person's
+    documents (#119)"""
+    d = Path(d)
+    try:
+        if not (d / "findr" / "core").is_dir():
+            return False
+        with open(d / "pyproject.toml", encoding="utf-8", errors="replace") as f:
+            return bool(_FINDR_NAME.search(f.read(4096)))
+    except OSError:
+        return False
+
+
 def own_dirs():
     """findr's own folders: a source checkout (git clone in the home folder) and the data folder. Whole-PC search indexed
     findr's README and code, and they came up for questions about the person's files (#66)"""
@@ -148,7 +166,7 @@ def user_roots(mnt="/mnt"):
                     and not n.startswith(("onedrive", "google drive", "dropbox")) and not skip_dir("", p.name) and not _hidden_or_system(p)
             except OSError:
                 ok = False
-            if ok and p.resolve() not in seen:
+            if ok and p.resolve() not in seen and not is_findr_checkout(p):   # another copy of findr is not a root either (#119)
                 seen.add(p.resolve()); out.append((5, "홈 폴더 기타", p))
     for drv in drives:
         try:
@@ -160,7 +178,7 @@ def user_roots(mnt="/mnt"):
                 ok = t.is_dir() and not is_link(t) and not skip_dir("/", t.name) and not _hidden_or_system(t)   # junctions point back into Users
             except OSError:
                 continue
-            if ok and t.resolve() not in seen:
+            if ok and t.resolve() not in seen and not is_findr_checkout(t):
                 seen.add(t.resolve()); out.append((6, f"{(drv.name or drv.drive).rstrip(':').rstrip(chr(92)).upper()}: 기타 폴더", t))
     out = sorted(out, key=lambda x: x[0])
     kept = []   # a folder inside another chosen folder is walked with it (no double scan)
