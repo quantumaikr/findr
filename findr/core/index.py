@@ -437,7 +437,13 @@ def main():
                 from scope import skip_dir, app_profile
                 if app_profile(fns):
                     dns[:] = []; continue   # an app's embedded-browser profile (CapCut's CEF folder in ~/Movies)
-                rel = "/" if Path(dp) == root else ""
+                # the parent's path from the root: system names (windows, users, drivers, samsung ...) are skipped only at the
+                # top. rel was "" below the top, which skip_dir took as the top too: a person's own 'users' or 'drivers'
+                # folder anywhere in a project left the index (Mac Air, 11/9: 300 files of a web app's users/ code)
+                try:
+                    rel = "/" if Path(dp) == root else (Path(dp).relative_to(root).as_posix() or "?")
+                except ValueError:
+                    rel = "?"   # not under the root as written (a different spelling): below the top all the same
                 dns[:] = [d for d in dns if not skip_dir(rel, d)]
             if excl:
                 dns[:] = [d for d in dns if key((Path(dp) / d).as_posix()) not in excl]
