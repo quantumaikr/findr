@@ -38,11 +38,23 @@ uv pip install --python .venv/bin/python -e .      # git pull은 새 의존성�
 
 | 알고 싶은 것 | 방법 |
 |---|---|
+| PC마다 같은 기준으로: 준비 시간, 응답 시간, 결과 개수 | `tools/field_check.py` (아래) |
 | 맞는 파일이 몇 위인가, 얼마나 걸리는가 | `tools/acceptance.py` (아래) |
 | 느린 순간 프로세스가 무엇을 하는가 | macOS `sample <pid> 4`, 그 밖에는 `faulthandler.dump_traceback_later`. 추측하기 전에 스택을 본다 |
 | SQL이 표 전체를 읽는가 | `sqlite3 <db> "EXPLAIN QUERY PLAN <쿼리>"`에서 `SCAN`, `/usr/bin/time -p sqlite3 …`로 시간 (L15) |
 | 모델 한 단계의 속도 | 같은 입력으로 그 함수만, 워밍업 1회 뒤 중앙값 (L5) |
 | 단계별로 언제 무엇이 되는가 | `FINDR_STAGE` 출력과 `progress.json`의 시각 (L13) |
+
+### tools/field_check.py
+
+정답 목록 없이, 모든 PC에서 같은 질문 10개로 잽니다. PC 사양, 색인 크기, 엔진 준비까지 걸린 시간, 질문별 응답 시간과 대기 시간, k=10·30 결과 개수, "없는 파일" 질문의 답을 숫자로만 남깁니다. 파일 이름은 결과에 들어가지 않으므로 `field_check.json`을 그대로 이슈에 붙여도 됩니다.
+
+```bash
+./findr.sh serve --no-browser &
+.venv/bin/python tools/field_check.py --rounds 3 --ask
+```
+
+마지막에 항목별로 `통과` / `확인 필요`를 보여 줍니다. 결과 개수가 k보다 적은데 안내 문구도 없으면 `확인 필요`입니다(#83). 느린 10%가 3초를 넘어도 `확인 필요`입니다. 버전을 올리기 전후로 같은 PC에서 돌려 비교합니다.
 
 ### tools/acceptance.py
 
