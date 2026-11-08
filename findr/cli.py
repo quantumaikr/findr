@@ -138,6 +138,21 @@ def _ram_gb():
     return models.ram_gb()
 
 
+def _index_encoder(db=None):
+    """the meaning model the index was built with ('' without an index); read-only, the engine may be writing"""
+    import sqlite3
+    db = Path(db or paths.DB)
+    if not db.exists():
+        return ""
+    try:
+        con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=5)
+        r = con.execute("SELECT value FROM meta WHERE key='encoder'").fetchone()
+        con.close()
+        return r[0] if r else ""
+    except sqlite3.Error:
+        return ""
+
+
 def _upgrade_why_not(db):
     """'' when this index should move to the larger meaning model in idle time, else why not"""
     import shutil
@@ -373,6 +388,16 @@ def cmd_doctor(a):
             print("    → Visual C++ 런타임 업데이트: winget install Microsoft.VCRedist.2015+.x64")
     for w in want:
         print(f"  {'✓' if models.have(w) else '✗'} 모델 {w}")
+    used = _index_encoder()   # the list above is what this PC may have; the index says which meaning model it really uses
+    if used:
+        why = ""
+        try:
+            chk = json.loads((paths.HOME / "device_check.json").read_text())
+            if not chk.get("big_ok"):
+                why = f" (Apple GPU 자가 시험: 큰 모델 초당 {chk.get('pieces_per_s')}조각 → 작은 모델)"
+        except (OSError, ValueError):
+            pass
+        print(f"  ✓ 색인의 의미 모델: {used}{why}")
     if dev == "cpu":
         ox = (paths.MODELS / "rank" / "model_int8.onnx").exists()
         print(f"  {'✓' if ox or (paths.MODELS / 'rank' / 'model.safetensors').exists() else '✗'} 재정렬: {'가벼운 8비트 (CPU용)' if ox else '전체 정밀도'}")
