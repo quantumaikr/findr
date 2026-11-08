@@ -108,8 +108,16 @@ def big_ok():
 
 
 def have(folder):
+    """the model is there: files besides huggingface_hub's own .cache, and no download left half done. A dropped connection
+    used to leave .cache (or a few json files) behind, and every 다시 시도 then skipped the model and failed the check"""
     d = paths.MODELS / folder
-    return d.is_dir() and any(d.iterdir())
+    if not d.is_dir() or not any(p.name != ".cache" for p in d.iterdir()):
+        return False
+    if any((d / ".cache").rglob("*.incomplete")):
+        return False
+    if folder == "rank":   # our reranker: the weights themselves, not only its json files
+        return any(d.glob("*.safetensors")) or (d / "model_int8.onnx").exists()
+    return True
 
 
 def pull(folders, token=None):

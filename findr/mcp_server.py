@@ -75,6 +75,14 @@ def _db():
     return con
 
 
+def _day(mt):
+    try:   # a negative or odd mtime raised on Windows and failed the whole tool call
+        import datetime
+        return datetime.datetime.fromtimestamp(mt or 0).strftime("%Y-%m-%d")
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
 def _index_search(query, limit):
     """names and words straight from the index (the engine is not running)"""
     con = _db()
@@ -90,7 +98,7 @@ def _index_search(query, limit):
         fq = " OR ".join('"' + w.replace('"', "") + '"' for w in words if len(w) >= 3)
         if fq:
             rows += con.execute("""SELECT f.id, f.path, f.name, f.mtime FROM fts JOIN chunks c ON c.id = fts.rowid JOIN files f ON f.id = c.file
-                                   WHERE fts MATCH ? ORDER BY rank LIMIT ?""", (fq, limit * 3)).fetchall()
+                                   WHERE fts MATCH ? AND f.tier IN (1,3) ORDER BY rank LIMIT ?""", (fq, limit * 3)).fetchall()   # as the name search: no library or secret files
     except sqlite3.OperationalError:
         pass
     import datetime
@@ -98,7 +106,7 @@ def _index_search(query, limit):
         if fid in seen:
             continue
         seen.add(fid)
-        out.append({"name": name, "path": p, "modified": datetime.datetime.fromtimestamp(mt or 0).strftime("%Y-%m-%d"), "chance": None, "excerpt": ""})
+        out.append({"name": name, "path": p, "modified": _day(mt), "chance": None, "excerpt": ""})
         if len(out) >= limit:
             break
     return {"results": out, "note": "The findr search engine is not running, so this is a simple name and word search. "

@@ -42,7 +42,10 @@ def _encoder():
 def cmd_setup(a):
     dev, gb, want = models.plan(photo=False if a.no_photo else (True if a.photo else None), lite=a.lite)
     lite = paths.HOME / "lite"   # the person chose the small model: no idle-time upgrade either
-    lite.write_text("1") if a.lite else lite.unlink(missing_ok=True)
+    if a.lite:   # kept across plain setups: the app runs `findr setup` on every update, which used to undo the choice
+        lite.write_text("1")
+    elif getattr(a, "full", False):
+        lite.unlink(missing_ok=True)
     print(f"findr {__version__} 설치 | 장치: {dev}{f' ({gb:.0f}GB)' if gb else ''} | 데이터 폴더: {paths.HOME}")
     print("  받을 모델:", ", ".join(want))
     try:
@@ -126,7 +129,8 @@ def cmd_index(a):
         print(f"PC 전체의 내 파일을 색인합니다 (의미 모델: {enc}). 바탕화면·다운로드부터 — 진행 중에도 검색할 수 있습니다.")
         return subprocess.call(cmd, env=env, cwd=str(core))
     print(f"색인: 폴더 {len(a.paths)}개 (이름 → 내용 → 의미 순서, 모든 폴더 함께)", flush=True)
-    return subprocess.call([sys.executable, str(core / "index.py"), "--root", *[str(Path(p).expanduser()) for p in a.paths],
+    # absolute: the indexer runs in findr/core, so `findr index .` indexed findr itself and the next run crashed on its paths
+    return subprocess.call([sys.executable, str(core / "index.py"), "--root", *[os.path.abspath(Path(p).expanduser()) for p in a.paths],
                             "--db", str(a.db), "--model", enc], env=env, cwd=str(core))
 
 
@@ -186,7 +190,9 @@ def cmd_upgrade(a):
     (at most --minutes per run), then switch at once. Search keeps working with the small model until the switch."""
     why = _upgrade_why_not(a.db)
     if why:
-        print(f"큰 모델로 바꾸기: 하지 않음 ({why})"); return 1
+        print(f"큰 모델로 바꾸기: 하지 않음 ({why})")
+        # 3: not for this PC (the app stops asking); 4: not now (no index yet, disk full: asked again later)
+        return 4 if why == "색인 없음" or why.startswith("디스크") else 3
     if not models.have(UPGRADE_TO):
         print("  더 정확한 의미 모델 받는 중 (한 번, 약 1.2GB) ...", flush=True)
         models.pull([UPGRADE_TO])
@@ -321,6 +327,8 @@ def _ask_engine(q, k):
 
 def cmd_ask(a):
     q = " ".join(a.query)
+    if not Path(a.db).exists():   # Finder would create an empty index.db, and serve and doctor then failed on it
+        print("아직 색인이 없습니다. 먼저:  findr index"); return 1
     t = time.time()
     r = None if (a.local or Path(a.db).resolve() != paths.DB.resolve()) else _ask_engine(q, a.k)
     how = "실행 중인 검색 엔진"
@@ -457,7 +465,7 @@ def main(argv=None):
     ap.add_argument("--version", action="version", version=f"findr {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("setup", help="이 PC에 맞는 모델 받기")
-    s.add_argument("--lite", action="store_true", help="GPU가 있어도 작은 모델만"); s.add_argument("--photo", action="store_true", help="사진 내용 검색 모델도")
+    s.add_argument("--lite", action="store_true", help="GPU가 있어도 작은 모델만"); s.add_argument("--full", action="store_true", help="--lite 선택을 되돌림"); s.add_argument("--photo", action="store_true", help="사진 내용 검색 모델도")
     s.add_argument("--no-photo", action="store_true"); s.add_argument("--no-llm", action="store_true", help="llama-server 받지 않기")
     s.add_argument("--token", default=None, help="허깅페이스 토큰 (비공개 모델용)")
     s.set_defaults(fn=cmd_setup)

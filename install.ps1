@@ -15,6 +15,7 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 }
 Write-Host "[2/5] 전용 파이썬 환경 (.venv, Python 3.12)"
 uv venv .venv --python 3.12 --allow-existing
+if ($LASTEXITCODE -ne 0) { Write-Host "  파이썬 환경을 만들지 못했습니다. 인터넷 연결을 확인하고 다시 실행하세요."; exit 1 }
 $py = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
 
 $gpu = $false
@@ -22,9 +23,11 @@ try { if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) { nvidia-smi -L 
 if ($gpu) { $idx = "https://download.pytorch.org/whl/cu128"; Write-Host "[3/5] NVIDIA GPU 확인: GPU용 torch" }
 else      { $idx = "https://download.pytorch.org/whl/cpu";   Write-Host "[3/5] GPU 없음: CPU용 torch (작은 모델로 동작)" }
 uv pip install --python $py torch torchvision --index-url $idx
+if ($LASTEXITCODE -ne 0) { Write-Host "  PyTorch를 설치하지 못했습니다. 인터넷 연결과 디스크 여유 공간을 확인하고 다시 실행하세요."; exit 1 }
 
 Write-Host "[4/5] findr"
 uv pip install --python $py -e .
+if ($LASTEXITCODE -ne 0) { Write-Host "  findr를 설치하지 못했습니다. 위의 오류를 확인하고 다시 실행하세요."; exit 1 }
 Set-Content -Path (Join-Path $PSScriptRoot "findr.cmd") -Encoding ascii -Value "@echo off`r`n`"%~dp0.venv\Scripts\findr.exe`" %*"
 
 Write-Host "[5/5] 모델 받기 (처음 한 번, PC에 따라 1~10GB)"

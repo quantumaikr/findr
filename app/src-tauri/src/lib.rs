@@ -18,10 +18,19 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const ALT_DEPS: &str = "transformers @ https://github.com/quantumaikr/findr/releases/download/deps/transformers-5.23.0.dev0-py3-none-any.whl#sha256=a8b00f7db929ea8cc11c7422585f0ea99d72804e14b3978fb3dd3d9fed5a1ef6\n";
 
 struct Engine(Mutex<Option<Child>>);
+static ENGINE_PHOTO: Mutex<Option<bool>> = Mutex::new(None);   // the running engine's photo setting
 
 // one indexing run at a time: the background refresh and a run started from the app's screens
 static INDEXING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static REFRESHER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+// the person asked for an indexing run: background runs give way (a refresh or a deep run could hold the turn for hours on a
+// CPU laptop while the person's '바뀐 파일 반영' waited, and an upgrade waiting for the turn could take it first)
+static PERSON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static BG_RUN: Mutex<Option<u32>> = Mutex::new(None);   // the background refresh or deep run now going
+
+fn person_waiting() -> bool {
+    PERSON.load(std::sync::atomic::Ordering::SeqCst)
+}
 
 fn take_index_turn() {
     use std::sync::atomic::Ordering;
@@ -55,11 +64,13 @@ fn low_priority(prog: impl AsRef<std::ffi::OsStr>) -> Command {
 fn on_battery() -> bool {
     #[cfg(windows)]
     {
-        // BatteryStatus 2 = on AC; no battery at all (a desktop) prints nothing
+        // BatteryStatus per battery: 1 discharging, 4 low, 5 critical = on battery; 2 AC, 3 full, 6-9 charging, 11 partly
+        // charged (reported on AC too). Only "2" counted as AC before: two batteries ("2\r\n2"), a full or a charging battery
+        // kept background indexing off on a plugged-in laptop. No battery at all (a desktop) prints nothing.
         let out = command("powershell").args(["-NoProfile", "-Command", "(Get-CimInstance Win32_Battery).BatteryStatus"]).output();
         if let Ok(o) = out {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            return !s.is_empty() && s != "2";
+            let codes: Vec<u32> = String::from_utf8_lossy(&o.stdout).split_whitespace().filter_map(|x| x.parse().ok()).collect();
+            return !codes.is_empty() && codes.iter().all(|c| matches!(c, 1 | 4 | 5));
         }
         false
     }
@@ -140,6 +151,11 @@ fn start_upgrader() {
             };
             if h.join(".deep-done").exists() && !h.join(".upgrade-done").exists() && !h.join("upgrade_off").exists() && idle && !on_battery() {
                 take_index_turn();
+                if person_waiting() || on_battery() {
+                    give_index_turn(); // waited for the turn: the person's run first, and still on mains power
+                    thread::sleep(std::time::Duration::from_secs(600));
+                    continue;
+                }
                 let half = std::thread::available_parallelism().map(|n| (n.get() / 2).max(1)).unwrap_or(2);
                 let mut c = low_priority(python());
                 c.env("FINDR_THREADS", half.to_string()).env("OMP_NUM_THREADS", half.to_string());
@@ -173,8 +189,10 @@ fn start_upgrader() {
                 };
                 give_index_turn();
                 last_run = std::time::Instant::now();
-                if code == Some(0) || code == Some(1) {
-                    let _ = std::fs::write(h.join(".upgrade-done"), VERSION); // switched, or nothing to do on this PC
+                // 0 switched, 3 not for this PC: done. Anything else (no index yet, disk full, a dropped download, an error) is
+                // tried again later: exit code 1 used to end the upgrade for good and hide its switch in the settings
+                if code == Some(0) || code == Some(3) {
+                    let _ = std::fs::write(h.join(".upgrade-done"), VERSION);
                 }
             }
             thread::sleep(std::time::Duration::from_secs(600));
@@ -241,11 +259,15 @@ fn start_refresher() {
                     last_refresh = Some(std::time::Instant::now());
                 }
                 take_index_turn();
+                if person_waiting() {
+                    give_index_turn(); // the person's run first; this one comes round again in 10 minutes
+                    continue;
+                }
                 let log = std::fs::File::create(home().join("logs").join(if deep { "deep.log" } else { "refresh.log" }));
                 let mut c = low_priority(python());
                 let half = std::thread::available_parallelism().map(|n| (n.get() / 2).max(1)).unwrap_or(2);
                 c.env("FINDR_THREADS", half.to_string()).env("OMP_NUM_THREADS", half.to_string());   // leave cores for the person
-                c.args(["-m", "findr", "index"]).args(&folders);
+                c.env("FINDR_SCOPE", "user").args(["-m", "findr", "index"]).args(&folders);   // the person's files: removed folders leave the index
                 if deep {
                     c.arg("--deep");
                 }
@@ -253,7 +275,9 @@ fn start_refresher() {
                 let ok = match log.map(|f| c.stdout(f).stderr(Stdio::null()).stdin(Stdio::null()).spawn()) {
                     Ok(Ok(mut child)) => {
                         track(child.id());
+                        *BG_RUN.lock().unwrap() = Some(child.id());
                         let ok = child.wait().map(|s| s.success()).unwrap_or(false);
+                        *BG_RUN.lock().unwrap() = None;
                         untrack(child.id());
                         ok
                     }
@@ -321,11 +345,15 @@ fn uv() -> PathBuf {
 }
 
 fn gpu() -> &'static str {
-    if cfg!(target_os = "macos") {
-        return "apple";
-    }
-    let ok = command("nvidia-smi").arg("-L").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
-    if ok { "nvidia" } else { "cpu" }
+    // asked once per app run: app_state ran nvidia-smi on every screen change
+    static GPU: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    GPU.get_or_init(|| {
+        if cfg!(target_os = "macos") {
+            return "apple";
+        }
+        let ok = command("nvidia-smi").arg("-L").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
+        if ok { "nvidia" } else { "cpu" }
+    })
 }
 
 // every child process: no console window on Windows, UTF-8 and unbuffered output for the engine
@@ -484,6 +512,12 @@ struct Done {
 
 /// a fingerprint of the engine this app carries: when it differs from the installed one, the engine is updated
 fn engine_stamp(app: &AppHandle) -> String {
+    // the engine inside the app does not change while it runs: hashed once (app_state asked on every screen change)
+    static STAMP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    STAMP.get_or_init(|| engine_stamp_now(app)).clone()
+}
+
+fn engine_stamp_now(app: &AppHandle) -> String {
     use std::hash::{Hash, Hasher};
     fn walk(p: &Path, h: &mut std::collections::hash_map::DefaultHasher) {
         let mut es: Vec<_> = std::fs::read_dir(p).map(|r| r.flatten().collect()).unwrap_or_default();
@@ -511,7 +545,9 @@ struct AppState {
     update: bool,
 }
 
-#[tauri::command]
+// commands that wait (a process, a file walk) run off the main thread: a plain command runs on it, and the window froze
+// ('응답 없음', the spinning wheel) for the minute an engine takes to start on a CPU laptop
+#[tauri::command(async)]
 fn app_state(app: AppHandle) -> AppState {
     let installed = std::fs::read_to_string(ready_mark()).unwrap_or_default();
     let current = python().exists() && !installed.is_empty() && installed.trim() == engine_stamp(&app);
@@ -635,7 +671,7 @@ fn ensure_vc_runtime(app: &AppHandle) -> Result<(), String> {
     let exe = std::env::temp_dir().join("vc_redist.x64.exe");
     let script = format!(
         "Invoke-WebRequest -UseBasicParsing -Uri https://aka.ms/vs/17/release/vc_redist.x64.exe -OutFile '{0}';          Start-Process -FilePath '{0}' -ArgumentList '/install','/quiet','/norestart' -Verb RunAs -Wait",
-        exe.display());
+        exe.display().to_string().replace('\'', "''")); // a user folder with an apostrophe (O'Brien) broke the quoting
     let _ = command("powershell").args(["-NoProfile", "-Command", &script]).status();
     let (ma, mi) = version();
     if ma > 14 || (ma == 14 && mi >= 40) {
@@ -665,7 +701,7 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 /// the folders a whole-PC index covers on this PC, in the order people look in them (JSON from the engine)
-#[tauri::command]
+#[tauri::command(async)]
 fn list_roots() -> Result<String, String> {
     let out = command(python()).args(["-m", "findr", "roots"]).output().map_err(|e| e.to_string())?;
     if !out.status.success() {
@@ -711,12 +747,17 @@ fn set_pause(on: bool) -> Result<(), String> {
 fn start_index(app: AppHandle, folders: Vec<String>, deep: Option<bool>) {
     thread::spawn(move || {
         let _ = app.emit("index", Line { step: "index".into(), line: "앞선 색인 작업이 끝나기를 기다리는 중".into() });
+        PERSON.store(true, std::sync::atomic::Ordering::SeqCst);
         stop_upgrade(); // the person's own run comes first (the upgrade keeps what it computed)
-        let _ = std::fs::remove_file(home().join("progress.json")); // a fresh picture for this run
+        if let Some(pid) = *BG_RUN.lock().unwrap() {
+            kill_tree(pid); // a background refresh or deep run gives way; it runs again later and keeps what it read
+        }
         let _ = std::fs::remove_file(home().join("pause"));
         take_index_turn();
+        PERSON.store(false, std::sync::atomic::Ordering::SeqCst);
+        let _ = std::fs::remove_file(home().join("progress.json")); // a fresh picture for this run, once the turn is ours
         let mut c = command(python());
-        c.args(["-m", "findr", "index"]).args(&folders);
+        c.env("FINDR_SCOPE", "user").args(["-m", "findr", "index"]).args(&folders);   // the person's files: removed folders leave the index
         if deep.unwrap_or(false) {
             c.arg("--deep"); // the later pieces of long documents too
         }
@@ -730,9 +771,21 @@ fn start_index(app: AppHandle, folders: Vec<String>, deep: Option<bool>) {
 }
 
 /// start (or restart) the engine; returns the address that signs the window in
-#[tauri::command]
-fn start_engine(engine: State<Engine>, photo: bool) -> Result<String, String> {
+#[tauri::command(async)]
+fn start_engine(engine: State<'_, Engine>, photo: bool) -> Result<String, String> {
+    // the engine already answering with the same photo setting: back to search without a restart (every return from the
+    // settings screen, the 검색 menu and Ctrl+F reloaded all the models)
+    {
+        let mut g = engine.0.lock().unwrap();
+        let alive = g.as_mut().map(|c| matches!(c.try_wait(), Ok(None))).unwrap_or(false);
+        if alive && *ENGINE_PHOTO.lock().unwrap() == Some(photo) {
+            if let Ok(key) = std::fs::read_to_string(home().join(".password")) {
+                return Ok(format!("http://127.0.0.1:{}/auth?t={}", port(), key.trim()));
+            }
+        }
+    }
     stop(&engine);
+    *ENGINE_PHOTO.lock().unwrap() = Some(photo);
     let mut c = command(python());
     c.args(["-m", "findr", "serve", "--app", "--no-browser", "--port", &port().to_string()]);
     if !photo {
@@ -763,9 +816,10 @@ fn start_engine(engine: State<Engine>, photo: bool) -> Result<String, String> {
     Ok(format!("http://127.0.0.1:{}/auth?t={}", port(), key.trim()))
 }
 
-#[tauri::command]
-fn stop_engine(engine: State<Engine>) {
+#[tauri::command(async)]
+fn stop_engine(engine: State<'_, Engine>) -> Result<(), String> {
     stop(&engine);
+    Ok(())
 }
 
 fn stop(engine: &Engine) {

@@ -33,7 +33,8 @@ DOC = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".hwp", ".doc", ".ppt", ".xls
 AUD = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".wma", ".ogg"}   # transcribed locally by stt_cache.py (faster-whisper)
 OLD = {".hwp", ".doc", ".ppt", ".xls"}   # old binary formats: converted locally by LibreOffice (+ H2Orestart for hwp), cached
 SECRET = re.compile(r"^(\.env(\..*)?|\.netrc|\.pgpass|\.git-credentials|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|credentials(\.json|\.ya?ml|\.txt)?"
-                    r"|secrets?\.(json|ya?ml|toml|txt|env)|.*\.(pem|pfx|p12|kdbx|keystore|jks))$", re.I)
+                    r"|secrets?\.(json|ya?ml|toml|txt|env)|.*\.(pem|pfx|p12|kdbx|keystore|jks)"
+                    r"|\.(bash|zsh|sh|python|psql|mysql|node_repl|lesshst)_?history|\.history|ConsoleHost_history\.txt)$", re.I)   # shell histories hold typed tokens
 # '.key' is both a cryptographic key and an Apple Keynote deck: Keynote is a ZIP, a key file is not (see is_secret)
 # values that look like keys are masked inside indexed text (a key pasted into a note or log never reaches the index)
 KEYLIKE = re.compile(r"(sk-[A-Za-z0-9_\-]{20,}|sk-ant-[A-Za-z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|hf_[A-Za-z0-9]{30,}"
@@ -44,7 +45,10 @@ KEYLIKE = re.compile(r"(sk-[A-Za-z0-9_\-]{20,}|sk-ant-[A-Za-z0-9_\-]{20,}|AKIA[0
 # in Python for 58 s, #67). Keep in step with KEYLIKE: tests/test_mask_prefilter.py checks every alternative is covered
 KEYLIKE_HINTS = ("sk-", "akia", "gh_", "hf_", "xox", "aiza", "private key", "api", "secret", "password", "passwd", "token")
 LIB = re.compile(r"/(site-packages|python_embeded|node_modules|__pycache__|\.git|dist-packages|\.venv|venv)(/|$)")
-SKIP_DIR = {".git", "__pycache__", "node_modules"}
+# folders of keys and sign-ins, never read, whatever folder was chosen (`findr index ~` read .kube/config, .docker/config.json
+# and shell histories, whose tokens the key masking does not all catch, and served them to AI tools)
+SECRET_DIRS = {".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".password-store", ".1password", "Keychains"}
+SKIP_DIR = {".git", "__pycache__", "node_modules"} | SECRET_DIRS
 # 2026-11-05 (user's decision): not the user's files -> not indexed by default (--with-libs keeps the old behaviour)
 LIB_DIRS = {"site-packages", "python_embeded", "node_modules", "dist-packages", ".venv", "venv", "__pycache__", ".git",
             "dist", ".cache", ".next", ".pytest_cache", ".mypy_cache", ".tox"}
@@ -171,6 +175,13 @@ def extract(p: Path, limit):
             except Exception:
                 pass
         return t
+    except (PermissionError, BlockingIOError):
+        raise   # open in another program right now: _read_one keeps it pending for the next run
+    except OSError as e:
+        if getattr(e, "winerror", None) in (32, 33):   # Windows sharing / lock violation (a document open in Office)
+            raise
+        print("  extract fail", p, type(e).__name__, file=sys.stderr)
+        return ""
     except Exception as e:
         print("  extract fail", p, type(e).__name__, file=sys.stderr)
         return ""
@@ -179,7 +190,10 @@ def extract(p: Path, limit):
 def transcript(p: Path):
     """the cached local transcript of an audio file, or None when it has not been transcribed yet"""
     import hashlib
-    st = p.stat()
+    try:
+        st = p.stat()
+    except OSError:
+        return None
     c = Path(os.environ.get("FINDR_DATA") or (Path.home() / ".findr")) / "conv" / (hashlib.sha1(f"{p}|{st.st_size}|{st.st_mtime}".encode()).hexdigest() + ".txt")
     return c.read_text(encoding="utf-8", errors="ignore") if c.exists() else None
 
@@ -319,6 +333,9 @@ def main():
     ap.add_argument("--minutes", type=float, default=50, help="--upgrade: stop after N minutes (the next idle run continues)")
     a = ap.parse_args()
     roots = [Path(r) for r in a.root]; Path(a.db).expanduser().parent.mkdir(parents=True, exist_ok=True)
+    if not one_indexer(a.db):
+        print("FINDR_BUSY 다른 색인 작업이 이 색인을 쓰고 있습니다. 끝난 뒤에 다시 실행해 주세요.", flush=True)
+        sys.exit(3)
     miss = missing_parts()
     if miss:   # once per run, so a quiet gap has a reason and a fix
         print("FINDR_WARN missing: " + ", ".join(miss) + " -> findr doctor (설치 명령을 알려 줍니다)", flush=True)
@@ -377,7 +394,8 @@ def main():
     if os.environ.get("FINDR_SCOPE") == "user" and not a.upgrade:
         pres = [key(r.as_posix()).rstrip("/") + "/" for r in roots]
         rows = con.execute("SELECT id, path FROM files").fetchall()
-        out = [i for i, raw in rows if not any(key(raw).startswith(x) for x in pres)]
+        # a file whose folder is not there right now (a drive or share offline) is kept: only folders no longer chosen leave
+        out = [i for i, raw in rows if not any(key(raw).startswith(x) for x in pres) and os.path.isdir(_long(str(Path(raw).parent)))]
         if out and len(out) <= len(rows) // 2:   # more than half would be a missing drive or a bad root list: kept
             for fid in out:
                 drop(con, fid)
@@ -390,9 +408,12 @@ def main():
     progress("names", 0, len(roots))
     for k, root in enumerate(roots):   # stage 1: names and folders of every chosen folder first (seconds)
         print("FINDR_ROOT " + json.dumps({"i": k, "n": len(roots), "path": str(root)}, ensure_ascii=False), flush=True)
+        if not os.path.isdir(_long(str(root))):   # unplugged disk, network drive offline: its files stay as they were
+            print(f"FINDR_ROOT_MISSING {root} (kept as indexed)", flush=True)
+            progress("names", k + 1, len(roots)); continue
         seen, t0, new = set(), time.time(), 0
         pre = root.as_posix().rstrip("/") + "/"   # several roots share one db: only this root's files can be "gone"
-        known = {r[0]: (r[1], r[2], r[3], r[4]) for r in con.execute("SELECT path,size,mtime,id,tier FROM files WHERE path LIKE ?", (pre + "%",))}
+        known = {r[0]: (r[1], r[2], r[3], r[4]) for r in con.execute("SELECT path,size,mtime,id,tier FROM files WHERE path LIKE ? ESCAPE '\\'", (like_pre(pre),))}
         unread = []   # folders the walk could not open: counted, never silent
         for dpl, dns, fns in os.walk(_long(str(root)), onerror=unread.append):
             dp = _short(dpl)
@@ -420,15 +441,21 @@ def main():
                     continue
                 if not _stat.S_ISREG(st.st_mode):
                     continue   # sockets, pipes, devices: nothing to read (CEF's SingletonSocket failed here)
-                s = p.as_posix(); seen.add(s)
-                if s in known and known[s][0] == st.st_size and abs(known[s][1] - st.st_mtime) < 1 and known[s][3] == tier(p):
-                    continue   # unchanged (a changed tier rule re-reads the file)
-                if s in known:   # changed: drop old rows
-                    fid = known[s][2]
-                    drop(con, fid)
+                s = p.as_posix()
+                try:
+                    s.encode("utf-8")
+                except UnicodeEncodeError:   # a name that is not valid text (Linux bytes): skipped, it crashed every run
+                    continue
+                seen.add(s)
                 tr = tier(p)
                 if tr in (1, 2) and cloud_only(st):
                     tr = 3   # OneDrive 'online-only': reading it would download it; found by name until it is on the PC
+                if s in known and known[s][0] == st.st_size and abs(known[s][1] - st.st_mtime) < 1 and known[s][3] == tr:
+                    continue   # unchanged (a changed tier rule re-reads the file; compared with the stored tier, so an
+                    # online-only file is no longer dropped and added again on every run)
+                if s in known:   # changed: drop old rows
+                    fid = known[s][2]
+                    drop(con, fid)
                 cur = con.execute("INSERT INTO files(path,name,ext,size,mtime,tier,pending) VALUES(?,?,?,?,?,?,?)",
                                   (s, nfc(p.name), real_ext(p), st.st_size, st.st_mtime, tr, 1 if tr in (1, 2) else 0))
                 fid = cur.lastrowid   # name and folder searchable at once; content comes in its wave
@@ -439,7 +466,9 @@ def main():
                     pause_wait()
                 if new % 5000 == 0:
                     con.commit(); print(f"  {new} files {time.time() - t0:.0f}s", flush=True)
-        gone = [k for k in known if k not in seen]
+        # folders the walk could not open keep their files (a share that dropped mid-walk is not a deletion)
+        cut = [Path(_short(getattr(e, "filename", "") or "")).as_posix().rstrip("/") + "/" for e in unread if getattr(e, "filename", None)]
+        gone = [k for k in known if k not in seen and not any(k.startswith(c) for c in cut)]
         for s in gone:
             drop(con, known[s][2])
         con.commit()
@@ -552,6 +581,43 @@ def cloud_only(st):
     return bool(a & (0x00400000 | 0x00040000 | 0x00001000))   # RECALL_ON_DATA_ACCESS | RECALL_ON_OPEN | OFFLINE
 
 
+def cloud_only_path(s):
+    try:
+        return cloud_only(os.stat(_long(s)))
+    except OSError:
+        return True   # cannot even stat it: do not try to read it
+
+
+def like_pre(pre):
+    """a folder prefix for LIKE with its own % and _ taken literally (ESCAPE '\\'): '~/my_docs' claimed '~/my-docs'"""
+    return pre.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+_LOCK = None
+
+
+def one_indexer(db):
+    """one indexer per index: a second `findr index` failed on the unique path or on a locked database. An OS lock on a file
+    next to the index, released by the system when the process ends, so a killed run never blocks the next one."""
+    global _LOCK
+    path = str(Path(db).expanduser()) + ".lock"
+    if _LOCK is not None and not _LOCK.closed and _LOCK.name == path:
+        return True   # this process already holds it (main() run twice in one process)
+    f = open(path, "a+")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return False
+    _LOCK = f
+    return True
+
+
 def _read_one(job):
     """text of one file; None when it could not be opened now (locked by another program): tried again next time"""
     s, lim = job
@@ -571,11 +637,18 @@ def read_all(jobs):
     if n <= 1 or len(jobs) < 16:
         yield from map(_read_one, jobs); return
     from concurrent.futures import ProcessPoolExecutor
+    done = 0
     try:
         with ProcessPoolExecutor(max_workers=n) as ex:
-            yield from ex.map(_read_one, jobs, chunksize=4)   # results come back in the given (priority) order
-    except Exception:   # a platform without working worker processes: read in this process
-        yield from map(_read_one, jobs)
+            for r in ex.map(_read_one, jobs, chunksize=4):   # results come back in the given (priority) order
+                done += 1
+                yield r
+    except Exception:   # a worker died (out of memory, a reader crashed), or no worker processes on this platform
+        # the chunk that was being read stays pending (None) for the next run: it may be what crashed the worker;
+        # the rest is read here, each text still with its own file
+        skip = min(len(jobs), done + 4) if done else 0
+        yield from (None for _ in range(done, skip))
+        yield from map(_read_one, jobs[skip:])
 
 
 def read_wave(con, root, a):
@@ -583,8 +656,8 @@ def read_wave(con, root, a):
     now = time.time(); pre = root.as_posix().rstrip("/") + "/"
     first = int(os.environ.get("FINDR_FIRST_PIECES") or 0) > 0
     # first pass: pending=1 (never read); the deep run also finishes the files read only in part (pending=2)
-    rows = con.execute(f"SELECT id, path, ext, mtime, tier FROM files WHERE pending IN ({'1' if first else '1,2'}) AND path LIKE ?",
-                       (pre + "%",)).fetchall()
+    rows = con.execute(f"SELECT id, path, ext, mtime, tier FROM files WHERE pending IN ({'1' if first else '1,2'}) AND path LIKE ? ESCAPE '\\'",
+                       (like_pre(pre),)).fetchall()
     if a.max_age_days:
         rows = [r for r in rows if now - r[3] <= a.max_age_days * 86400]
     rows.sort(key=lambda r: -priority(r[1], r[2], r[3], now))
@@ -614,7 +687,7 @@ def read_wave(con, root, a):
             con.commit(); print(f"  read {i + 1}/{len(rows)} {time.time() - t0:.0f}s", flush=True)
             progress("content", i + 1, len(rows), folder=root.name)
     con.commit()
-    left = con.execute("SELECT count(*) FROM files WHERE pending IN (1,2) AND path LIKE ?", (pre + "%",)).fetchone()[0]
+    left = con.execute("SELECT count(*) FROM files WHERE pending IN (1,2) AND path LIKE ? ESCAPE '\\'", (like_pre(pre),)).fetchone()[0]
     print(f"FINDR_READ {len(rows)} files in {time.time() - t0:.0f}s, still pending {left}" + (f" (in use by another program: {locked})" if locked else ""))
 
 
@@ -844,12 +917,13 @@ def ocr_wave(con, root, first_pages=None, deep_pages=50):
     if "ocr" not in [r[1] for r in con.execute("PRAGMA table_info(files)")]:
         con.execute("ALTER TABLE files ADD COLUMN ocr INT DEFAULT 0")
     pre = root.as_posix().rstrip("/") + "/"
-    pdfs = [r for r in con.execute("""SELECT f.id, f.path FROM files f WHERE f.ext='.pdf' AND f.tier=1 AND f.path LIKE ?
+    pdfs = [r for r in con.execute("""SELECT f.id, f.path FROM files f WHERE f.ext='.pdf' AND f.tier=1 AND f.path LIKE ? ESCAPE '\\'
               AND ((COALESCE(f.ocr,0)=0 AND (SELECT COALESCE(sum(length(c.text)),0) FROM chunks c WHERE c.file=f.id) < 200)
                    OR (? AND f.ocr=?))
-              ORDER BY f.mtime DESC""", (pre + "%", 1 if deep else 0, OCR_PARTIAL))]
-    imgs = [(i, s) for i, s, e in con.execute("SELECT id, path, ext FROM files WHERE tier=3 AND COALESCE(ocr,0)=0 AND path LIKE ? AND size < 30000000 "
-                                              "ORDER BY mtime DESC", (pre + "%",)) if (e or "").lower() in PHOTO_EXT and (deep or SHOTLIKE.search(s))]
+              ORDER BY f.mtime DESC""", (like_pre(pre), 1 if deep else 0, OCR_PARTIAL))]
+    imgs = [(i, s) for i, s, e in con.execute("SELECT id, path, ext FROM files WHERE tier=3 AND COALESCE(ocr,0)=0 AND path LIKE ? ESCAPE '\\' AND size < 30000000 "
+                                              "ORDER BY mtime DESC", (like_pre(pre),)) if (e or "").lower() in PHOTO_EXT and (deep or SHOTLIKE.search(s))
+            and not cloud_only_path(s)]   # an online-only photo is not downloaded for OCR (a deep run fetched whole photo libraries)
     if not pdfs and not imgs:
         return
     t0, got, chars, copied = time.time(), 0, 0, 0
