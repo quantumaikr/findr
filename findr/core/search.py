@@ -1640,9 +1640,23 @@ def rerank1tok(q, res):
 
 
 def show(p):
+    # a period across years shows its years: '01-01~01-01' read as one day for "작년" (Mac Air, 11/9)
+    f = "%Y-%m-%d" if p["since"] and p.get("until") and p["since"].year != p["until"].year else "%m-%d"
     return {"찾을 내용": p["text"], "형식": sorted(p["exts"]) or "전체",
-            "기간": f"{p['since']:%m-%d}~{p['until']:%m-%d}" if p["since"] and p["until"] else (f"{p['since']:%m-%d} 이후" if p["since"] else "전체"),
+            "기간": f"{p['since']:{f}}~{p['until']:{f}}" if p["since"] and p["until"] else (f"{p['since']:{f}} 이후" if p["since"] else "전체"),
             "라이브러리 포함": p["lib"]}
+
+
+def period_first(q, rs):
+    """the period the question names, at the very end (TIME_WORDS=1): a later stage looks for a word of the question across
+    the whole index, and on a Mac "작년에 만든 발표자료" brought this month's code files holding the word 작년 (11/9). Files
+    saved inside the period keep their order and go first; the rest follow (kept, not dropped)"""
+    p = parse(q)
+    if not p["since"]:
+        return rs
+    a, b = p["since"].strftime("%Y-%m-%d %H:%M"), p["until"].strftime("%Y-%m-%d %H:%M") if p["until"] else "9999"
+    fit = lambda x: a <= (x.get("date") or "") < b
+    return [x for x in rs if fit(x)] + [x for x in rs if not fit(x)]
 
 
 def winpath(s):
@@ -2341,6 +2355,13 @@ def serve(f, port):
                     with SEARCH_LOCK:
                         res = personal().apply(f, q_, res)
                 res = add_probs(res)
+                if res.get("results") and os.environ.get("TIME_WORDS", "0") == "1":
+                    res["results"] = period_first(q_, res["results"])
+                    p_ = parse(q_)
+                    if p_["since"] and res["results"] and not (p_["since"].strftime("%Y-%m-%d %H:%M") <= (res["results"][0].get("date") or "")
+                                                               < (p_["until"].strftime("%Y-%m-%d %H:%M") if p_["until"] else "9999")):
+                        # nothing saved in that period: say so (a Mac with no files from last year showed other years silently)
+                        res["note"] = "말씀하신 기간에 저장된 파일은 없습니다. 다른 시기의 비슷한 파일을 보여 드립니다."
                 if os.environ.get("DUP_COLLAPSE", "0") == "1":
                     with SEARCH_LOCK:
                         res = collapse_copies(f.con, res)

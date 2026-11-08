@@ -22,3 +22,16 @@ def test_years(monkeypatch):
 def test_off_by_default(monkeypatch):
     monkeypatch.delenv("TIME_WORDS", raising=False)
     assert search.parse("작년에 만든 발표자료", now=NOW)["since"] is None
+
+
+def test_period_holds_at_the_end_and_shows_its_years(monkeypatch):
+    """Mac Air (11/9): with 작년 read, this month's code files holding the word came first (a later stage looked for the word
+    across the whole index), and the period showed as '01-01~01-01'"""
+    monkeypatch.setenv("TIME_WORDS", "1")
+    monkeypatch.setattr(search, "today_now", lambda: NOW)
+    rs = [{"name": "a.py", "date": "2026-11-08 10:00"}, {"name": "발표.pptx", "date": "2025-06-11 09:00"},
+          {"name": "b.py", "date": "2026-11-07 10:00"}, {"name": "발표2.pdf", "date": "2025-02-01 09:00"}]
+    out = search.period_first("작년에 만든 발표자료", rs)
+    assert [x["name"] for x in out] == ["발표.pptx", "발표2.pdf", "a.py", "b.py"]   # inside the period first, the rest kept
+    assert search.show(search.parse("작년에 만든 발표자료"))["기간"] == "2025-01-01~2026-01-01"
+    assert search.period_first("발표자료", rs) == rs                                   # no period: nothing moves
