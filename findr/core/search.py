@@ -1419,7 +1419,7 @@ def collapse_copies(con, res):
     return res
 
 
-_VMARK = re.compile(r"(v\d+|ver\d+|old|new|final|최종|초안|수정|코멘트반영|\(\d+\)|copy|사본|bak|제출|확정|검토|완료)", re.I)
+_VMARK = re.compile(r"(\d*\s*작성중[\s_\-]*\d*|v\d+|ver\d+|old|new|final|updated|최종|초안|수정|코멘트반영|검토의견반영|인쇄용|서명본?|사인포함|\(\d+\)|copy|사본|bak|제출|확정|검토|완료)", re.I)
 _VDATE = re.compile(r"\d{4}-?\d{2}-?\d{2}|\d{6}(?!\d)")
 
 
@@ -1430,6 +1430,12 @@ def _vname(path):
     marks = tuple(sorted(m.lower() for m in _VMARK.findall(name)))
     s = re.sub(r"[\s_\-.()\[\]]+", " ", _VDATE.sub(" ", _VMARK.sub(" ", name))).strip()
     return s, marks
+
+
+def _ids(stem):
+    """numbers and part letters that stay in a name once version marks and dates are off: 제1115호 vs 제1116호, 3월 vs
+    4월, Part A vs Part B are different documents, whatever their text has in common"""
+    return set(re.findall(r"\d+", stem)) | {m.lower() for m in re.findall(r"(?:part|부|편|권)\s*([a-z]|[ivx]+)\b", stem, re.I)}
 
 
 def _grams(t):
@@ -1485,8 +1491,15 @@ def group_versions(con, res, top=20):
             short = len(si.replace(" ", "")) < 4
             same_name = si and si == sj and ai == aj and ((mi != mj and (not short or alike(gi, gj, 0.3))) or alike(gi, gj, 0.85))
             # any name: nearly the same text, past a standard opening (a copyright paragraph, a resolution header, a form
-            # line chained 274 files on one PC), and a name alike in part or another format (a .hwp and its .pdf)
-            same_text = alike(gi, gj, 0.85) and (bi is None or bj is None or alike(bi, bj, 0.7)) and (ei != ej or alike(ni, nj, 0.3))
+            # line chained 274 files on one PC), and a name alike in part or another format (a .hwp and its .pdf).
+            # Names that differ need the text all but identical: the same form filled by another school is 0.85 alike.
+            # Different numbers in the names (standards 1115 and 1116, a March and an April menu) are never one document
+            # (M1 Pro 11/9: 4 of 12 folded lines wrong, all of these kinds)
+            idi, idj = _ids(si), _ids(sj)
+            if idi and idj and idi != idj:
+                continue
+            same_text = (alike(gi, gj, 0.85 if si == sj else 0.92) and (bi is None or bj is None or alike(bi, bj, 0.7))
+                         and (ei != ej or alike(ni, nj, 0.3)))
             if same_name or same_text:
                 parent[find(i)] = find(j)
     groups = {}
