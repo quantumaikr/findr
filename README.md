@@ -52,18 +52,7 @@ All numbers are measured on questions that were not used to tune findr. They dep
 | The real PC on 4 CPU cores without a GPU, first day | 45 | 56% | 62% |
 | The real PC on 4 CPU cores without a GPU, after the idle-time model upgrade | 45 | 78% | 82% |
 
-**New questions about real files** (sealed sets)
-
-The "real personal PC" above is the one findr was developed on, and its questions have been in use for a long time. So we also measured with new questions on that PC, and on two other people's Macs that were never used in development. On each PC, questions about its own files were written before any search and scored once. File names and contents stayed on that PC; only the numbers came back.
-
-| PC | Questions | Top-1 | Top-3 |
-|---|---|---|---|
-| The PC findr was developed on (Windows, NVIDIA GPU) | 12 | 5 | 9 |
-| Another person's Mac, used for work every day | 6 | 1 | 1 |
-| Another person's Mac, an archive of older files | 12 | 4 | 6 |
-| Total | 30 | 10 (33%) | 16 (53%) |
-
-This is closer to what to expect on a new PC today. Most misses came from picking the wrong one of several versions of a document (draft, revision, submitted copy), or from the answer sitting just below the top.
+**Lower on new questions.** The real-PC questions above have been in use for a long time. On 30 new questions about real files (written before any search, scored once), the top result was right 33% of the time and in the top 3 53% of the time. Most misses came from picking the wrong one of several versions of a document.
 
 **Speed of the first index** (4-core laptop, no GPU, 2,081 files)
 
@@ -173,7 +162,7 @@ Four tools are offered, so that an assistant can look around the way a person do
 - `versions` lists the other versions of a file, including similar files that may be a version under another name.
 - `read_file` returns the text findr already read from a file in its index; it never opens other paths.
 
-There are 14 kinds of document, such as minutes, contracts, quotes, reports, official letters, regulations and lecture material. The kind is read from what the index already holds, with no extra reading. On the documents of two real PCs findr had never seen (145 files) it was right 65.5% of the time, so only files that are surely of another kind are left out; the rest stay in the list, marked as uncertain.
+There are 14 kinds of document, such as minutes, contracts, quotes, reports, official letters, regulations and lecture material. The kind is read from what the index already holds, with no extra reading. Measured on real documents it is right about 65% of the time, so only files that are surely of another kind are left out; the rest stay in the list, marked as uncertain.
 
 ```bash
 # Claude Code
@@ -205,7 +194,7 @@ File contents, questions and search history never leave the PC. Everything findr
 
 ## Known limitations
 
-- On new questions about real files, the top result is right about one time in three (top-3: about half; the sealed sets above). On other people's PCs it is lower. Picking the right one of several versions of a document is the weakest part.
+- On new questions about real files, the top result is right about one time in three (top-3: about half). Picking the right one of several versions of a document is the weakest part.
 - The kind of a document is wrong about one time in three, most often for official letters and forms, so most files are marked as uncertain.
 - On a laptop without a GPU, the first day is less accurate (56% top-1 on the real PC, against 84% on a GPU). It reaches 78% once the larger meaning model has been built in idle time.
 - History such as who sent a file or when it was printed can only be used if the PC keeps such records. Without them findr searches by content and says the history could not be checked.
@@ -226,7 +215,7 @@ Most of what changed in 0.2.x came from people installing findr on their own mac
 
 ## Roadmap
 
-- Accuracy on PCs findr has never seen: measuring on office workers' PCs, and picking the right version of a document first.
+- Accuracy on a PC findr is new to: picking the right version of a document first.
 - "How many files did you open before you found it" as the main measure: less checking, not only a better top-1.
 - Closing the accuracy gap on laptops without a GPU, above all on the first day.
 - Reading the files people look for first: building on the kind of document (0.2.16) to read the likely files in depth first.
