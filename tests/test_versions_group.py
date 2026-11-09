@@ -99,3 +99,21 @@ def test_drafts_numbered_in_their_mark_are_versions():
     rows = [(1, "/h/d/(1작성중)연구계획서.hwp", BODY + "초안"), (2, "/h/d/(2작성중1012)연구계획서.hwp", BODY + "보완")]
     out = search.group_versions(_con(rows), _res(rows, ["2026-10-01 10:00", "2026-10-12 10:00"]))
     assert [x["fid"] for x in out["results"]] == [1]
+
+
+def test_no_chain_through_a_name_without_numbers():
+    """M1 Pro (11/9): standard 1007 and standard 1033 met through a copy named only '3.pdf' and were folded together"""
+    t = BODY + "기준서 본문"
+    rows = [(1, "/h/e/기준서 제1007호.pdf", t), (2, "/h/e/3.pdf", t), (3, "/h/e/기준서 제1033호.pdf", t)]
+    out = search.group_versions(_con(rows), _res(rows, ["2026-01-01 10:00"] * 3))
+    for x in out["results"]:   # whatever joins what, 1007 and 1033 never share a line
+        paths = [x["path"]] + [v["path"] for v in x.get("versions") or []]
+        assert not (any("1007" in p for p in paths) and any("1033" in p for p in paths))
+
+
+def test_tags_before_the_name_and_outline_numbers_are_versions():
+    other = "주민 참여 예산 설명회 안내 일시 장소 대상 신청 방법 문의처를 아래와 같이 알려 드립니다 " * 3
+    rows = [(1, "/h/f/(메타_수정)연구 노트.hwp", BODY + "가"), (2, "/h/f/(메타_2_수정)연구 노트.hwp", BODY + "나"),
+            (3, "/h/g/1-2. 사업 안내.pdf", other), (4, "/h/g/자료/사업 안내.pdf", other)]
+    out = search.group_versions(_con(rows), _res(rows, ["2026-01-01 10:00"] * 4))
+    assert [x["fid"] for x in out["results"]] == [1, 3]

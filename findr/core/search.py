@@ -1419,16 +1419,20 @@ def collapse_copies(con, res):
     return res
 
 
-_VMARK = re.compile(r"(\d*\s*작성중[\s_\-]*\d*|v\d+|ver\d+|old|new|final|updated|최종|초안|수정|코멘트반영|검토의견반영|인쇄용|서명본?|사인포함|\(\d+\)|copy|사본|bak|제출|확정|검토|완료)", re.I)
-_VDATE = re.compile(r"\d{4}-?\d{2}-?\d{2}|\d{6}(?!\d)")
+_VMARK = re.compile(r"(\d*\s*작성중[\s_\-]*\d*|v\d+|ver\d+|old|new|final|updated|최종|초안|수정|코멘트반영|검토의견반영|(?:인쇄|이메일전송|메일|제출|배포|출력|게시|보관|검토|발표)용|서명본?|사인포함|\(\d+\)|copy|사본|bak|제출|확정|검토|완료|전처리|테스트용|샘플|pdf)", re.I)
+_VDATE = re.compile(r"\d{4}-?\d{2}-?\d{2}|\d{6}(?!\d)|(?<=[_\-\s])\d{4}$")
+# a tag in brackets before the name ((작성중), (메타_2_수정), [결과보고서]) and an outline number (1-2. ) say which copy
+# or which state, not which document (M1 Pro 11/9: such pairs were not folded)
+_VHEAD = re.compile(r"^(?:\s*[\(\[][^\)\]]{1,24}[\)\]]\s*|\s*\d+(?:[\-.]\d+)*\.\s+)+")
 
 
 def _vname(path):
     """a file name without its extension, folder and version marks, and the marks it had (dates apart)"""
     import unicodedata as _ud
     name = re.sub(r"\.[^.]+$", "", _ud.normalize("NFC", path.replace("\\", "/")).rsplit("/", 1)[-1].lower())
-    marks = tuple(sorted(m.lower() for m in _VMARK.findall(name)))
-    s = re.sub(r"[\s_\-.()\[\]]+", " ", _VDATE.sub(" ", _VMARK.sub(" ", name))).strip()
+    head = _VHEAD.match(name)
+    marks = tuple(sorted(m.lower() for m in _VMARK.findall(name))) + ((re.sub(r"\s+", "", head.group(0)),) if head else ())
+    s = re.sub(r"[\s_\-.()\[\]]+", " ", _VDATE.sub(" ", _VMARK.sub(" ", _VHEAD.sub("", name)))).strip()
     return s, marks
 
 
@@ -1482,9 +1486,18 @@ def group_versions(con, res, top=20):
     def alike(a, b, need):
         return a is not None and b is not None and len(a & b) / max(len(a | b), 1) >= need
 
+    ids = [_ids(x[1]) for x in info]
+    gids = {i: [ids[i]] if ids[i] else [] for i in range(len(head))}   # the numbers each group holds
+
+    def clash(a, b):   # a group never takes a file whose name numbers differ from any of its members (no chains via N.pdf)
+        return any(x != y for x in gids[a] for y in gids[b])
+
     for i in range(len(head)):
         for j in range(i):
             (ai, si, mi, gi, bi, ni, ei), (aj, sj, mj, gj, bj, nj, ej) = info[i], info[j]
+            ri, rj = find(i), find(j)
+            if ri == rj or clash(ri, rj):
+                continue
             # the same name: versions when the marks differ (a short common name like 제안서 needs some text in common);
             # when only a date differs, the same form filled again (another year, another applicant: M1 Pro 11/9 7 of 20
             # wrong) is not a version, so the text must be nearly the same
@@ -1495,13 +1508,12 @@ def group_versions(con, res, top=20):
             # Names that differ need the text all but identical: the same form filled by another school is 0.85 alike.
             # Different numbers in the names (standards 1115 and 1116, a March and an April menu) are never one document
             # (M1 Pro 11/9: 4 of 12 folded lines wrong, all of these kinds)
-            idi, idj = _ids(si), _ids(sj)
-            if idi and idj and idi != idj:
-                continue
-            same_text = (alike(gi, gj, 0.85 if si == sj else 0.92) and (bi is None or bj is None or alike(bi, bj, 0.7))
+            # another format of the same document (.pptx and its .pdf) reads a little differently: 0.88
+            same_text = (alike(gi, gj, 0.85 if si == sj else 0.88 if ei != ej else 0.92) and (bi is None or bj is None or alike(bi, bj, 0.7))
                          and (ei != ej or alike(ni, nj, 0.3)))
             if same_name or same_text:
-                parent[find(i)] = find(j)
+                parent[ri] = rj
+                gids[rj] = gids[rj] + gids.pop(ri)
     groups = {}
     for i in range(len(head)):
         groups.setdefault(find(i), []).append(i)
@@ -1990,31 +2002,74 @@ def _sounds_in(sk, nm):
     return any(en_sound(t) == sk or (len(sk) >= 4 and sk in en_sound(t)) for t in re.findall(r"[a-z]{4,}", nm))
 
 
+_XL_EXTRA = None
+
+
+def _xl_extra():
+    """more Korean words with the spellings English file names use (xling_extra.json, written by a teacher model for
+    office, school, research and IT work; XLING2=1): a Korean question with one word the short list lacks matched no name
+    (M1 Pro 11/9: 4 of 4 Korean-English questions not among the candidates)"""
+    global _XL_EXTRA
+    if _XL_EXTRA is None:
+        try:
+            _XL_EXTRA = json.load(open(Path(__file__).with_name("xling_extra.json"), encoding="utf-8"))
+        except (OSError, ValueError):
+            _XL_EXTRA = {}
+    return _XL_EXTRA
+
+
+def _xl_get(w):
+    v = XLING.get(w)
+    if v is None and os.environ.get("XLING2") == "1":
+        v = _xl_extra().get(w)
+    return v
+
+
+# numbered parts of a course or a book, as English names write them: 3강 lec03, 2장 ch2, 1주차 week1 (Windows 11/9)
+_XL_ORD = re.compile(r"(?:제\s*)?(\d{1,2})\s*(강|장|주차|회차|차시|단원|부|편|권)")
+_XL_ORD_EN = {"강": ("lec", "lecture"), "장": ("ch", "chap", "chapter"), "주차": ("week", "wk"), "회차": ("session", "ep"),
+              "차시": ("session", "lesson"), "단원": ("unit", "lesson"), "부": ("part",), "편": ("part", "vol"), "권": ("vol", "book")}
+
+
+def _xl_ordinals(q):
+    """the numbered parts in a question, each an idea with its Korean and English spellings (none shorter than 4)"""
+    ideas = []
+    for n, suf in _XL_ORD.findall(q):
+        n = int(n)
+        sp = [f"{n}{suf}", f"{n:02d}{suf}"] + [s for pre in _XL_ORD_EN[suf] for s in (f"{pre}{n}", f"{pre}{n:02d}", f"{pre}_{n}", f"{pre}_{n:02d}")
+                                               if len(s) >= 4]
+        ideas.append(list(dict.fromkeys(sp)))
+    return ideas
+
+
 def xling_ideas(q, relax=False):
     """the ideas of a Korean question, each with the spellings that count for it in a file name (XLING);
     [] for a question without Korean or with fewer than two ideas.
     relax: only the ideas a name can carry in English (words of the list, English words). People ask with words no
     file name has ('히스토그램 그려 보는 실습': 그려, 보는), and each of them blocked the name (field, 0.2.13: 5 of 10 out of
     the top 10)"""
+    ords = _xl_ordinals(q) if os.environ.get("XLING2") == "1" else []
+    if ords:
+        q = _XL_ORD.sub(" ", q)
     words = re.findall(r"[가-힣]{2,}|[A-Za-z][A-Za-z0-9]+", q)
-    if not words or not any(re.match(r"[가-힣]", w) for w in words):
+    if not (words or ords) or not (ords or any(re.match(r"[가-힣]", w) for w in words)):
         return []
-    ideas = []
+    ideas = list(ords)
     for w in words:
         if re.match(r"[A-Za-z]", w):
             ideas.append([w.lower()]); continue
-        stem = w if w in XLING else _XL_JOSA.sub("", w)
-        if XLING.get(stem) == "" or XLING.get(w) == "":
+        stem = w if _xl_get(w) is not None else _XL_JOSA.sub("", w)
+        if _xl_get(stem) == "" or _xl_get(w) == "":
             continue   # 자료, 문서, 파일 …: not an idea of the content
         if not stem:
             continue   # a particle alone (에서)
         # sound spellings are off unless XLING_SOUND=1: the GPU PC gate moved nothing, the field sets decide (2026-11-08)
-        sk = "" if XLING.get(stem) or _NOT_LOAN.search(stem) or os.environ.get("XLING_SOUND") != "1" else ko_sound(stem)
-        sp = (XLING.get(stem) or "").split() + (["~" + sk] if len(sk) >= 3 else [])
+        sk = "" if _xl_get(stem) or _NOT_LOAN.search(stem) or os.environ.get("XLING_SOUND") != "1" else ko_sound(stem)
+        sp = (_xl_get(stem) or "").split() + (["~" + sk] if len(sk) >= 3 else [])
         if relax and (not sp or stem in XL_GENERIC):
             continue
         # relax: a word with only a sound spelling may be a native word (경사도 sounds like nothing): it counts when it matches
-        ideas.append((["?"] if relax and not XLING.get(stem) else []) + [stem] + sp)
+        ideas.append((["?"] if relax and not _xl_get(stem) else []) + [stem] + sp)
     return ideas if len(ideas) >= 2 else []
 
 
@@ -2253,7 +2308,7 @@ def result_key(f, q, mode, k, prev, pin):
         return None
     pm = personal()
     mem = len(getattr(pm, "rows", []) or []) if pm is not None else 0
-    flags = tuple(os.environ.get(x, "") for x in ("KIND_GATE", "DUP_COLLAPSE", "TIME_WORDS", "CE_TAIL", "CE_MATCHED", "VERSION_GROUP"))
+    flags = tuple(os.environ.get(x, "") for x in ("KIND_GATE", "DUP_COLLAPSE", "TIME_WORDS", "CE_TAIL", "CE_MATCHED", "VERSION_GROUP", "XLING2"))
     return (q, mode, k, prev, pin, dt.date.today().isoformat(), ver, mem, flags)
 
 
