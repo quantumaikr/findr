@@ -44,6 +44,9 @@ dt { color: var(--mut); } dd { margin: 0; word-break: break-all; }
 
 .bar { height: 6px; background: var(--soft); border-radius: 3px; overflow: hidden; margin: 10px 0 4px; }
 .bar > div { height: 100%; background: var(--acc); width: 0; transition: width .4s ease; }
+.bar.busy { background: linear-gradient(90deg, var(--soft) 0 30%, var(--acc) 50%, var(--soft) 70% 100%); background-size: 300% 100%; animation: sweep 1.6s linear infinite; }
+@keyframes sweep { from { background-position: 100% 0; } to { background-position: -50% 0; } }
+.elapsed { font-size: 12.5px; margin-top: 2px; }
 .notice { background: var(--soft); border-radius: 8px; padding: 12px 14px; font-size: 14px; margin-top: 16px; }
 .notice.err { color: var(--err); }
 details { margin-top: 14px; } summary { cursor: pointer; color: var(--mut); font-size: 13px; }
@@ -72,7 +75,7 @@ pre { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 12px
 @keyframes pulse { 50% { opacity: .35; } }
 .tip p { margin: 4px 0 0; font-weight: 550; }
 .auto { margin-top: 12px; } button.link { border: 0; background: none; padding: 0 0 0 4px; color: var(--acc); text-decoration: underline; font-size: 13.5px; }
-@media (prefers-reduced-motion: reduce) { .ladder li.now .ic { animation: none; } .bar > div { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .ladder li.now .ic { animation: none; } .bar > div { transition: none; } .bar.busy { animation: none; } }
 
 /* settings: AI tools */
 .mcp { margin-top: 10px; } .mcp pre { margin: 4px 0 6px; white-space: pre-wrap; } .mcp button { font-size: 13px; padding: 5px 12px; }

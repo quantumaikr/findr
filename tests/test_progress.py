@@ -41,3 +41,26 @@ def test_forgotten_pause_lapses(tmp_path, monkeypatch):
     f = tmp_path / "pause"; f.write_text("1"); old = time.time() - index.PAUSE_MAX - 10; os.utime(f, (old, old))
     t0 = time.time(); index.pause_wait()
     assert time.time() - t0 < 2 and not f.exists()
+
+
+def test_progress_moves_by_time_with_rate_and_time_left(tmp_path, monkeypatch):
+    """the app reads the file every 0.7 s: a stage writes by time, with its rate and minutes left (11/10: the first
+    index looked frozen during the name scan of one big folder and between batches of meaning on a slow PC)"""
+    monkeypatch.setenv("FINDR_DATA", str(tmp_path)); index._P.update(stages={}, files=None, paused=False); index._TICK.clear()
+    clock = [1000.0]
+    monkeypatch.setattr(index.time, "time", lambda: clock[0])
+    index.tick("content", 0, 100)
+    clock[0] += 0.2; index.tick("content", 5, 100)
+    assert read(tmp_path)["done"] == 0                     # too soon: not written again
+    clock[0] += 4.8; index.tick("content", 50, 100)
+    p = read(tmp_path)
+    assert p["done"] == 50 and p["rate"] == 10.0 and p["minutes_left"] == round(50 / 10 / 60, 1)
+    clock[0] += 0.1; index.tick("content", 100, 100)
+    assert read(tmp_path)["done"] == 100                   # the last one is always written
+
+
+def test_name_scan_reports_files_looked_at(tmp_path, monkeypatch):
+    monkeypatch.setenv("FINDR_DATA", str(tmp_path)); index._P.update(stages={}, files=None, paused=False); index._TICK.clear()
+    index.tick("names", 0, 1, scanned=4321, folder="Documents/2025")
+    p = read(tmp_path)
+    assert p["stage"] == "names" and p["scanned"] == 4321 and p["folder"] == "Documents/2025"

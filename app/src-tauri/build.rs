@@ -12,6 +12,8 @@ fn main() {
         "open_data_dir",
         "save_folders",
         "load_folders",
+        "uninstall_data",
+        "quit_app",
     ])))
     .expect("failed to run tauri-build");
 }

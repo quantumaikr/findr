@@ -3,7 +3,8 @@
     findr index [폴더 ...]   색인: 폴더를 주지 않으면 PC 전체의 내 파일 (시스템·프로그램 폴더 제외)
     findr serve              검색 화면 열기 (http://127.0.0.1:8096)
     findr ask "질문"          터미널에서 바로 찾기
-    findr doctor             설치 상태 점검"""
+    findr doctor             설치 상태 점검
+    findr uninstall          이 PC에서 findr 데이터 모두 지우기 (내 파일은 그대로)"""
 import argparse
 import atexit
 import json
@@ -504,7 +505,49 @@ def cmd_doctor(a):
     return 0
 
 
+def cmd_uninstall(a):
+    """remove everything findr keeps on this PC: one data folder (index, models, engine runtime, settings, logs). The person's
+    own files are never touched. A running engine or indexer must be closed first: their files would come back"""
+    import shutil
+    h = paths.HOME
+    if not h.is_dir():
+        print(f"지울 데이터가 없습니다: {h}"); return 0
+    # a folder set by FINDR_HOME counts only when it holds findr's own things: FINDR_HOME=~ must never empty a home folder
+    # (an empty models folder is no sign: every other command creates one at start)
+    marks = [m for m in ("index.db", "runtime", "progress.json", "folders.json") if (h / m).exists()]
+    if (h / "models").is_dir() and any((h / "models").iterdir()):
+        marks.append("models")
+    if not (h.name in ("findr", ".findr") and marks or os.environ.get("FINDR_HOME") and marks):
+        print(f"findr의 데이터 폴더가 아니라서 지우지 않습니다: {h}"); return 1
+    busy = []
+    try:
+        pid = json.loads((h / "progress.json").read_text(encoding="utf-8")).get("pid")
+        if pid and pid != os.getpid():
+            os.kill(int(pid), 0); busy.append(f"색인 작업(pid {pid})")
+    except (OSError, ValueError, TypeError):
+        pass
+    try:
+        import urllib.request
+        urllib.request.urlopen("http://127.0.0.1:8096/healthz", timeout=1); busy.append("검색 엔진(8096)")
+    except Exception:
+        pass
+    if busy:
+        print("먼저 닫아 주세요: " + ", ".join(busy) + ". 앱을 쓰고 있다면 앱을 닫거나 앱의 설정 → findr 지우기를 쓰세요."); return 2
+    size = sum(f.stat().st_size for f in h.rglob("*") if f.is_file()) / 2**30
+    print(f"지울 폴더: {h} (약 {size:.1f}GB: 색인, 모델, 엔진, 설정, 기록). 내 파일은 지우지 않습니다.")
+    if not a.yes and input("정말 지울까요? [y/N] ").strip().lower() not in ("y", "yes", "예", "ㅇ"):
+        print("지우지 않았습니다."); return 0
+    shutil.rmtree(h, ignore_errors=True)
+    print("지웠습니다." if not h.exists() else f"일부를 지우지 못했습니다. 이 폴더를 직접 지워 주세요: {h}")
+    print("남은 것: 앱이라면 Windows 설정 → 앱 / macOS 응용 프로그램 폴더에서 지우고, 명령줄로 설치했다면 저장소 폴더를 지우면 끝입니다.")
+    print("설치에 쓴 uv 캐시(여러 프로그램이 함께 씀)는 그대로 둡니다. 필요하면 `uv cache clean`으로 비울 수 있습니다.")
+    return 0
+
+
 def main(argv=None):
+    if (argv if argv is not None else sys.argv[1:])[:1] == ["uninstall"]:   # creates nothing in the folder it is about to judge
+        ap = argparse.ArgumentParser(prog="findr uninstall"); ap.add_argument("cmd"); ap.add_argument("--yes", action="store_true")
+        return cmd_uninstall(ap.parse_args(argv))
     paths.setup_env()
     try:   # company networks that inspect TLS: model downloads trust the system's certificates
         import truststore
@@ -534,6 +577,8 @@ def main(argv=None):
     s.add_argument("-k", type=int, default=5)
     s.add_argument("--local", action="store_true", help="켜진 엔진을 쓰지 않고 모델을 직접 불러오기"); s.set_defaults(fn=cmd_ask)
     s = sub.add_parser("doctor", help="설치 상태 점검"); s.set_defaults(fn=cmd_doctor)
+    s = sub.add_parser("uninstall", help="이 PC에서 findr 데이터(색인, 모델, 엔진, 설정) 모두 지우기")
+    s.add_argument("--yes", action="store_true", help="묻지 않고 지우기"); s.set_defaults(fn=cmd_uninstall)
     s = sub.add_parser("upgrade", help="쉬는 시간에 더 정확한 의미 모델로 조금씩 바꾸기 (GPU 없는 PC)")
     s.add_argument("--minutes", type=float, default=50, help="이번에 쓸 최대 시간 (다음 번에 이어서)"); s.set_defaults(fn=cmd_upgrade)
     a = ap.parse_args(argv)

@@ -920,6 +920,41 @@ fn open_data_dir(app: AppHandle) -> Result<(), String> {
     app.opener().open_path(home().display().to_string(), None::<&str>).map_err(|e| e.to_string())
 }
 
+/// remove everything findr keeps on this PC: the index, the downloaded models, the engine runtime, settings and logs. All of
+/// it is in the data folder, so only that folder is removed; the person's own files are never touched. The app itself is
+/// removed the usual way afterwards (Windows: Settings > Apps, macOS: drag it to the Trash)
+#[tauri::command(async)]
+fn uninstall_data(engine: State<'_, Engine>) -> Result<String, String> {
+    stop(&engine);
+    stop_upgrade();
+    stop_runs();
+    let h = home();
+    let name = h.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    // a folder set by FINDR_HOME counts only when it holds findr's own things: FINDR_HOME=~ must never empty a home folder
+    let models = std::fs::read_dir(h.join("models")).map(|mut d| d.next().is_some()).unwrap_or(false);
+    let marks = models || ["index.db", "runtime", "progress.json", "folders.json"].iter().any(|m| h.join(m).exists());
+    if !((name == "findr" || name == ".findr" || std::env::var("FINDR_HOME").is_ok()) && marks) {
+        return Err(format!("findr의 데이터 폴더가 아니라서 지우지 않았습니다: {}", h.display()));
+    }
+    let mut last = String::new();
+    for _ in 0..20 {   // a process stopped a moment ago can still hold a file on Windows
+        if !h.exists() {
+            return Ok(h.display().to_string());
+        }
+        match std::fs::remove_dir_all(&h) {
+            Ok(()) => return Ok(h.display().to_string()),
+            Err(e) => last = e.to_string(),
+        }
+        thread::sleep(std::time::Duration::from_millis(500));
+    }
+    Err(format!("일부 파일을 지우지 못했습니다 ({last}). 앱을 닫은 뒤 이 폴더를 지워 주세요: {}", h.display()))
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
+
 // ---------- app ----------
 
 fn go_app(app: &AppHandle, hash: &str) {
@@ -966,7 +1001,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_state, setup_runtime, list_roots, start_index, start_engine, stop_engine, open_path, open_data_dir, save_folders, load_folders,
-            upgrade_state, set_upgrade, read_progress, set_pause
+            upgrade_state, set_upgrade, read_progress, set_pause, uninstall_data, quit_app
         ])
         .build(tauri::generate_context!())
         .expect("findr 창을 여는 중 오류가 났습니다")
