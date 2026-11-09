@@ -117,3 +117,11 @@ def test_tags_before_the_name_and_outline_numbers_are_versions():
             (3, "/h/g/1-2. 사업 안내.pdf", other), (4, "/h/g/자료/사업 안내.pdf", other)]
     out = search.group_versions(_con(rows), _res(rows, ["2026-01-01 10:00"] * 4))
     assert [x["fid"] for x in out["results"]] == [1, 3]
+
+
+def test_the_same_form_for_another_body_in_the_same_slot_stays_apart():
+    """M1 Pro (11/9): '기관A_2023_인쇄용_최종' and '기관B_2023_인쇄용' (use tails off: only the body's name differs)"""
+    form = BODY + "참가 기관 확인"
+    rows = [(1, "/h/k/가람재단_2023_인쇄용_최종.hwp", form), (2, "/h/k/누리협회_2023_인쇄용.pdf", form)]
+    out = search.group_versions(_con(rows), _res(rows, ["2023-03-08 10:00", "2023-03-08 11:00"]))
+    assert [x["fid"] for x in out["results"]] == [1, 2]

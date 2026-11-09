@@ -876,6 +876,8 @@ class Finder:
         p["pkgs"] = {w for w in re.findall(r"[A-Za-z][A-Za-z0-9_]{2,}", q.lower()) if w in self.pkgs}
         p["lib"] = p["lib"] or bool(p["pkgs"])
         eng =" ".join(dict.fromkeys(" ".join(v for k, v in GLOSS.items() if k in q).split()))
+        if os.environ.get("XLING2") == "1":
+            eng = " ".join(dict.fromkeys((eng + " " + xl_expand(q)).split()))
         if p.get("only_cond") and (p["since"] or p["exts"]):   # "6개월 전에 만든 파일": no topic, just the window, newest first
             return self.recent(p, k, t0)
         rer = {"x4b": "list", "x4bp": "1tok", "fx4b": "list", "pick1": "pick1", "fpick1": "pick1", "xce": "ce", "fxce": "ce",
@@ -1508,6 +1510,11 @@ def group_versions(con, res, top=20):
             # Names that differ need the text all but identical: the same form filled by another school is 0.85 alike.
             # Different numbers in the names (standards 1115 and 1116, a March and an April menu) are never one document
             # (M1 Pro 11/9: 4 of 12 folded lines wrong, all of these kinds)
+            # names built the same way that differ in one place (기관A_2023 / 기관B_2023: another school, company or
+            # person in the same slot) are the same form for someone else, however alike their text (M1 Pro 11/9)
+            ti, tj = si.split(), sj.split()
+            if si != sj and len(ti) == len(tj) >= 2 and sum(a != b for a, b in zip(ti, tj)) == 1:
+                continue
             # another format of the same document (.pptx and its .pdf) reads a little differently: 0.88
             same_text = (alike(gi, gj, 0.85 if si == sj else 0.88 if ei != ej else 0.92) and (bi is None or bj is None or alike(bi, bj, 0.7))
                          and (ei != ej or alike(ni, nj, 0.3)))
@@ -2026,9 +2033,10 @@ def _xl_get(w):
 
 
 # numbered parts of a course or a book, as English names write them: 3강 lec03, 2장 ch2, 1주차 week1 (Windows 11/9)
-_XL_ORD = re.compile(r"(?:제\s*)?(\d{1,2})\s*(강|장|주차|회차|차시|단원|부|편|권)")
+_XL_ORD = re.compile(r"(?:제\s*)?(\d{1,2})\s*(강|장|주차|회차|차시|단원|분기|학기|부|편|권)")
 _XL_ORD_EN = {"강": ("lec", "lecture"), "장": ("ch", "chap", "chapter"), "주차": ("week", "wk"), "회차": ("session", "ep"),
-              "차시": ("session", "lesson"), "단원": ("unit", "lesson"), "부": ("part",), "편": ("part", "vol"), "권": ("vol", "book")}
+              "차시": ("session", "lesson"), "단원": ("unit", "lesson"), "부": ("part",), "편": ("part", "vol"), "권": ("vol", "book"),
+              "분기": ("q", "quarter"), "학기": ("semester", "sem", "term")}
 
 
 def _xl_ordinals(q):
@@ -2037,9 +2045,40 @@ def _xl_ordinals(q):
     for n, suf in _XL_ORD.findall(q):
         n = int(n)
         sp = [f"{n}{suf}", f"{n:02d}{suf}"] + [s for pre in _XL_ORD_EN[suf] for s in (f"{pre}{n}", f"{pre}{n:02d}", f"{pre}_{n}", f"{pre}_{n:02d}")
-                                               if len(s) >= 4]
+                                               if len(s) >= 4 or pre == "q"]
         ideas.append(list(dict.fromkeys(sp)))
     return ideas
+
+
+_XL_REV = None
+
+
+def xl_expand(q):
+    """words to add to the word search for a question (XLING2=1): the English spellings of its Korean words (a word or the
+    word without its particle, so 지도 does not come from 지도안), the parts it numbers (3강 lec03, 1분기 q1), and for
+    English words the Korean words that mean them (an English question about a Korean name: textbook 교과서). On a real
+    Mac (11/9) a paper named by its arXiv number and a standard saved under its English title were found by neither
+    name: only their English text could match"""
+    global _XL_REV
+    out = []
+    for w in re.findall(r"[가-힣]{2,}", _XL_ORD.sub(" ", q)):
+        for k in (w, _XL_JOSA.sub("", w)):
+            v = _xl_get(k)
+            if v:
+                out += v.split(); break
+    out += [s for idea in _xl_ordinals(q) for s in idea[2:]]
+    en = [w.lower() for w in re.findall(r"[A-Za-z]{3,}", q)]
+    if en:
+        if _XL_REV is None:
+            rev = {}
+            for k, v in list(XLING.items()) + list(_xl_extra().items()):
+                for s in (v or "").split():
+                    if len(s) >= 4:
+                        rev.setdefault(s, []).append(k)
+            _XL_REV = rev
+        for w in en:
+            out += _XL_REV.get(w, [])[:3]
+    return " ".join(dict.fromkeys(out))
 
 
 def xling_ideas(q, relax=False):
