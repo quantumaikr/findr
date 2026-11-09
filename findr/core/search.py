@@ -1423,7 +1423,7 @@ def collapse_copies(con, res):
     return res
 
 
-_VMARK = re.compile(r"(\d*\s*작성중[\s_\-]*\d*|v\d+|ver\d+|old|new|final|updated|최종|초안|수정|코멘트반영|검토의견반영|(?:인쇄|이메일전송|메일|제출|배포|출력|게시|보관|검토|발표)용|서명본?|사인포함|\(\d+\)|copy|사본|bak|제출|확정|검토|완료|전처리|테스트용|샘플|pdf)", re.I)
+_VMARK = re.compile(r"(\d*\s*작성중[\s_\-]*\d*|v\d+(?:\.\d+)*|ver\d+(?:\.\d+)*|old|new|final|updated|최종|초안|수정|코멘트반영|검토의견반영|(?:인쇄|이메일전송|메일|제출|배포|출력|게시|보관|검토|발표|공유)용|발송본|내부용|압축본|서명본?|사인포함|\(\d+\)|copy|사본|bak|제출|확정|검토|완료|전처리|테스트용|샘플|pdf|clean|merged|google\s*docs)", re.I)
 _VDATE = re.compile(r"\d{4}-?\d{2}-?\d{2}|\d{6}(?!\d)|(?<=[_\-\s])\d{4}$")
 # a tag in brackets before the name ((작성중), (메타_2_수정), [결과보고서]) and an outline number (1-2. ) say which copy
 # or which state, not which document (M1 Pro 11/9: such pairs were not folded)

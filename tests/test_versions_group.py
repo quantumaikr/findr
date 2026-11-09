@@ -141,3 +141,11 @@ def test_the_same_name_in_another_format_is_one_document():
             (2, "/h/m/가람재단_2023_인쇄용_0308.pdf", BODY[:120] + " 참가 확인 " + BODY[120:200])]
     out = search.group_versions(_con(rows), _res(rows, ["2023-03-07 10:00", "2023-03-08 10:00"]))
     assert [x["fid"] for x in out["results"]] == [1]
+
+
+def test_decimal_versions_and_double_download_marks():
+    """Mac Air (11/9): v0.1 and v0.2 kept '.1' and '.2' as if they named other documents; '(1) (1)' and use marks"""
+    rows = [(1, "/h/n/proposal_v0.2.docx", BODY + "보완"), (2, "/h/n/proposal_v0.1.docx", BODY + "초안"),
+            (3, "/h/n/proposal_v0.1 (1) (1).docx", BODY + "초안"), (4, "/h/n/proposal_공유용.pdf", BODY + "보완")]
+    out = search.group_versions(_con(rows), _res(rows, ["2026-10-0%d 10:00" % i for i in (4, 1, 2, 5)]))
+    assert [x["fid"] for x in out["results"]] == [1]
