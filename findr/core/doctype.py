@@ -2,9 +2,12 @@
 already stores for each file's first piece ('name | folders' + opening text). No extra model and no extra encoding: a small
 linear head per index encoder (doctype_heads.json, trained only on written examples, never on anyone's files).
 Measured on real PCs it never saw (11/9): 0.73 with the GPU encoder, 0.50-0.72 with the small CPU encoder; name rules
-alone were 0.24-0.58 there. Used as a filter an AI agent asks for, not as a ranking signal."""
+alone were 0.24-0.58 there. With the small encoder a name model (character n-grams of the name and folders, no encoder)
+is mixed in: 0.55 -> 0.69 on two unseen PCs, as good as the GPU encoder there, at no extra time.
+Used as a filter an AI agent asks for, not as a ranking signal."""
 import base64
 import json
+import math
 import re
 import sqlite3
 from pathlib import Path
@@ -62,6 +65,61 @@ def _head(encoder):
     return w * s[:, None], b
 
 
+_NAMES = None
+
+
+def _names():
+    """the name model: n-gram -> column, idf, weights (int8 + scale) and bias"""
+    global _NAMES
+    if _NAMES is None:
+        h = heads().get("names")
+        if not h:
+            _NAMES = False
+        else:
+            d = lambda k, t: np.frombuffer(base64.b64decode(h[k]), dtype=t).astype(np.float32)
+            n = len(heads()["labels"]); v = len(h["grams"])
+            _NAMES = ({g: i for i, g in enumerate(h["grams"])}, d("idf", np.float16),
+                      d("w", np.int8).reshape(n, v) * d("scale", np.float16)[:, None], d("bias", np.float16))
+    return _NAMES
+
+
+def name_text(path):
+    parts = str(path).replace("\\", "/").split("/")
+    return f"{parts[-1]} | {' '.join(parts[-4:-1])}"
+
+
+def _grams(text):
+    """character 2-4-grams inside each word padded with spaces, as the name model was trained (sklearn char_wb)"""
+    out = []
+    for w in text.lower().split():
+        w = f" {w} "
+        for n in (2, 3, 4):
+            if len(w) <= n:
+                out.append(w)
+                break
+            out += [w[i:i + n] for i in range(len(w) - n + 1)]
+    return out
+
+
+def name_probs(path):
+    """probabilities over the kinds from the file's name and last folders alone; None without a name model"""
+    m = _names()
+    if not m:
+        return None
+    col, idf, w, b = m
+    tf = {}
+    for g in _grams(name_text(path)):
+        if g in col:
+            tf[col[g]] = tf.get(col[g], 0) + 1
+    z = b.copy()
+    if tf:
+        ix = np.fromiter(tf, dtype=np.int64)
+        x = np.array([1 + math.log(tf[i]) for i in tf], dtype=np.float32) * idf[ix]
+        z = z + w[:, ix] @ (x / np.linalg.norm(x))
+    p = np.exp(z - z.max())
+    return p / p.sum()
+
+
 def of_files(con, fids):
     """{file id: (kind, probability)} from the stored first-piece vectors; {} when this index's encoder has no head"""
     labels = heads()["labels"]
@@ -84,17 +142,22 @@ def probs(con, fids):
     if hd is None or not fids:
         return {}
     w, b = hd
+    nw = float(heads()["heads"][r[0]].get("name_weight", 0))
     out = {}
     q = ",".join("?" * len(fids))
     try:
-        rows = con.execute(f"SELECT file, emb FROM chunks WHERE n=0 AND emb IS NOT NULL AND file IN ({q})", list(fids)).fetchall()
+        rows = con.execute(f"SELECT c.file, c.emb, f.path FROM chunks c JOIN files f ON f.id=c.file "
+                           f"WHERE c.n=0 AND c.emb IS NOT NULL AND c.file IN ({q})", list(fids)).fetchall()
     except sqlite3.OperationalError:
         return {}
-    for fid, emb in rows:
+    for fid, emb, path in rows:
         v = np.frombuffer(emb, dtype=np.float16).astype(np.float32)
         if v.shape[0] != w.shape[1]:
             continue
         z = w @ v + b
         p = np.exp(z - z.max()); p /= p.sum()
+        pn = name_probs(path) if nw else None
+        if pn is not None:   # a product of the two, the name model at weight nw
+            p = np.exp((1 - nw) * np.log(p + 1e-9) + nw * np.log(pn + 1e-9)); p /= p.sum()
         out[fid] = p
     return out
