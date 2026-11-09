@@ -192,6 +192,13 @@ What the tools return goes to the assistant that asked. If the assistant runs in
 
 File contents, questions and search history never leave the PC. Everything findr creates is kept in one folder, `%LOCALAPPDATA%\findr` on Windows and `~/.findr` on macOS and Linux; deleting it removes all of it. Searched files are only read, never modified. Passwords, certificates and key files are not indexed. On a shared PC only the signed-in user's folders are indexed.
 
+## Uninstalling
+
+- **App:** Settings → **findr 지우기** removes the index, downloaded models, the search engine, settings and logs. Then remove the app the usual way (Windows: Settings → Apps; macOS: move it from Applications to the Trash).
+- **Windows uninstaller:** choosing to delete the application data also removes the data folder (`%LOCALAPPDATA%\findr`).
+- **Command line:** `findr uninstall` removes the data folder; then delete the repository folder.
+- None of these touches your own files. The uv cache used during setup is shared with other programs and is left in place; `uv cache clean` empties it.
+
 ## Known limitations
 
 - On new questions about real files, the top result is right about one time in three (top-3: about half). Picking the right one of several versions of a document is the weakest part.

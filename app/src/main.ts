@@ -152,7 +152,10 @@ const CAN: [string, string, string][] = [   // stage, what the person can do onc
   ['ocr', '스캔·스크린샷 속 글자 찾기', '스캔 글자를 읽는 중'],
 ]
 type Progress = { stage?: string; done?: number; total?: number; minutes_left?: number | null; files?: number | null; paused?: boolean
-  stages?: Record<string, string>; t?: number }
+  stages?: Record<string, string>; t?: number; started?: number; scanned?: number; rate?: number; folder?: string }
+// '약 3분', '1분 안에', '약 1시간 20분': the time left of a stage, said plainly
+const left = (m: number) => m < 1 ? '1분 안에 끝나요' : m < 60 ? `약 ${Math.round(m)}분 남았어요` : `약 ${Math.floor(m / 60)}시간 ${Math.round(m % 60)}분 남았어요`
+const clock = (s: number) => s < 60 ? `${Math.floor(s)}초` : s < 3600 ? `${Math.floor(s / 60)}분 ${Math.floor(s % 60)}초` : `${Math.floor(s / 3600)}시간 ${Math.floor(s % 3600 / 60)}분`
 const ICON: Record<string, string> = { done: '✓', now: '●', later: '◷', wait: '○' }
 const STATE: Record<string, string> = { done: '준비됨', now: '진행 중', later: '쉬는 시간에', wait: '대기' }
 
@@ -164,6 +167,7 @@ async function indexing(list: string[], deep = false) {
       <div class="muted where" id="where">폴더를 둘러보는 중</div>
       <div class="bar" role="progressbar" aria-label="전체 진행" aria-valuemin="0" aria-valuemax="100"><div id="bar"></div></div>
       <div class="row between muted"><span id="pct">0%</span><span id="eta"></span></div>
+      <div class="muted elapsed" id="elapsed"></div>
     </div>
     <h2>지금 할 수 있는 것</h2>
     <div class="card"><ul class="ladder">${CAN.map(([id, can, doing]) => `
@@ -192,7 +196,9 @@ async function indexing(list: string[], deep = false) {
       li.className = v; li.querySelector('.ic')!.textContent = ICON[v]
       li.querySelector('.st')!.textContent = v === 'now' && P.paused ? '멈춤' : STATE[v]
       let d = v === 'wait' ? '앞 단계가 끝나면 시작해요' : doing
-      if (v === 'now' && P.stage === id && P.total) d += ` · ${Number(P.done).toLocaleString()}/${Number(P.total).toLocaleString()}`
+      if (v === 'now' && P.stage === id && id === 'names' && P.scanned)   // the total is unknown until the walk ends: what was looked at, how fast
+        d += ` · ${Number(P.scanned).toLocaleString()}개 확인${P.rate ? ` · 초당 ${Math.round(P.rate).toLocaleString()}개` : ''}`
+      else if (v === 'now' && P.stage === id && P.total) d += ` · ${Number(P.done).toLocaleString()}/${Number(P.total).toLocaleString()}${P.minutes_left != null ? ' · ' + left(P.minutes_left) : ''}`
       if (v === 'later') d = 'PC를 쓰지 않을 때 조금씩 읽어요'
       if (v === 'done') d = '지금 할 수 있어요'
       set('d-' + id, d)
@@ -201,9 +207,14 @@ async function indexing(list: string[], deep = false) {
     }
     const pct = Math.round(100 * done / CAN.length)
     $('bar').style.width = pct + '%'; $('bar').parentElement!.setAttribute('aria-valuenow', String(pct))
+    // the name scan cannot know its end: a moving bar instead of a percentage that sits at 0
+    $('bar').parentElement!.classList.toggle('busy', P.stage === 'names' && sg.names === 'now' && !P.paused)
+    if (P.stage === 'names' && P.folder) set('where', `둘러보는 중: ${P.folder}`)
+    if (P.started) set('elapsed', `시작한 지 ${clock(Date.now() / 1000 - P.started)}${P.t && Date.now() / 1000 - P.t > 20 && !P.paused ? ' · 큰 파일을 처리하는 중이에요' : ''}`)
     set('pct', P.paused ? `${pct}% · 잠시 멈춤` : `${pct}%`)
-    set('eta', P.paused ? '1시간 뒤에는 저절로 이어서 해요' : P.minutes_left != null ? (P.minutes_left < 1 ? '이 단계는 곧 끝나요' : `이 단계 약 ${P.minutes_left}분`) : '')
+    set('eta', P.paused ? '1시간 뒤에는 저절로 이어서 해요' : P.minutes_left != null ? `이 단계 ${left(P.minutes_left)}` : P.stage === 'names' ? '파일 목록이 끝나면 남은 시간을 알려 드려요' : '')
     if (P.files) found = Math.max(found, P.files)
+    if (P.scanned) found = Math.max(found, P.scanned)
     set('nfiles', found.toLocaleString())
     set('pause', P.paused ? '이어서 하기' : '잠시 멈추기')
     if (sg.names === 'done' && !moved) {   // names are in: searching is useful now
@@ -291,11 +302,31 @@ async function settings(s: AppState) {
     <h2>데이터</h2>
     <div class="card"><p>색인, 설정, findr가 배운 것은 모두 데이터 폴더에 있습니다.</p>
       <div class="actions" style="margin-top:6px"><button id="data">데이터 폴더 열기</button></div></div>
+    <h2>findr 지우기</h2>
+    <div class="card"><p>색인, 내려받은 모델, 검색 엔진, 설정, 기록을 이 PC에서 모두 지웁니다. 내 파일은 건드리지 않습니다.</p>
+      <div class="actions" style="margin-top:6px"><button id="un">findr 데이터 지우기…</button></div><div id="unbox"></div></div>
     <div class="actions"><button class="primary" id="back">검색으로 돌아가기</button></div>`
   document.getElementById('re')!.onclick = () => { invoke('stop_engine'); location.hash = 'index' }
   document.getElementById('deep')!.onclick = () => { invoke('stop_engine'); location.hash = 'deep' }
   document.getElementById('fold')!.onclick = () => { location.hash = 'folders' }
   document.getElementById('data')!.onclick = () => invoke('open_data_dir')
+  document.getElementById('un')!.onclick = () => {   // two steps: nothing is removed by one click
+    const box = document.getElementById('unbox')!
+    box.innerHTML = `<div class="notice err">데이터 폴더(${s.home})를 지웁니다. 다시 쓰려면 모델을 다시 받고 처음부터 색인해야 합니다.
+      <div class="actions" style="margin-top:8px"><button class="primary" id="unyes">지우기</button><button id="unno">취소</button></div></div>`
+    document.getElementById('unno')!.onclick = () => { box.innerHTML = '' }
+    document.getElementById('unyes')!.onclick = async () => {
+      box.innerHTML = '<div class="notice">지우는 중이에요…</div>'
+      try {
+        const where = await invoke<string>('uninstall_data')
+        const win = navigator.userAgent.includes('Windows'), mac = navigator.userAgent.includes('Mac')
+        const how = win ? 'Windows 설정 → 앱 → 설치된 앱에서 findr를 제거하세요.' : mac ? '응용 프로그램 폴더의 findr를 휴지통으로 옮기세요.' : '설치한 방법(패키지 관리자, AppImage 파일)대로 findr를 지우세요.'
+        box.innerHTML = `<div class="notice">데이터를 모두 지웠어요 (${where}). 마지막으로 앱을 지우려면: ${how}
+          <div class="actions" style="margin-top:8px"><button class="primary" id="unquit">앱 닫기</button></div></div>`
+        document.getElementById('unquit')!.onclick = () => invoke('quit_app')
+      } catch (e) { box.innerHTML = `<div class="notice err">${String(e)}</div>` }
+    }
+  }
   document.getElementById('photo')!.onchange = ev => {
     try { localStorage.setItem('findr.photo', (ev.target as HTMLInputElement).checked ? 'on' : 'off') } catch { /* private storage off */ }
   }

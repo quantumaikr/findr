@@ -416,6 +416,7 @@ def main():
     if a.upgrade:
         return upgrade(con, a.upgrade, a.minutes)
     progress("names", 0, len(roots))
+    scanned = 0   # files looked at in the folders before this one
     for k, root in enumerate(roots):   # stage 1: names and folders of every chosen folder first (seconds)
         print("FINDR_ROOT " + json.dumps({"i": k, "n": len(roots), "path": str(root)}, ensure_ascii=False), flush=True)
         if not os.path.isdir(_long(str(root))):   # unplugged disk, network drive offline: its files stay as they were
@@ -465,6 +466,7 @@ def main():
                 except UnicodeEncodeError:   # a name that is not valid text (Linux bytes): skipped, it crashed every run
                     continue
                 seen.add(s)
+                tick("names", k, len(roots), scanned=scanned + len(seen), folder=_short(dpl)[len(str(root)):].lstrip("/\\")[:80] or root.name)
                 tr = tier(p)
                 if tr in (1, 2) and cloud_only(st):
                     tr = 3   # OneDrive 'online-only': reading it would download it; found by name until it is on the PC
@@ -493,7 +495,8 @@ def main():
         print(f"FINDR_SCAN new/changed {new} removed {len(gone)} in {time.time() - t0:.0f}s")
         if unread:
             print(f"FINDR_SKIPPED {len(unread)} folders could not be read ({type(unread[0]).__name__})", flush=True)
-        progress("names", k + 1, len(roots))
+        scanned += len(seen)
+        progress("names", k + 1, len(roots), scanned=scanned)
     _P["files"] = con.execute("SELECT count(*) FROM files WHERE tier>0").fetchone()[0]
     if not a.no_embed:   # stage 1b: a meaning vector from each file's name and folders (natural-language search on names)
         print("FINDR_STAGE namevec", flush=True); embed(con, a.model, names_only=True)
@@ -546,6 +549,26 @@ def progress(stage, done, total, **kw):
         tmp.write_text(json.dumps(p), encoding="utf-8"); os.replace(tmp, f)   # a reader never sees half a file
     except OSError:
         pass
+
+
+_TICK = {}
+
+
+def tick(stage, done, total, every=0.7, **kw):
+    """progress at most every `every` seconds, with the rate and the minutes left of this stage. The app reads the file
+    every 0.7 s: counts written per 200 files, per 256 pieces or per folder left the first index looking frozen for a
+    minute or more on slow PCs (11/10: Windows and Mac, the name scan of a whole home folder is one folder)"""
+    now = time.time()
+    t = _TICK.get(stage)
+    if t is None or done < t["done0"]:
+        t = _TICK[stage] = {"t0": now, "done0": done, "last": 0.0}
+    if now - t["last"] < every and done != total:
+        return
+    t["last"] = now
+    rate = (done - t["done0"]) / max(now - t["t0"], 1e-6)
+    if total and rate > 0 and now - t["t0"] >= 3:   # a few seconds of work before guessing the rest
+        kw.setdefault("minutes_left", round((total - done) / rate / 60, 1))
+    progress(stage, done, total, rate=round(rate, 1), **kw)
 
 
 PAUSE_MAX = 3600   # a pause the person forgot about lapses after an hour
@@ -705,7 +728,7 @@ def read_wave(con, root, a):
         con.execute("UPDATE files SET pending=? WHERE id=?", (2 if part else 0, fid))
         if (i + 1) % 200 == 0:
             con.commit(); print(f"  read {i + 1}/{len(rows)} {time.time() - t0:.0f}s", flush=True)
-            progress("content", i + 1, len(rows), folder=root.name)
+        tick("content", i + 1, len(rows), folder=root.name)
     con.commit()
     left = con.execute("SELECT count(*) FROM files WHERE pending IN (1,2) AND path LIKE ? ESCAPE '\\'", (like_pre(pre),)).fetchone()[0]
     print(f"FINDR_READ {len(rows)} files in {time.time() - t0:.0f}s, still pending {left}" + (f" (in use by another program: {locked})" if locked else ""))
@@ -969,8 +992,7 @@ def ocr_wave(con, root, first_pages=None, deep_pages=50):
     for k, (fid, s) in enumerate(items):
         pause_wait()
         lines, state, texts = [], 1, None
-        if k % 10 == 0:
-            progress("ocr", k, len(items), folder=root.name)
+        tick("ocr", k, len(items), folder=root.name)
         try:
             size = os.path.getsize(s)
         except OSError:
@@ -1432,17 +1454,23 @@ def embed(con, model, names_only=False):
         groups.setdefault(f"{label(Path(p))}\n{t}"[:1200], []).append(cid)
     uniq = list(groups.items())
     t0 = last = time.time(); warned = False
-    for i in range(0, len(uniq), 256):
+    stage = "namevec" if names_only else "meaning"
+    progress(stage, 0, len(uniq))   # the stage shows at once, not after its first batch
+    i, bs = 0, 256
+    while i < len(uniq):
         pause_wait()
-        b = uniq[i:i + 256]
+        b = uniq[i:i + bs]
+        tb = time.time()
         v = vecs([k for k, _ in b])
+        if time.time() - tb > 8 and bs > 32:
+            bs //= 2   # a slow PC (a large model on a CPU: 50 s per 256) reports more often
         con.executemany("UPDATE chunks SET emb=?, emb2=NULL WHERE id=?", [(x.tobytes(), cid) for x, (_, cids) in zip(v, b) for cid in cids])   # changed text: its side vector is stale
-        done_ = i + len(b)
-        if done_ % 2560 < 256 or time.time() - last > 30 or done_ == len(uniq):   # saved and reported often: progress is visible
+        done_ = i + len(b); i = done_
+        rate = done_ / max(time.time() - t0, 1e-6); left = (len(uniq) - done_) / max(rate, 1e-6)
+        tick(stage, done_, len(uniq), minutes_left=round(left / 60, 1))
+        if done_ % 2560 < len(b) or time.time() - last > 30 or done_ == len(uniq):   # saved often
             con.commit(); last = time.time()
-            rate = done_ / max(last - t0, 1e-6); left = (len(uniq) - done_) / max(rate, 1e-6)
             print(f"  embedded {done_}/{len(uniq)} {last - t0:.0f}s | {rate:.0f} pieces/s | about {left / 60:.0f} min left", flush=True)
-            progress("namevec" if names_only else "meaning", done_, len(uniq), minutes_left=round(left / 60))
             if not warned and done_ >= 1024 and left > 6 * 3600 and name == "embeddinggemma-2":
                 warned = True
                 print("FINDR_SLOW 이 PC에서는 큰 모델이 느립니다. 작은 모델로 바꾸면 훨씬 빨라집니다:  findr setup --lite", flush=True)
