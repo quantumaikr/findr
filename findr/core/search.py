@@ -1419,6 +1419,96 @@ def collapse_copies(con, res):
     return res
 
 
+_VMARK = re.compile(r"(v\d+|ver\d+|old|new|final|최종|초안|수정|코멘트반영|\(\d+\)|copy|사본|bak|제출|확정|검토|완료)", re.I)
+_VDATE = re.compile(r"\d{4}-?\d{2}-?\d{2}|\d{6}(?!\d)")
+
+
+def _vname(path):
+    """a file name without its extension, folder and version marks, and the marks it had (dates apart)"""
+    import unicodedata as _ud
+    name = re.sub(r"\.[^.]+$", "", _ud.normalize("NFC", path.replace("\\", "/")).rsplit("/", 1)[-1].lower())
+    marks = tuple(sorted(m.lower() for m in _VMARK.findall(name)))
+    s = re.sub(r"[\s_\-.()\[\]]+", " ", _VDATE.sub(" ", _VMARK.sub(" ", name))).strip()
+    return s, marks
+
+
+def _grams(t):
+    t = re.sub(r"\s+", " ", t or "")
+    return {t[i:i + 3] for i in range(max(len(t) - 2, 0))}
+
+
+def group_versions(con, res, top=20):
+    """versions of one document are one line to a person: the best-ranked version, the others under it as 'versions',
+    newest first. On real PCs (11/9) the version families of a document were spread over folders two times in three
+    (a working folder and a submitted one), and a version above the asked one was the first cause of misses; folding
+    them also lets other documents up into the first lines. One document = (a) the same name once version marks are
+    taken off, in the same folder or the folder above it, when the names differ by version marks (v2, 최종, 수정, (1))
+    (a short common name like 제안서 with some text in common) or the openings are alike; or (b) nearly the same opening text whatever the name or format (a .hwp and the .pdf
+    made from it). Names that differ by a date only, with other text, are a series (weekly minutes), not versions."""
+    rs = res.get("results") or []
+    if len(rs) < 2:
+        return res
+    head = rs[:top]
+    fids = [x.get("fid") for x in head if x.get("fid") is not None]
+    txt = {}
+    if fids:
+        qm = ",".join("?" * len(fids))
+        txt = {fid: re.sub(r"^파일: .*?구조: ", "", t or "")[:900] for fid, t in
+               con.execute(f"SELECT file, text FROM chunks WHERE n = 0 AND file IN ({qm})", fids)}
+    info = []
+    for x in head:
+        path = (x.get("path") or "").replace("\\", "/")
+        s, marks = _vname(path)
+        body = txt.get(x.get("fid")) or ""
+        info.append((path.rsplit("/", 2)[0], s if len(s.replace(" ", "")) >= 2 else "", marks,
+                     _grams(body) if len(body) >= 80 else None, _grams(body[300:]) if len(body) >= 500 else None,
+                     _grams(s), (x.get("path") or "").rsplit(".", 1)[-1].lower()))
+    parent = list(range(len(head)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def alike(a, b, need):
+        return a is not None and b is not None and len(a & b) / max(len(a | b), 1) >= need
+
+    for i in range(len(head)):
+        for j in range(i):
+            (ai, si, mi, gi, bi, ni, ei), (aj, sj, mj, gj, bj, nj, ej) = info[i], info[j]
+            # the same name: versions when the marks differ (a short common name like 제안서 needs some text in common);
+            # when only a date differs, the same form filled again (another year, another applicant: M1 Pro 11/9 7 of 20
+            # wrong) is not a version, so the text must be nearly the same
+            short = len(si.replace(" ", "")) < 4
+            same_name = si and si == sj and ai == aj and ((mi != mj and (not short or alike(gi, gj, 0.3))) or alike(gi, gj, 0.85))
+            # any name: nearly the same text, past a standard opening (a copyright paragraph, a resolution header, a form
+            # line chained 274 files on one PC), and a name alike in part or another format (a .hwp and its .pdf)
+            same_text = alike(gi, gj, 0.85) and (bi is None or bj is None or alike(bi, bj, 0.7)) and (ei != ej or alike(ni, nj, 0.3))
+            if same_name or same_text:
+                parent[find(i)] = find(j)
+    groups = {}
+    for i in range(len(head)):
+        groups.setdefault(find(i), []).append(i)
+    if all(len(g) == 1 for g in groups.values()):
+        return res
+    out, folded = [], 0
+    for i, x in enumerate(head):
+        g = groups[find(i)]
+        if g[0] != i:
+            folded += 1
+            continue
+        if len(g) > 1:
+            x = dict(x)
+            others = sorted((head[k] for k in g[1:]), key=lambda y: y.get("date") or "", reverse=True)
+            x["versions"] = [{"path": y.get("path"), "date": y.get("date"), "size": y.get("size")} for y in others]
+        out.append(x)
+    res = dict(res)
+    res["results"] = out + rs[top:]
+    res["versions_folded"] = folded
+    return res
+
+
 def photos_wanted(q, p):
     """the question leaves room for a photo: it names no format other than images, and no kind of document unless it also
     says photo ('회의 사진', '영수증 찍은 거'). On by default since the real-PC sealed sets (11/9: three PCs, none worse); KIND_GATE=0 turns it off"""
@@ -2148,7 +2238,7 @@ def result_key(f, q, mode, k, prev, pin):
         return None
     pm = personal()
     mem = len(getattr(pm, "rows", []) or []) if pm is not None else 0
-    flags = tuple(os.environ.get(x, "") for x in ("KIND_GATE", "DUP_COLLAPSE", "TIME_WORDS", "CE_TAIL", "CE_MATCHED"))
+    flags = tuple(os.environ.get(x, "") for x in ("KIND_GATE", "DUP_COLLAPSE", "TIME_WORDS", "CE_TAIL", "CE_MATCHED", "VERSION_GROUP"))
     return (q, mode, k, prev, pin, dt.date.today().isoformat(), ver, mem, flags)
 
 
@@ -2446,6 +2536,9 @@ def serve(f, port):
                 if os.environ.get("DUP_COLLAPSE", "1") == "1":
                     with SEARCH_LOCK:
                         res = collapse_copies(f.con, res)
+                if os.environ.get("VERSION_GROUP", "0") == "1":
+                    with SEARCH_LOCK:
+                        res = group_versions(f.con, res)
                 if res.get("results") and os.environ.get("KIND_GATE", "1") == "1":
                     res["results"] = format_first(q_, res["results"])
                 # the page's '서버' time: the whole request, not the search alone (a Mac page showed 서버 3.4 s · 화면 7.1 s and

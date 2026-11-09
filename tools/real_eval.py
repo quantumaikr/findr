@@ -7,7 +7,9 @@ Questions (JSONL, written before any search and not changed after seeing results
   {"id": "B1", "kind": "task",  "q": "..."}                                   a common task: judged by hand afterwards
   {"id": "N1", "kind": "none",  "q": "..."}                                   nothing on this PC: says so?
     python tools/real_eval.py questions.jsonl --out run_a.json [--port 8096] [--home ~/.findr] [--compare run_b.json]
-A copy folded under an answer (DUP_COLLAPSE, 'copies') counts as the answer. --base also asks the first stage (k=50).
+A copy folded under an answer (DUP_COLLAPSE, 'copies') counts as the answer. Another version folded under a line
+(VERSION_GROUP, 'versions') counts at that line, with one more file to open. --base also asks the first stage (k=50).
+opens: files a person opens until the answer (11 when it is not in the first 10).
 """
 import argparse
 import base64
@@ -32,13 +34,21 @@ def norm(p):
     return p.replace("\\", "/")
 
 
-def rank_of(results, answers):
-    """1-based rank of the first result that is an answer or holds one among its folded copies, or None"""
+def rank_of(results, answers, versions=False):
+    """1-based rank of the first result that is an answer or holds one among its folded copies, or None. versions=True:
+    (rank, True) when the answer is another version folded under that result, else (rank, False)"""
     want = {norm(a) for a in answers}
     for i, x in enumerate(results or [], 1):
         if norm(x.get("path")) in want or want & {norm(c) for c in x.get("copies") or []}:
-            return i
-    return None
+            return (i, False) if versions else i
+        if versions and want & {norm(v.get("path") if isinstance(v, dict) else v) for v in x.get("versions") or []}:
+            return i, True
+    return (None, False) if versions else None
+
+
+def opens_of(r):
+    rk = r.get("rank")
+    return min(11, rk + (1 if r.get("in_versions") else 0)) if rk and rk <= 10 else 11
 
 
 def summarize(rows):
@@ -49,6 +59,8 @@ def summarize(rows):
          "hit1": sum(1 for r in known if r.get("rank") == 1),
          "top3": sum(1 for r in known if r.get("rank") and r["rank"] <= 3),
          "top10": sum(1 for r in known if r.get("rank") and r["rank"] <= 10),
+         "in_versions": sum(1 for r in known if r.get("in_versions")),
+         "opens": round(sum(opens_of(r) for r in known) / max(len(known), 1), 2),
          "none": len(none), "none_said": sum(1 for r in none if r.get("note")),
          "p50_ms": ms[len(ms) // 2] if ms else None, "max_ms": ms[-1] if ms else None}
     if any("base_rank" in r for r in known):
@@ -100,7 +112,8 @@ def main():
                "top": [y.get("path") for y in (r.get("results") or [])[:5]]}
         answers = x.get("answers") or ([x["answer"]] if x.get("answer") else [])
         if row["kind"] == "known" and answers:
-            row["rank"] = rank_of(r.get("results"), answers)
+            row["rank"], row["in_versions"] = rank_of(r.get("results"), answers, versions=True)
+            row["folded_versions"] = sum(len(y.get("versions") or []) for y in (r.get("results") or [])[:5])
             if a.base:
                 b, _ = ask(x["q"], "base", 50); row["base_rank"] = rank_of(b.get("results"), answers)
         rows.append(row)
