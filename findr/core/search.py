@@ -876,6 +876,9 @@ class Finder:
         p["pkgs"] = {w for w in re.findall(r"[A-Za-z][A-Za-z0-9_]{2,}", q.lower()) if w in self.pkgs}
         p["lib"] = p["lib"] or bool(p["pkgs"])
         eng =" ".join(dict.fromkeys(" ".join(v for k, v in GLOSS.items() if k in q).split()))
+        # the extra words join the word search only: in the meaning query they blurred English questions (held-out
+        # virtual PCs 11/9: two English questions from #1 to out of the list, while Korean ones gained)
+        p["xl"] = xl_expand(q) if os.environ.get("XLING2") == "1" else ""
         if p.get("only_cond") and (p["since"] or p["exts"]):   # "6개월 전에 만든 파일": no topic, just the window, newest first
             return self.recent(p, k, t0)
         rer = {"x4b": "list", "x4bp": "1tok", "fx4b": "list", "pick1": "pick1", "fpick1": "pick1", "xce": "ce", "fxce": "ce",
@@ -1135,6 +1138,7 @@ class Finder:
                 pass
         split_ = lambda t: [w for w in re.split(r"[\s/\\,.()\[\]\"']+", t) if w]
         words = split_(text) + distinct_words(split_(eng))   # English expansions: one idea once (gen + generate), #32
+        words += [w for w in distinct_words(split_(p.get("xl") or "")) if w not in words]
         lex = []
         long_ = [w for w in words if len(w) >= 3]
         if long_:
@@ -1416,6 +1420,136 @@ def collapse_copies(con, res):
         out.append(x)
     if len(out) < len(rs):
         res = dict(res); res["results"] = out; res["copies_folded"] = len(rs) - len(out)
+    return res
+
+
+_VMARK = re.compile(r"(\d*\s*작성중[\s_\-]*\d*|v\d+|ver\d+|old|new|final|updated|최종|초안|수정|코멘트반영|검토의견반영|(?:인쇄|이메일전송|메일|제출|배포|출력|게시|보관|검토|발표)용|서명본?|사인포함|\(\d+\)|copy|사본|bak|제출|확정|검토|완료|전처리|테스트용|샘플|pdf)", re.I)
+_VDATE = re.compile(r"\d{4}-?\d{2}-?\d{2}|\d{6}(?!\d)|(?<=[_\-\s])\d{4}$")
+# a tag in brackets before the name ((작성중), (메타_2_수정), [결과보고서]) and an outline number (1-2. ) say which copy
+# or which state, not which document (M1 Pro 11/9: such pairs were not folded)
+_VHEAD = re.compile(r"^(?:\s*[\(\[][^\)\]]{1,24}[\)\]]\s*|\s*\d+(?:[\-.]\d+)*\.\s+)+")
+
+
+def _vname(path):
+    """a file name without its extension, folder and version marks, and the marks it had (dates apart)"""
+    import unicodedata as _ud
+    name = re.sub(r"\.[^.]+$", "", _ud.normalize("NFC", path.replace("\\", "/")).rsplit("/", 1)[-1].lower())
+    head = _VHEAD.match(name)
+    marks = tuple(sorted(m.lower() for m in _VMARK.findall(name))) + ((re.sub(r"\s+", "", head.group(0)),) if head else ())
+    s = re.sub(r"[\s_\-.()\[\]]+", " ", _VDATE.sub(" ", _VMARK.sub(" ", _VHEAD.sub("", name)))).strip()
+    return s, marks
+
+
+def _ids(stem):
+    """numbers and part letters that stay in a name once version marks and dates are off: 제1115호 vs 제1116호, 3월 vs
+    4월, Part A vs Part B are different documents, whatever their text has in common"""
+    return set(re.findall(r"\d+", stem)) | {m.lower() for m in re.findall(r"(?:part|부|편|권)\s*([a-z]|[ivx]+)\b", stem, re.I)}
+
+
+def _grams(t):
+    # spaces and line breaks taken out: a PDF made from a .hwp often splits words or adds odd spaces (Windows 11/9: an
+    # edited .hwp and its signed .pdf were not seen as one document)
+    t = re.sub(r"\s+", "", t or "")
+    return {t[i:i + 3] for i in range(max(len(t) - 2, 0))}
+
+
+_VDOCS = {"pdf", "hwp", "hwpx", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "key", "pages", "numbers", "odt", "ods", "odp", "rtf"}
+
+
+def group_versions(con, res, top=20):
+    """versions of one document are one line to a person: the best-ranked version, the others under it as 'versions',
+    newest first. On real PCs (11/9) the version families of a document were spread over folders two times in three
+    (a working folder and a submitted one), and a version above the asked one was the first cause of misses; folding
+    them also lets other documents up into the first lines. One document = (a) the same name once version marks are
+    taken off, in the same folder or the folder above it, when the names differ by version marks (v2, 최종, 수정, (1))
+    (a short common name like 제안서 with some text in common) or the openings are alike; or (b) nearly the same opening text whatever the name or format (a .hwp and the .pdf
+    made from it). Names that differ by a date only, with other text, are a series (weekly minutes), not versions."""
+    rs = res.get("results") or []
+    if len(rs) < 2:
+        return res
+    head = rs[:top]
+    fids = [x.get("fid") for x in head if x.get("fid") is not None]
+    txt = {}
+    if fids:
+        qm = ",".join("?" * len(fids))
+        txt = {fid: re.sub(r"^파일: .*?구조: ", "", t or "")[:900] for fid, t in
+               con.execute(f"SELECT file, text FROM chunks WHERE n = 0 AND file IN ({qm})", fids)}
+    info = []
+    for x in head:
+        path = (x.get("path") or "").replace("\\", "/")
+        if path.rsplit(".", 1)[-1].lower() not in _VDOCS:   # logs, code and data have runs, not versions (M1 Pro 11/9:
+            info.append(("", "", (), None, None, set(), ""))   # the same log in folders named by the time of each run)
+            continue
+        s, marks = _vname(path)
+        body = txt.get(x.get("fid")) or ""
+        info.append((path.rsplit("/", 2)[0], s if len(s.replace(" ", "")) >= 2 else "", marks,
+                     _grams(body) if len(body) >= 80 else None, _grams(body[300:]) if len(body) >= 500 else None,
+                     _grams(s), (x.get("path") or "").rsplit(".", 1)[-1].lower()))
+    parent = list(range(len(head)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def alike(a, b, need):
+        return a is not None and b is not None and len(a & b) / max(len(a | b), 1) >= need
+
+    ids = [_ids(x[1]) for x in info]
+    gids = {i: [ids[i]] if ids[i] else [] for i in range(len(head))}   # the numbers each group holds
+
+    def clash(a, b):   # a group never takes a file whose name numbers differ from any of its members (no chains via N.pdf)
+        return any(x != y for x in gids[a] for y in gids[b])
+
+    for i in range(len(head)):
+        for j in range(i):
+            (ai, si, mi, gi, bi, ni, ei), (aj, sj, mj, gj, bj, nj, ej) = info[i], info[j]
+            ri, rj = find(i), find(j)
+            if ri == rj or clash(ri, rj):
+                continue
+            # the same name: versions when the marks differ (a short common name like 제안서 needs some text in common);
+            # when only a date differs, the same form filled again (another year, another applicant: M1 Pro 11/9 7 of 20
+            # wrong) is not a version, so the text must be nearly the same
+            short = len(si.replace(" ", "")) < 4
+            # the same name in another format (a .hwp and the .pdf made from it, a date tail on one) reads differently: 0.6
+            same_name = si and si == sj and ai == aj and ((mi != mj and (not short or alike(gi, gj, 0.3)))
+                                                         or alike(gi, gj, 0.6 if ei != ej else 0.85))
+            # any name: nearly the same text, past a standard opening (a copyright paragraph, a resolution header, a form
+            # line chained 274 files on one PC), and a name alike in part or another format (a .hwp and its .pdf).
+            # Names that differ need the text all but identical: the same form filled by another school is 0.85 alike.
+            # Different numbers in the names (standards 1115 and 1116, a March and an April menu) are never one document
+            # (M1 Pro 11/9: 4 of 12 folded lines wrong, all of these kinds)
+            # names built the same way that differ in one place (기관A_2023 / 기관B_2023: another school, company or
+            # person in the same slot) are the same form for someone else, however alike their text (M1 Pro 11/9)
+            ti, tj = si.split(), sj.split()
+            if si != sj and len(ti) == len(tj) >= 2 and sum(a != b for a, b in zip(ti, tj)) == 1:
+                continue
+            # another format of the same document (.pptx and its .pdf) reads a little differently: 0.88
+            same_text = (alike(gi, gj, 0.85 if si == sj else 0.88 if ei != ej else 0.92) and (bi is None or bj is None or alike(bi, bj, 0.7))
+                         and (ei != ej or alike(ni, nj, 0.3)))
+            if same_name or same_text:
+                parent[ri] = rj
+                gids[rj] = gids[rj] + gids.pop(ri)
+    groups = {}
+    for i in range(len(head)):
+        groups.setdefault(find(i), []).append(i)
+    if all(len(g) == 1 for g in groups.values()):
+        return res
+    out, folded = [], 0
+    for i, x in enumerate(head):
+        g = groups[find(i)]
+        if g[0] != i:
+            folded += 1
+            continue
+        if len(g) > 1:
+            x = dict(x)
+            others = sorted((head[k] for k in g[1:]), key=lambda y: y.get("date") or "", reverse=True)
+            x["versions"] = [{"path": y.get("path"), "date": y.get("date"), "size": y.get("size")} for y in others]
+        out.append(x)
+    res = dict(res)
+    res["results"] = out + rs[top:]
+    res["versions_folded"] = folded
     return res
 
 
@@ -1885,31 +2019,92 @@ def _sounds_in(sk, nm):
     return any(en_sound(t) == sk or (len(sk) >= 4 and sk in en_sound(t)) for t in re.findall(r"[a-z]{4,}", nm))
 
 
+_XL_EXTRA = None
+
+
+def _xl_extra():
+    """more Korean words with the spellings English file names use (xling_extra.json, written by a teacher model for
+    office, school, research and IT work; XLING2=1): a Korean question with one word the short list lacks matched no name
+    (M1 Pro 11/9: 4 of 4 Korean-English questions not among the candidates)"""
+    global _XL_EXTRA
+    if _XL_EXTRA is None:
+        try:
+            _XL_EXTRA = json.load(open(Path(__file__).with_name("xling_extra.json"), encoding="utf-8"))
+        except (OSError, ValueError):
+            _XL_EXTRA = {}
+    return _XL_EXTRA
+
+
+def _xl_get(w):
+    v = XLING.get(w)
+    if v is None and os.environ.get("XLING2") == "1":
+        v = _xl_extra().get(w)
+    return v
+
+
+# numbered parts of a course or a book, as English names write them: 3강 lec03, 2장 ch2, 1주차 week1 (Windows 11/9)
+_XL_ORD = re.compile(r"(?:제\s*)?(\d{1,2})\s*(강|장|주차|회차|차시|단원|분기|학기|부|편|권)")
+_XL_ORD_EN = {"강": ("lec", "lecture"), "장": ("ch", "chap", "chapter"), "주차": ("week", "wk"), "회차": ("session", "ep"),
+              "차시": ("session", "lesson"), "단원": ("unit", "lesson"), "부": ("part",), "편": ("part", "vol"), "권": ("vol", "book"),
+              "분기": ("q", "quarter"), "학기": ("semester", "sem", "term")}
+
+
+def _xl_ordinals(q):
+    """the numbered parts in a question, each an idea with its Korean and English spellings (none shorter than 4)"""
+    ideas = []
+    for n, suf in _XL_ORD.findall(q):
+        n = int(n)
+        sp = [f"{n}{suf}", f"{n:02d}{suf}"] + [s for pre in _XL_ORD_EN[suf] for s in (f"{pre}{n}", f"{pre}{n:02d}", f"{pre}_{n}", f"{pre}_{n:02d}")
+                                               if len(s) >= 4 or pre == "q"]
+        ideas.append(list(dict.fromkeys(sp)))
+    return ideas
+
+
+def xl_expand(q):
+    """words to add to the word search for a question (XLING2=1): the English spellings of its Korean words (a word or the
+    word without its particle, so 지도 does not come from 지도안) and the parts it numbers (3강 lec03, 1분기 q1). On a real
+    Mac (11/9) a paper named by its arXiv number and a standard saved under its English title were found by neither
+    name: only their English text could match"""
+    out = []
+    for w in re.findall(r"[가-힣]{2,}", _XL_ORD.sub(" ", q)):
+        for k in (w, _XL_JOSA.sub("", w)):
+            v = _xl_get(k)
+            if v:
+                out += v.split(); break
+    out += [s for idea in _xl_ordinals(q) for s in idea[2:]]
+    # no Korean words for an English question: they pulled Korean documents over the English one asked for (held-out
+    # virtual PCs 11/9: two English questions from #1 to out of the list)
+    return " ".join(dict.fromkeys(out))
+
+
 def xling_ideas(q, relax=False):
     """the ideas of a Korean question, each with the spellings that count for it in a file name (XLING);
     [] for a question without Korean or with fewer than two ideas.
     relax: only the ideas a name can carry in English (words of the list, English words). People ask with words no
     file name has ('히스토그램 그려 보는 실습': 그려, 보는), and each of them blocked the name (field, 0.2.13: 5 of 10 out of
     the top 10)"""
+    ords = _xl_ordinals(q) if os.environ.get("XLING2") == "1" else []
+    if ords:
+        q = _XL_ORD.sub(" ", q)
     words = re.findall(r"[가-힣]{2,}|[A-Za-z][A-Za-z0-9]+", q)
-    if not words or not any(re.match(r"[가-힣]", w) for w in words):
+    if not (words or ords) or not (ords or any(re.match(r"[가-힣]", w) for w in words)):
         return []
-    ideas = []
+    ideas = list(ords)
     for w in words:
         if re.match(r"[A-Za-z]", w):
             ideas.append([w.lower()]); continue
-        stem = w if w in XLING else _XL_JOSA.sub("", w)
-        if XLING.get(stem) == "" or XLING.get(w) == "":
+        stem = w if _xl_get(w) is not None else _XL_JOSA.sub("", w)
+        if _xl_get(stem) == "" or _xl_get(w) == "":
             continue   # 자료, 문서, 파일 …: not an idea of the content
         if not stem:
             continue   # a particle alone (에서)
         # sound spellings are off unless XLING_SOUND=1: the GPU PC gate moved nothing, the field sets decide (2026-11-08)
-        sk = "" if XLING.get(stem) or _NOT_LOAN.search(stem) or os.environ.get("XLING_SOUND") != "1" else ko_sound(stem)
-        sp = (XLING.get(stem) or "").split() + (["~" + sk] if len(sk) >= 3 else [])
+        sk = "" if _xl_get(stem) or _NOT_LOAN.search(stem) or os.environ.get("XLING_SOUND") != "1" else ko_sound(stem)
+        sp = (_xl_get(stem) or "").split() + (["~" + sk] if len(sk) >= 3 else [])
         if relax and (not sp or stem in XL_GENERIC):
             continue
         # relax: a word with only a sound spelling may be a native word (경사도 sounds like nothing): it counts when it matches
-        ideas.append((["?"] if relax and not XLING.get(stem) else []) + [stem] + sp)
+        ideas.append((["?"] if relax and not _xl_get(stem) else []) + [stem] + sp)
     return ideas if len(ideas) >= 2 else []
 
 
@@ -2148,7 +2343,7 @@ def result_key(f, q, mode, k, prev, pin):
         return None
     pm = personal()
     mem = len(getattr(pm, "rows", []) or []) if pm is not None else 0
-    flags = tuple(os.environ.get(x, "") for x in ("KIND_GATE", "DUP_COLLAPSE", "TIME_WORDS", "CE_TAIL", "CE_MATCHED"))
+    flags = tuple(os.environ.get(x, "") for x in ("KIND_GATE", "DUP_COLLAPSE", "TIME_WORDS", "CE_TAIL", "CE_MATCHED", "VERSION_GROUP", "XLING2"))
     return (q, mode, k, prev, pin, dt.date.today().isoformat(), ver, mem, flags)
 
 
@@ -2446,6 +2641,10 @@ def serve(f, port):
                 if os.environ.get("DUP_COLLAPSE", "1") == "1":
                     with SEARCH_LOCK:
                         res = collapse_copies(f.con, res)
+                # on by default after the sealed sets of two real PCs (11/9: 38 -> 40 of 58 at #1, none worse by it); =0 turns it off
+                if os.environ.get("VERSION_GROUP", "1") == "1":
+                    with SEARCH_LOCK:
+                        res = group_versions(f.con, res)
                 if res.get("results") and os.environ.get("KIND_GATE", "1") == "1":
                     res["results"] = format_first(q_, res["results"])
                 # the page's '서버' time: the whole request, not the search alone (a Mac page showed 서버 3.4 s · 화면 7.1 s and

@@ -48,7 +48,7 @@ mark{background:var(--mark);color:inherit;border-radius:3px;padding:0 1px}
 .side{display:flex;flex-direction:column;align-items:flex-end;gap:6px;font-size:12px;color:var(--faint);white-space:nowrap}
 .act{display:flex;gap:4px}.act button{border:1px solid var(--line);background:transparent;border-radius:7px;padding:3px 8px;font-size:12px;color:var(--mut)}
 .odds{display:inline-block;color:#fff;font-size:11.5px;font-weight:700;border-radius:9px;padding:0 7px;margin-right:6px;vertical-align:1px}
-.why{font-size:12px;color:var(--mut);margin-top:3px}.card.rej{opacity:.4}.refine{font-size:12px;color:var(--mut);margin:4px 0}.rf{color:var(--faint)}
+.why{font-size:12px;color:var(--mut);margin-top:3px}.vers{font-size:12px;color:var(--mut);margin-top:5px}.vers span[data-vopen]{border-bottom:1px dotted var(--line);cursor:pointer;margin-right:8px}.card.rej{opacity:.4}.refine{font-size:12px;color:var(--mut);margin:4px 0}.rf{color:var(--faint)}
 .act button:hover{border-color:var(--acc);color:var(--acc)}.act button.done{border-color:var(--good);color:var(--good)}
 .empty{margin-top:40px;color:var(--mut)}.empty h2{font-size:22px;color:var(--fg);margin:0 0 6px;font-weight:700}
 .groups{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin-top:18px}
@@ -305,7 +305,7 @@ function list(fresh){
   return '<div class="card'+(x.no?' rej':'')+(fresh?'':' still')+'" data-i="'+i+'" style="animation-delay:'+Math.min(i,8)*30+'ms"><div class="badge" style="background:'+k[1]+'">'+k[0]+'</div>'+
   '<div><div class="nm"><span class="rank">'+(i+1)+'</span>'+(x.prob!=null?'<span class="odds" style="background:'+(x.prob>=.7?'var(--acc)':x.prob>=.3?'#c27a2c':'#8a8780')+'">'+Math.round(x.prob*100)+'%</span>':'')+hl(base(x.path))+'</div><div class="path">'+
   d.split('/').map((seg,j,a)=>'<span data-dir="'+esc(a.slice(0,j+1).join('/'))+'">'+esc(seg)+'</span>').join(' / ')+'</div>'+
-  (x.why&&x.why.length?'<div class="why">'+x.why.map(esc).join(' · ')+'</div>':'')+(x.snippet?'<div class="snip">'+hl(x.snippet)+'</div>':'')+'</div>'+
+  (x.why&&x.why.length?'<div class="why">'+x.why.map(esc).join(' · ')+'</div>':'')+(x.snippet?'<div class="snip">'+hl(x.snippet)+'</div>':'')+(x.versions&&x.versions.length?'<div class="vers">다른 판 '+x.versions.length+'개: '+x.versions.map((v,j)=>'<span data-vopen="'+i+':'+j+'" title="'+esc(v.path)+'">'+esc(base(v.path))+' · '+ago(v.date)+'</span>').join('')+'</div>':'')+(x.copies&&x.copies.length?'<div class="vers">같은 파일이 '+x.copies.length+'곳에 더 있음</div>':'')+'</div>'+
   '<div class="side"><span title="'+esc(x.date)+'">'+ago(x.date)+'</span><span>'+fmt(x.size)+'</span><div class="act">'+(APP||LOCAL?'<button data-open="'+i+'">열기</button><button data-reveal="'+i+'">폴더</button>':'')+'<button data-copy="'+i+'">경로 복사</button><button data-ok="'+i+'">✔ 맞음</button><button data-no="'+i+'">✘ 아님</button></div></div></div>'}).join('')+
   (rs.length?'<div style="text-align:center;margin-top:10px"><button class="act" id="none" style="border:1px solid var(--line);background:transparent;border-radius:8px;padding:6px 12px;color:var(--mut)">✘ 찾는 파일이 여기 없음</button></div>':'');
 }
@@ -319,6 +319,9 @@ document.addEventListener('click',e=>{
  const fk=e.target.closest('[data-kind]');if(fk){fKind=fKind===fk.dataset.kind?null:fk.dataset.kind;document.querySelectorAll('[data-kind]').forEach(x=>x.classList.toggle('on',x.dataset.kind===fKind));list();return}
  const fd=e.target.closest('[data-fdir]');if(fd){fDir=fDir===fd.dataset.fdir?null:fd.dataset.fdir;document.querySelectorAll('[data-fdir]').forEach(x=>x.classList.toggle('on',x.dataset.fdir===fDir));list();return}
  const sd=e.target.closest('[data-dir]');if(sd){fDir=sd.dataset.dir;list();toast('폴더로 거름: '+fDir.split('/').slice(-2).join('/'));return}
+ const vo=e.target.closest('[data-vopen]');if(vo&&(APP||LOCAL)){const [ci,vi]=vo.dataset.vopen.split(':').map(Number),vp=filtered()[ci].versions[vi].path;
+  if(APP){window.__TAURI__.core.invoke('open_path',{path:vp,reveal:false}).catch(err=>toast(String(err)));return}
+  fetch('/open',{method:'POST',headers:{'X-Findr':'1','Content-Type':'application/json'},body:JSON.stringify({path:vp,reveal:false})}).then(r=>toast(r.ok?'파일을 열었습니다':'열지 못했습니다')).catch(err=>toast(String(err)));return}
  const op=e.target.closest('[data-open],[data-reveal]');if(op&&(APP||LOCAL)){const x=filtered()[+(op.dataset.open!=null?op.dataset.open:op.dataset.reveal)],rv=op.dataset.reveal!=null;
   if(APP){window.__TAURI__.core.invoke('open_path',{path:x.path,reveal:rv}).catch(err=>toast(String(err)));return}
   fetch('/open',{method:'POST',headers:{'X-Findr':'1','Content-Type':'application/json'},body:JSON.stringify({path:x.path,reveal:rv})})
