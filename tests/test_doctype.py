@@ -114,7 +114,7 @@ def test_grams_match_char_wb():   # the n-grams the name model was trained on (s
     assert doctype._grams("가") == [" 가", "가 ", " 가 "]
     assert doctype.name_text(r"C:\a\b\c\d\회의록.hwp") == "회의록.hwp | b c d"
     import unicodedata   # a macOS path, decomposed, reads the same
-    assert doctype.name_text(unicodedata.normalize("NFD", "/a/회의/회의록.hwp")) == "회의록.hwp | a 회의"
+    assert doctype.name_text(unicodedata.normalize("NFD", "/u/a/회의/회의록.hwp")) == "회의록.hwp | u a 회의"
 
 
 def test_small_encoder_mixes_the_name_model_in(tmp_path):
