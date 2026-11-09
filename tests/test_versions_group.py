@@ -125,3 +125,19 @@ def test_the_same_form_for_another_body_in_the_same_slot_stays_apart():
     rows = [(1, "/h/k/가람재단_2023_인쇄용_최종.hwp", form), (2, "/h/k/누리협회_2023_인쇄용.pdf", form)]
     out = search.group_versions(_con(rows), _res(rows, ["2023-03-08 10:00", "2023-03-08 11:00"]))
     assert [x["fid"] for x in out["results"]] == [1, 2]
+
+
+def test_runs_of_a_log_are_not_versions():
+    """M1 Pro (11/9): the same log in folders named by the time of each run was folded into one line"""
+    log = "step 1 loss 0.52 step 2 loss 0.47 step 3 loss 0.41 eval acc 0.88 done " * 4
+    rows = [(1, "/h/runs/exp-2026-10-01-10-00-00/train.log", log), (2, "/h/runs/exp-2026-10-02-11-00-00/train.log", log)]
+    res = _res(rows, ["2026-10-01 10:00", "2026-10-02 11:00"])
+    assert search.group_versions(_con(rows), res) is res
+
+
+def test_the_same_name_in_another_format_is_one_document():
+    """M1 Pro (11/9): a .hwp and its .pdf with a date tail on the pdf, text read differently"""
+    rows = [(1, "/h/m/가람재단_2023_인쇄용.hwp", BODY + "참가 확인 서명란 날짜"),
+            (2, "/h/m/가람재단_2023_인쇄용_0308.pdf", BODY[:120] + " 참가 확인 " + BODY[120:200])]
+    out = search.group_versions(_con(rows), _res(rows, ["2023-03-07 10:00", "2023-03-08 10:00"]))
+    assert [x["fid"] for x in out["results"]] == [1]

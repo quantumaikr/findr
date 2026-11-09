@@ -876,8 +876,9 @@ class Finder:
         p["pkgs"] = {w for w in re.findall(r"[A-Za-z][A-Za-z0-9_]{2,}", q.lower()) if w in self.pkgs}
         p["lib"] = p["lib"] or bool(p["pkgs"])
         eng =" ".join(dict.fromkeys(" ".join(v for k, v in GLOSS.items() if k in q).split()))
-        if os.environ.get("XLING2") == "1":
-            eng = " ".join(dict.fromkeys((eng + " " + xl_expand(q)).split()))
+        # the extra words join the word search only: in the meaning query they blurred English questions (held-out
+        # virtual PCs 11/9: two English questions from #1 to out of the list, while Korean ones gained)
+        p["xl"] = xl_expand(q) if os.environ.get("XLING2") == "1" else ""
         if p.get("only_cond") and (p["since"] or p["exts"]):   # "6개월 전에 만든 파일": no topic, just the window, newest first
             return self.recent(p, k, t0)
         rer = {"x4b": "list", "x4bp": "1tok", "fx4b": "list", "pick1": "pick1", "fpick1": "pick1", "xce": "ce", "fxce": "ce",
@@ -1137,6 +1138,7 @@ class Finder:
                 pass
         split_ = lambda t: [w for w in re.split(r"[\s/\\,.()\[\]\"']+", t) if w]
         words = split_(text) + distinct_words(split_(eng))   # English expansions: one idea once (gen + generate), #32
+        words += [w for w in distinct_words(split_(p.get("xl") or "")) if w not in words]
         lex = []
         long_ = [w for w in words if len(w) >= 3]
         if long_:
@@ -1451,6 +1453,9 @@ def _grams(t):
     return {t[i:i + 3] for i in range(max(len(t) - 2, 0))}
 
 
+_VDOCS = {"pdf", "hwp", "hwpx", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "key", "pages", "numbers", "odt", "ods", "odp", "rtf"}
+
+
 def group_versions(con, res, top=20):
     """versions of one document are one line to a person: the best-ranked version, the others under it as 'versions',
     newest first. On real PCs (11/9) the version families of a document were spread over folders two times in three
@@ -1472,6 +1477,9 @@ def group_versions(con, res, top=20):
     info = []
     for x in head:
         path = (x.get("path") or "").replace("\\", "/")
+        if path.rsplit(".", 1)[-1].lower() not in _VDOCS:   # logs, code and data have runs, not versions (M1 Pro 11/9:
+            info.append(("", "", (), None, None, set(), ""))   # the same log in folders named by the time of each run)
+            continue
         s, marks = _vname(path)
         body = txt.get(x.get("fid")) or ""
         info.append((path.rsplit("/", 2)[0], s if len(s.replace(" ", "")) >= 2 else "", marks,
@@ -1504,7 +1512,9 @@ def group_versions(con, res, top=20):
             # when only a date differs, the same form filled again (another year, another applicant: M1 Pro 11/9 7 of 20
             # wrong) is not a version, so the text must be nearly the same
             short = len(si.replace(" ", "")) < 4
-            same_name = si and si == sj and ai == aj and ((mi != mj and (not short or alike(gi, gj, 0.3))) or alike(gi, gj, 0.85))
+            # the same name in another format (a .hwp and the .pdf made from it, a date tail on one) reads differently: 0.6
+            same_name = si and si == sj and ai == aj and ((mi != mj and (not short or alike(gi, gj, 0.3)))
+                                                         or alike(gi, gj, 0.6 if ei != ej else 0.85))
             # any name: nearly the same text, past a standard opening (a copyright paragraph, a resolution header, a form
             # line chained 274 files on one PC), and a name alike in part or another format (a .hwp and its .pdf).
             # Names that differ need the text all but identical: the same form filled by another school is 0.85 alike.
