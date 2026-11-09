@@ -2060,16 +2060,11 @@ def _xl_ordinals(q):
     return ideas
 
 
-_XL_REV = None
-
-
 def xl_expand(q):
     """words to add to the word search for a question (XLING2=1): the English spellings of its Korean words (a word or the
-    word without its particle, so 지도 does not come from 지도안), the parts it numbers (3강 lec03, 1분기 q1), and for
-    English words the Korean words that mean them (an English question about a Korean name: textbook 교과서). On a real
+    word without its particle, so 지도 does not come from 지도안) and the parts it numbers (3강 lec03, 1분기 q1). On a real
     Mac (11/9) a paper named by its arXiv number and a standard saved under its English title were found by neither
     name: only their English text could match"""
-    global _XL_REV
     out = []
     for w in re.findall(r"[가-힣]{2,}", _XL_ORD.sub(" ", q)):
         for k in (w, _XL_JOSA.sub("", w)):
@@ -2077,17 +2072,8 @@ def xl_expand(q):
             if v:
                 out += v.split(); break
     out += [s for idea in _xl_ordinals(q) for s in idea[2:]]
-    en = [w.lower() for w in re.findall(r"[A-Za-z]{3,}", q)]
-    if en:
-        if _XL_REV is None:
-            rev = {}
-            for k, v in list(XLING.items()) + list(_xl_extra().items()):
-                for s in (v or "").split():
-                    if len(s) >= 4:
-                        rev.setdefault(s, []).append(k)
-            _XL_REV = rev
-        for w in en:
-            out += _XL_REV.get(w, [])[:3]
+    # no Korean words for an English question: they pulled Korean documents over the English one asked for (held-out
+    # virtual PCs 11/9: two English questions from #1 to out of the list)
     return " ".join(dict.fromkeys(out))
 
 

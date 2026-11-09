@@ -21,5 +21,5 @@ def test_word_search_gets_english_for_korean_and_korean_for_english(monkeypatch)
     e = search.xl_expand("현금흐름표 결론도출근거")
     assert "cash" in e and "flows" in e and "conclusions" in e
     assert "q1" in search.xl_expand("작년 1분기 투자자 설명자료").split()
-    assert "교과서" in search.xl_expand("ethics textbook chapter").split()
+    assert search.xl_expand("ethics textbook chapter") == ""     # English questions get no Korean words
     assert "map" not in search.xl_expand("지도안 양식").split()     # 지도 is not taken from inside 지도안
