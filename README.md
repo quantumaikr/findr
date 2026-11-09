@@ -26,7 +26,7 @@ findr sits between the two. It understands vague, conversational questions, and 
 
 **Useful in seconds, smarter over time.** The first index is built for speed, and the rest is filled in while the PC is idle. On a 4-core laptop without a GPU, files are searchable by name after 4 seconds and by meaning of their names after 18 seconds. Words inside documents follow at 27 seconds, and full meaning search at 4.4 minutes. On a real PC, accuracy right after this first pass was within the run-to-run noise of accuracy after everything had been read.
 
-**Asks the way people talk.** Time ("last August", "before the meeting"), people ("the one Mr. Kim sent"), versions ("the draft right before the final"), and Korean words for English file names (터널링 finds `Tunneling_Design.pdf`) are read together with the content of the question.
+**Asks the way people talk.** Time ("last August", "before the meeting"), people ("the one Mr. Kim sent"), versions ("the draft right before the final"), and Korean words for English file names (터널링 finds `Tunneling_Design.pdf`) are read together with the content of the question. A format or a kind of document named in the question ("the pdf", "the minutes") is kept as a condition to the end. Years as people say them (작년 "last year", 올해 "this year") are read as periods, and when nothing fits that year, the years next to it are searched and findr says so. Copies of the same file take one place in the list.
 
 **Reads what is really on office PCs.** It reads PDF, Word, Excel, PowerPoint and HWP/HWPX, including HWP distribution documents (decrypted following Hancom's published specification). It also reads legacy .xls and .ods, RTF in Korean code pages, e-mail (.eml), Keynote, Pages and Numbers, and iPhone HEIC photos. Text in scans and screenshots is read with the operating system's own recognizer where there is one: 0.14 s per page on Windows, 0.85 s on macOS.
 
@@ -52,6 +52,8 @@ All numbers are measured on questions that were not used to tune findr. They dep
 | The real PC on 4 CPU cores without a GPU, first day | 45 | 56% | 62% |
 | The real PC on 4 CPU cores without a GPU, after the idle-time model upgrade | 45 | 78% | 82% |
 
+**Lower on new questions.** The real-PC questions above have been in use for a long time. On 30 new questions about real files (written before any search, scored once), the top result was right 33% of the time and in the top 3 53% of the time. Most misses came from picking the wrong one of several versions of a document.
+
 **Speed of the first index** (4-core laptop, no GPU, 2,081 files)
 
 | Searchable by | Time |
@@ -61,6 +63,8 @@ All numbers are measured on questions that were not used to tune findr. They dep
 | words inside documents | 27 s |
 | meaning of contents | 4.4 min |
 | full first index (scans left for idle time) | 4.4 min, down from 7 min in 0.2.8 |
+
+When no file has changed, a new index run ends in 3.1 s (39.9 s in 0.2.15).
 
 On a GPU PC, a real home folder of 4,780 files took 263 seconds for the whole first pass, text recognition included. On native Windows 11 with an NVIDIA GPU and Defender scanning, a real documents folder of 1,540 files was searchable by name after about 1 s and done in 55 s, including 47 scanned PDFs read by the built-in Windows recognizer in 16 s.
 
@@ -73,6 +77,8 @@ On a GPU PC, a real home folder of 4,780 files took 263 seconds for the whole fi
 | EasyOCR on 4 CPU cores, page scaled to 1600 px | 96% | 4.1 s |
 
 **Answer time.** Windows and Linux give the same answers on the same index (checked on one PC, 120 questions); native Windows answers in 0.25 s (median) on an NVIDIA GPU and 2.5 s on 4 CPU cores. On an NVIDIA GPU, the real PC above answers in 0.2 s for half the questions and within 0.4 s for nine in ten (clean install). On 4 CPU cores without a GPU, the same real PC answers in 2.2 s for half the questions and within about 4 s for nine in ten. Each question has a fixed time budget for the reranker, so a hard question does not run on. Without a GPU, questions are read by rules: the small reading model took 3 s per question on 4 cores, slower than it helps.
+
+On an Apple M1 Pro, half the questions are answered within 1.8 s (2.4 s in 0.2.15). A repeated question is answered at once, and recomputed if the index has changed. On Macs and PCs without a GPU, the first-stage list is shown at once and replaced in place by the reranked order.
 
 **Large indexes.** A Mac home folder of about 57,000 files (5.7 GB index) used to stall for about 25 s once a minute. After the fixes in 0.2.10, no search out of 48 took longer than 8 s.
 
@@ -150,7 +156,13 @@ You can search while indexing runs. The search page shows a small progress chip 
 
 AI assistants on your PC can find your files through findr. Ask "find last month's quote from the supplier and summarize it", and the assistant searches with findr and reads the file it found. findr speaks MCP, the standard way assistants connect to local tools.
 
-Two tools are offered. `search_files` returns the likely files with their odds, location, date and a short excerpt. `read_file` returns the text findr already read from a file in its index; it never opens other paths.
+Four tools are offered, so that an assistant can look around the way a person does.
+- `search_files` returns the likely files with their odds, location, date and a short excerpt. It can be narrowed to a format (pdf, hwp, slides...), a kind of document, a period or a folder.
+- `list_folder` lists the files of one indexed folder.
+- `versions` lists the other versions of a file, including similar files that may be a version under another name.
+- `read_file` returns the text findr already read from a file in its index; it never opens other paths.
+
+There are 14 kinds of document, such as minutes, contracts, quotes, reports, official letters, regulations and lecture material. The kind is read from what the index already holds, with no extra reading. Measured on real documents it is right about 65% of the time, so only files that are surely of another kind are left out; the rest stay in the list, marked as uncertain.
 
 ```bash
 # Claude Code
@@ -170,7 +182,7 @@ What the tools return goes to the assistant that asked. If the assistant runs in
 
 | | NVIDIA GPU | Apple silicon Mac | No GPU |
 |---|---|---|---|
-| Meaning search | large model | large model (small if the self-check finds it slow) | small model first, large model in idle time |
+| Meaning search | large model | small model first; the large one after its download, only if it measures fast enough | small model first, large model in idle time |
 | Text in scans | GPU recognizer | macOS Vision | Windows OCR if installed, otherwise in idle time |
 | Second-pass comparison | 6 GB+ GPU memory | 24 GB+ memory, close calls only | off |
 | Reading the question | small language model | small language model | rules |
@@ -182,6 +194,8 @@ File contents, questions and search history never leave the PC. Everything findr
 
 ## Known limitations
 
+- On new questions about real files, the top result is right about one time in three (top-3: about half). Picking the right one of several versions of a document is the weakest part.
+- The kind of a document is wrong about one time in three, most often for official letters and forms, so most files are marked as uncertain.
 - On a laptop without a GPU, the first day is less accurate (56% top-1 on the real PC, against 84% on a GPU). It reaches 78% once the larger meaning model has been built in idle time.
 - History such as who sent a file or when it was printed can only be used if the PC keeps such records. Without them findr searches by content and says the history could not be checked.
 - Scanned images whose names do not look like documents are read only in idle time on CPU-only PCs, so right after the first index they are found by name.
@@ -201,8 +215,10 @@ Most of what changed in 0.2.x came from people installing findr on their own mac
 
 ## Roadmap
 
+- Accuracy on a PC findr is new to: picking the right version of a document first.
+- "How many files did you open before you found it" as the main measure: less checking, not only a better top-1.
 - Closing the accuracy gap on laptops without a GPU, above all on the first day.
-- Reading the files people look for first: a small model that tells, from a file's name, place and first bytes, what kind of file it is and how likely someone is to search for it.
+- Reading the files people look for first: building on the kind of document (0.2.16) to read the likely files in depth first.
 - Learning more from use: the files people open and pick should shape both ranking and what gets read first.
 - Code-signed installers for Windows and macOS.
 - More languages beyond Korean and English.
