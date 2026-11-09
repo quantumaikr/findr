@@ -426,6 +426,10 @@ def chat_json(prompt, max_tokens):
         raise
 
 
+XFAIR_DOCS = {".pdf", ".hwp", ".hwpx", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".key", ".pages", ".numbers"}
+XFAIR_CUE = re.compile(r"영어|영문|english|원문|외국어", re.I)
+
+
 class Finder:
     def __init__(self, db, model="bge-m3"):
         self.db_uri = Path(db).expanduser().resolve().as_uri() + "?mode=ro"   # the reload thread reads on its own connection
@@ -498,6 +502,44 @@ class Finder:
             print(f"FINDR_RELOAD failed {type(e).__name__}", flush=True)
         finally:
             self._reloading = False
+
+    def en_of(self, fids):
+        """which of these files are office documents whose name and opening are English (Latin letters three times the
+        Hangul). Only the candidates of one question are read: a pass over every file after each index change took
+        seconds on a 57,000-file Mac while indexing ran"""
+        fids = [x for x in dict.fromkeys(fids) if x is not None]
+        if not fids:
+            return set()
+        qm = ",".join("?" * len(fids))
+        out = set()
+        for fid, name, ext, head in self.con.execute(
+                f"SELECT f.id, f.name, f.ext, substr(c.text, 1, 400) FROM files f JOIN chunks c ON c.file=f.id AND c.n=0 WHERE f.id IN ({qm})", fids):
+            if (ext or "").lower() not in XFAIR_DOCS:
+                continue
+            s = (name or "").rsplit(".", 1)[0] + " " + re.sub(r"^파일: .*?구조: ", "", head or "")[:160]
+            if len(re.findall(r"[A-Za-z]", s)) > 3 * max(len(re.findall(r"[가-힣]", s)), 1):
+                out.add(fid)
+        return out
+
+    def fair_fusion(self, q, dense, lex, score):
+        """a Korean question: the word lane cannot see English text, so it does not vote against an English document. Such
+        a document that the word lane left out gets the word lane's share from its meaning rank. Only when the question
+        says the language (영어, 영문, English) or the meaning lane's best match is itself an English document: on ten
+        virtual PCs (1,610 files, 11/9) Korean questions about English documents went from 22 to 84 of 150 at #1 in the
+        first stage, and other Korean questions did not drop (vague 180 -> 181, versions 167 -> 171, details 116 -> 119);
+        applied to every question it cost the Korean ones 40 of 298"""
+        if not dense or not re.search(r"[가-힣]", q):
+            return
+        top = [c for c in dict.fromkeys(dense)][:300]
+        qm = ",".join("?" * len(top))
+        fof = dict(self.con.execute(f"SELECT id, file FROM chunks WHERE id IN ({qm})", top))
+        en = self.en_of(fof.values())
+        if not en or not (XFAIR_CUE.search(q) or fof.get(top[0]) in en):
+            return
+        seen = set(lex)
+        for r, cid in enumerate(top):
+            if cid not in seen and fof.get(cid) in en:
+                score[cid] = score.get(cid, 0) + 1 / (60 + r)
 
     def load_scan(self):
         if getattr(self, "name_rows", None) is not None:
@@ -1161,6 +1203,8 @@ class Finder:
         for lst in (dense, lex, named):
             for r, cid in enumerate(dict.fromkeys(lst)):
                 score[cid] = score.get(cid, 0) + 1 / (60 + r)
+        if os.environ.get("XFAIR", "0") == "1":
+            self.fair_fusion(q, dense, lex, score)
         if not score:
             return {"parsed": show(p), "results": [], "ms": int(1000 * (time.time() - t0))}
         qm = ",".join("?" * len(score))
@@ -2343,7 +2387,7 @@ def result_key(f, q, mode, k, prev, pin):
         return None
     pm = personal()
     mem = len(getattr(pm, "rows", []) or []) if pm is not None else 0
-    flags = tuple(os.environ.get(x, "") for x in ("KIND_GATE", "DUP_COLLAPSE", "TIME_WORDS", "CE_TAIL", "CE_MATCHED", "VERSION_GROUP", "XLING2"))
+    flags = tuple(os.environ.get(x, "") for x in ("KIND_GATE", "DUP_COLLAPSE", "TIME_WORDS", "CE_TAIL", "CE_MATCHED", "VERSION_GROUP", "XLING2", "XFAIR"))
     return (q, mode, k, prev, pin, dt.date.today().isoformat(), ver, mem, flags)
 
 
