@@ -503,19 +503,23 @@ class Finder:
         finally:
             self._reloading = False
 
-    def en_files(self):
-        """office documents whose name and opening are English (Latin letters three times the Hangul), per index state"""
-        if getattr(self, "_en_dv", None) != self._dv:
-            out = set()
-            for fid, name, ext, head in self.con.execute(
-                    "SELECT f.id, f.name, f.ext, substr(c.text, 1, 400) FROM files f JOIN chunks c ON c.file=f.id AND c.n=0"):
-                if (ext or "").lower() not in XFAIR_DOCS:
-                    continue
-                s = (name or "").rsplit(".", 1)[0] + " " + re.sub(r"^파일: .*?구조: ", "", head or "")[:160]
-                if len(re.findall(r"[A-Za-z]", s)) > 3 * max(len(re.findall(r"[가-힣]", s)), 1):
-                    out.add(fid)
-            self._en, self._en_dv = out, self._dv
-        return self._en
+    def en_of(self, fids):
+        """which of these files are office documents whose name and opening are English (Latin letters three times the
+        Hangul). Only the candidates of one question are read: a pass over every file after each index change took
+        seconds on a 57,000-file Mac while indexing ran"""
+        fids = [x for x in dict.fromkeys(fids) if x is not None]
+        if not fids:
+            return set()
+        qm = ",".join("?" * len(fids))
+        out = set()
+        for fid, name, ext, head in self.con.execute(
+                f"SELECT f.id, f.name, f.ext, substr(c.text, 1, 400) FROM files f JOIN chunks c ON c.file=f.id AND c.n=0 WHERE f.id IN ({qm})", fids):
+            if (ext or "").lower() not in XFAIR_DOCS:
+                continue
+            s = (name or "").rsplit(".", 1)[0] + " " + re.sub(r"^파일: .*?구조: ", "", head or "")[:160]
+            if len(re.findall(r"[A-Za-z]", s)) > 3 * max(len(re.findall(r"[가-힣]", s)), 1):
+                out.add(fid)
+        return out
 
     def fair_fusion(self, q, dense, lex, score):
         """a Korean question: the word lane cannot see English text, so it does not vote against an English document. Such
@@ -526,13 +530,11 @@ class Finder:
         applied to every question it cost the Korean ones 40 of 298"""
         if not dense or not re.search(r"[가-힣]", q):
             return
-        en = self.en_files()
-        if not en:
-            return
         top = [c for c in dict.fromkeys(dense)][:300]
         qm = ",".join("?" * len(top))
         fof = dict(self.con.execute(f"SELECT id, file FROM chunks WHERE id IN ({qm})", top))
-        if not (XFAIR_CUE.search(q) or fof.get(top[0]) in en):
+        en = self.en_of(fof.values())
+        if not en or not (XFAIR_CUE.search(q) or fof.get(top[0]) in en):
             return
         seen = set(lex)
         for r, cid in enumerate(top):

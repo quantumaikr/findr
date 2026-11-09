@@ -15,7 +15,6 @@ def _finder():
     for i, name, ext, text in rows:
         f.con.execute("INSERT INTO files VALUES(?,?,?,?)", (i, "/h/" + name, name, ext))
         f.con.execute("INSERT INTO chunks VALUES(?,?,0,?)", (i * 10, i, text))
-    f._dv = 1
     return f
 
 
@@ -29,7 +28,7 @@ def test_an_english_document_found_by_meaning_is_not_buried_by_korean_word_match
     assert max(score, key=score.get) == 20    # as before: the Korean one wins on two lanes
     f.fair_fusion("방호스크린 빌리는 영어 계약서", dense, lex, score)
     assert max(score, key=score.get) == 10    # the English one, which the word lane could not read
-    assert f.en_files() == {1}                # code files are not office documents
+    assert f.en_of([1, 2, 3]) == {1}          # code files are not office documents
 
 
 def test_nothing_changes_without_a_sign_of_english():
