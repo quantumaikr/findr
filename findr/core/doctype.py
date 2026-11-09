@@ -10,6 +10,7 @@ import json
 import math
 import re
 import sqlite3
+import unicodedata
 from pathlib import Path
 
 import numpy as np
@@ -84,7 +85,8 @@ def _names():
 
 
 def name_text(path):
-    parts = str(path).replace("\\", "/").split("/")
+    """name | last three folders; NFC, as macOS keeps paths decomposed and the model learned composed Korean"""
+    parts = unicodedata.normalize("NFC", str(path)).replace("\\", "/").split("/")
     return f"{parts[-1]} | {' '.join(parts[-4:-1])}"
 
 
