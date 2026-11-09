@@ -255,4 +255,8 @@ Apache License 2.0을 따릅니다. 설치 중 내려받는 모델은 각 배포
 
 ## 운영
 
-findr 오픈소스는 (주)퀀텀아이([quantumai.kr](https://quantumai.kr)), (사)한국인공지능연구소([ai-lab.kr](https://ai-lab.kr)), H3Lab([h3lab.kr](https://h3lab.kr))이 함께 협력하여 운영하고 있습니다.
+findr 오픈소스는 세 기관이 함께 협력하여 운영하고 있습니다.
+
+- (사)한국인공지능연구소([ai-lab.kr](https://ai-lab.kr)): 기술 연구
+- H3Lab([h3lab.kr](https://h3lab.kr)): AI PC 지원
+- (주)퀀텀아이([quantumai.kr](https://quantumai.kr)): 기술 지원
