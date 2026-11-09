@@ -99,3 +99,25 @@ def test_search_files_drops_only_files_surely_of_another_kind(mcp, monkeypatch):
     got = {x["name"]: x for x in r["results"]}
     assert set(got) == {"프로젝트_0312.docx", "프로젝트_정리.docx"}   # the photo is surely another kind: it leaves
     assert "doc_kind_match" not in got["프로젝트_0312.docx"] and got["프로젝트_정리.docx"]["doc_kind_match"] == "maybe" and "may be" in r["note"]
+
+
+def test_name_model_reads_kind_words_in_names_and_folders():
+    labels = doctype.heads()["labels"]
+    for path, kind in ((r"C:\work\운영위원회\2024 3월 정기 회의록.hwp", "회의록"), ("/Users/a/계약/용역 계약서_최종.pdf", "계약서·협약서"),
+                       ("/home/a/docs/물품 견적서 0312.xlsx", "견적·발주·거래명세")):
+        p = doctype.name_probs(path)
+        assert abs(p.sum() - 1) < 1e-4 and labels[int(p.argmax())] == kind
+
+
+def test_grams_match_char_wb():   # the n-grams the name model was trained on (sklearn char_wb, 2-4)
+    assert doctype._grams("Ab") == [" a", "ab", "b ", " ab", "ab ", " ab "]
+    assert doctype._grams("가") == [" 가", "가 ", " 가 "]
+    assert doctype.name_text(r"C:\a\b\c\d\회의록.hwp") == "회의록.hwp | b c d"
+    import unicodedata   # a macOS path, decomposed, reads the same
+    assert doctype.name_text(unicodedata.normalize("NFD", "/u/a/회의/회의록.hwp")) == "회의록.hwp | u a 회의"
+
+
+def test_small_encoder_mixes_the_name_model_in(tmp_path):
+    con = _index(tmp_path / "i.db", "e5-small", [("2024 정기 회의록.hwp", "", "회의록")])
+    p = doctype.probs(con, [1])[1]
+    assert doctype.heads()["heads"]["e5-small"]["name_weight"] > 0 and abs(p.sum() - 1) < 1e-4
