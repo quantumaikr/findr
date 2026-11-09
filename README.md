@@ -244,4 +244,8 @@ Apache License 2.0. Models downloaded during setup follow their publishers' lice
 
 ## Who runs findr
 
-findr is an open-source project run together by (주)퀀텀아이 ([quantumai.kr](https://quantumai.kr)), (사)한국인공지능연구소 ([ai-lab.kr](https://ai-lab.kr)) and H3Lab ([h3lab.kr](https://h3lab.kr)).
+findr is an open-source project run together by three organizations.
+
+- (사)한국인공지능연구소 ([ai-lab.kr](https://ai-lab.kr)): research
+- H3Lab ([h3lab.kr](https://h3lab.kr)): AI PC support
+- (주)퀀텀아이 ([quantumai.kr](https://quantumai.kr)): technical support
