@@ -3,7 +3,8 @@ already stores for each file's first piece ('name | folders' + opening text). No
 linear head per index encoder (doctype_heads.json, trained only on written examples, never on anyone's files).
 Measured on real PCs it never saw (11/9): 0.73 with the GPU encoder, 0.50-0.72 with the small CPU encoder; name rules
 alone were 0.24-0.58 there. With the small encoder a name model (character n-grams of the name and folders, no encoder)
-is mixed in: 0.55 -> 0.69 on two unseen PCs, as good as the GPU encoder there, at no extra time.
+is mixed in. Sealed sets on two unseen PCs (11/9, scored once): 0.58 -> 0.62. Examples for the report / paper / plan
+boundaries (v1.2) then lifted both encoders on the dev sets: GPU 0.69 -> 0.76, small 0.69 -> 0.70.
 Used as a filter an AI agent asks for, not as a ranking signal."""
 import base64
 import json
