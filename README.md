@@ -233,7 +233,7 @@ We are testing findr with office workers on Windows and macOS PCs, with and with
 Bug reports and pull requests are welcome. Measurements from real machines are the most useful thing you can send: the hardware, the number of files, and the time or result before and after.
 
 - Do not put real file, company or person names in issues, commits, code or tests. Describe them generically.
-- Every pull request runs the tests on Windows, macOS and Linux. Changes to ranking should compare top-1 results on a question set before and after.
+- Run the tests (`pytest tests`) before a pull request. Before each app release, the tests run on Windows, macOS and Linux. Changes to ranking should compare top-1 results on a question set before and after.
 - Read [docs/LESSONS.md](docs/LESSONS.md) before a larger change; the PR template lists the checks.
 
 ## License

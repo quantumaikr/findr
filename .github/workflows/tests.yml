@@ -1,15 +1,15 @@
-# Every push: the same checks on Windows, macOS and Linux (CPU), so OS-specific breakage is caught before people meet it.
+# Before an app release: the same checks on Windows, macOS and Linux (CPU), so OS-specific breakage is caught before people
+# meet it. They run on a release pull request (branch release-*) and by hand; other pull requests run the tests locally.
 # Folder rules, file formats, and the whole path: setup check -> search before meaning vectors -> index -> search -> search page.
 name: tests
 
 on:
-  push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 
 jobs:
   test:
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-')
     strategy:
       fail-fast: false
       matrix:
