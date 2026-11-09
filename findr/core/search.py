@@ -2641,7 +2641,8 @@ def serve(f, port):
                 if os.environ.get("DUP_COLLAPSE", "1") == "1":
                     with SEARCH_LOCK:
                         res = collapse_copies(f.con, res)
-                if os.environ.get("VERSION_GROUP", "0") == "1":
+                # on by default after the sealed sets of two real PCs (11/9: 38 -> 40 of 58 at #1, none worse by it); =0 turns it off
+                if os.environ.get("VERSION_GROUP", "1") == "1":
                     with SEARCH_LOCK:
                         res = group_versions(f.con, res)
                 if res.get("results") and os.environ.get("KIND_GATE", "1") == "1":
