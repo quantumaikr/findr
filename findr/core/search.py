@@ -1433,7 +1433,9 @@ def _vname(path):
 
 
 def _grams(t):
-    t = re.sub(r"\s+", " ", t or "")
+    # spaces and line breaks taken out: a PDF made from a .hwp often splits words or adds odd spaces (Windows 11/9: an
+    # edited .hwp and its signed .pdf were not seen as one document)
+    t = re.sub(r"\s+", "", t or "")
     return {t[i:i + 3] for i in range(max(len(t) - 2, 0))}
 
 

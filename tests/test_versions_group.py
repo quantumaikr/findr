@@ -67,3 +67,11 @@ def test_a_standard_opening_does_not_make_documents_one():
             (2, "/h/a/기준서_리스.pdf", cp + "리스 기준 사용권 자산 리스 부채 측정 할인율 적용 " * 6)]
     out = search.group_versions(_con(rows), _res(rows, ["2026-01-01 10:00", "2026-01-02 10:00"]))
     assert [x["fid"] for x in out["results"]] == [1, 2]
+
+
+def test_a_pdf_with_broken_spacing_is_still_the_same_document():
+    """Windows (11/9): an edited .hwp and the signed .pdf made from it, names unlike, the PDF text with odd spaces"""
+    body = BODY + "참가 신청 내용 확인 서명"
+    rows = [(1, "/h/a/해오름_참가신청서.hwp", body), (2, "/h/a/해오름팀_사인포함.pdf", " ".join(body.replace(" ", "")))]
+    out = search.group_versions(_con(rows), _res(rows, ["2026-10-05 10:00", "2026-10-06 10:00"]))
+    assert [x["fid"] for x in out["results"]] == [1]
