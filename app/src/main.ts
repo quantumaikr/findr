@@ -320,7 +320,7 @@ async function settings(s: AppState) {
       try {
         const where = await invoke<string>('uninstall_data')
         const win = navigator.userAgent.includes('Windows'), mac = navigator.userAgent.includes('Mac')
-        const how = win ? 'Windows 설정 → 앱 → 설치된 앱에서 findr를 제거하세요.' : mac ? '응용 프로그램 폴더의 findr를 휴지통으로 옮기세요.' : '설치한 방법(패키지 관리자, AppImage 파일)대로 findr를 지우세요.'
+        const how = win ? 'Windows 설정 → 앱 → 설치된 앱에서 findr를 제거하세요(앱 파일은 그때 지워져요).' : mac ? '응용 프로그램 폴더의 findr를 휴지통으로 옮기세요.' : '설치한 방법(패키지 관리자, AppImage 파일)대로 findr를 지우세요.'
         box.innerHTML = `<div class="notice">데이터를 모두 지웠어요 (${where}). 마지막으로 앱을 지우려면: ${how}
           <div class="actions" style="margin-top:8px"><button class="primary" id="unquit">앱 닫기</button></div></div>`
         document.getElementById('unquit')!.onclick = () => invoke('quit_app')

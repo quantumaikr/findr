@@ -537,6 +537,18 @@ def cmd_uninstall(a):
     print(f"지울 폴더: {h} (약 {size:.1f}GB: 색인, 모델, 엔진, 설정, 기록). 내 파일은 지우지 않습니다.")
     if not a.yes and input("정말 지울까요? [y/N] ").strip().lower() not in ("y", "yes", "예", "ㅇ"):
         print("지우지 않았습니다."); return 0
+    # the Windows app is installed into this same folder: its files stay for the system's uninstaller (removing them here
+    # left 'findr' in Settings > Apps with no uninstaller to run)
+    app = [n for n in ("findr-desktop.exe", "uninstall.exe") if (h / n).exists()]
+    if app:
+        keep = {"findr-desktop.exe", "uninstall.exe", "uv.exe", "engine"}
+        for e in list(h.iterdir()):
+            if e.name.lower() not in keep:
+                shutil.rmtree(e, ignore_errors=True) if e.is_dir() else e.unlink(missing_ok=True)
+        left = [e.name for e in h.iterdir() if e.name.lower() not in keep]
+        print("데이터를 지웠습니다." if not left else f"일부를 지우지 못했습니다: {', '.join(left[:5])}")
+        print("앱도 지우려면 Windows 설정 → 앱 → 설치된 앱에서 findr를 제거하세요(앱 파일은 그때 지워집니다).")
+        return 0
     shutil.rmtree(h, ignore_errors=True)
     print("지웠습니다." if not h.exists() else f"일부를 지우지 못했습니다. 이 폴더를 직접 지워 주세요: {h}")
     print("남은 것: 앱이라면 Windows 설정 → 앱 / macOS 응용 프로그램 폴더에서 지우고, 명령줄로 설치했다면 저장소 폴더를 지우면 끝입니다.")
