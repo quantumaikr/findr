@@ -936,14 +936,47 @@ fn uninstall_data(engine: State<'_, Engine>) -> Result<String, String> {
     if !((name == "findr" || name == ".findr" || std::env::var("FINDR_HOME").is_ok()) && marks) {
         return Err(format!("findr의 데이터 폴더가 아니라서 지우지 않았습니다: {}", h.display()));
     }
+    // on Windows the app is installed into this same folder (%LOCALAPPDATA%\findr): its own files stay for the system's
+    // uninstaller, which removes them; removing the running app and its uninstaller here left a broken install (11/11)
+    let exe = std::env::current_exe().ok();
+    let app_dir = exe.as_ref().and_then(|e| e.parent()).map(|p| p.to_path_buf());
+    let shared = app_dir.as_ref().map(|d| d == &h).unwrap_or(false);
+    let keep: Vec<String> = if shared {
+        let mut k = vec!["uninstall.exe".to_string(), "uv.exe".to_string(), "uv".to_string(), "engine".to_string()];
+        if let Some(n) = exe.as_ref().and_then(|e| e.file_name()).and_then(|n| n.to_str()) {
+            k.push(n.to_string());
+        }
+        k
+    } else {
+        vec![]
+    };
     let mut last = String::new();
     for _ in 0..20 {   // a process stopped a moment ago can still hold a file on Windows
-        if !h.exists() {
-            return Ok(h.display().to_string());
-        }
-        match std::fs::remove_dir_all(&h) {
-            Ok(()) => return Ok(h.display().to_string()),
-            Err(e) => last = e.to_string(),
+        if !shared {
+            if !h.exists() {
+                return Ok(h.display().to_string());
+            }
+            match std::fs::remove_dir_all(&h) {
+                Ok(()) => return Ok(h.display().to_string()),
+                Err(e) => last = e.to_string(),
+            }
+        } else {
+            let mut left = 0;
+            for e in std::fs::read_dir(&h).map_err(|e| e.to_string())?.flatten() {
+                let n = e.file_name().to_string_lossy().to_string();
+                if keep.iter().any(|k| k.eq_ignore_ascii_case(&n)) {
+                    continue;
+                }
+                let p = e.path();
+                let r = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+                if let Err(err) = r {
+                    left += 1;
+                    last = err.to_string();
+                }
+            }
+            if left == 0 {
+                return Ok(h.display().to_string());
+            }
         }
         thread::sleep(std::time::Duration::from_millis(500));
     }

@@ -24,3 +24,12 @@ def test_a_folder_without_findr_in_it_is_never_removed(tmp_path):
     h = tmp_path / "home"; h.mkdir(); (h / "thesis.docx").write_text("keep me")
     r = run(h, "--yes")
     assert r.returncode == 1 and (h / "thesis.docx").exists()
+
+
+def test_the_windows_app_installed_in_the_same_folder_stays_for_its_uninstaller(tmp_path):
+    """Windows (11/11): the app lives in %LOCALAPPDATA%\\findr with the data; its files and uninstaller must stay"""
+    h = tmp_path / "findr"; (h / "runtime").mkdir(parents=True); (h / "engine").mkdir(); (h / "index.db").write_text("x")
+    for n in ("findr-desktop.exe", "uninstall.exe", "uv.exe"):
+        (h / n).write_text("app")
+    r = run(h, "--yes")
+    assert r.returncode == 0 and sorted(p.name for p in h.iterdir()) == ["engine", "findr-desktop.exe", "uninstall.exe", "uv.exe"]
