@@ -950,6 +950,7 @@ class Finder:
             # 작년 vanished from rank 3 to an empty list). Search without the period; the end says no file is from it
             r = self._search(q, dict(p, since=None, until=None), text, eng, n_fetch if use4b else k, t0, late)
             r["time_miss"] = True
+        _mark(r, "candidates")
         pre_period = list(r["results"]) if p["since"] and not r.get("time_miss") else None   # inside the period, before later stages
         if use4b and r["results"]:
             ids = [x["fid"] for x in r["results"]]; qm = ",".join("?" * len(ids))
@@ -969,6 +970,7 @@ class Finder:
             else:
                 keep, none = (rerank1tok if rer == "1tok" else rerank4b)(q, r["results"])
             r["results"] = ([r["results"][i] for i in keep] + [x for i, x in enumerate(r["results"]) if i not in keep])[:k]
+            _mark(r, "rerank")
             for x in r["results"]:
                 x.pop("head", None)
             r["note"] = "확실히 맞는 파일을 찾지 못했습니다. 가장 가까운 파일을 보여 드립니다." if none else ""
@@ -985,6 +987,7 @@ class Finder:
                         r["note"] = f"'{miss[2]}'이(가) 들어간 파일은 있지만 질문 전체와는 덜 맞습니다. 가장 가까운 파일을 보여 드립니다."
                     else:
                         r["note"] = f"'{miss[2]}'이(가) 들어간 파일은 없습니다. 가장 가까운 파일을 보여 드립니다."
+            _mark(r, "repair")
             if rer == "ce" and r["results"]:
                 need = strong_needs(q)
                 if need:
@@ -993,6 +996,7 @@ class Finder:
                         r["results"] = [ok[0]] + [x for x in r["results"] if x is not ok[0]]
                     else:
                         r["hard_none"] = need[0][1]
+            _mark(r, "needs")
             if rer == "ce" and r["results"] and not r.get("hard_none"):
                 ecs, cq_model = epi_read(q)
                 if ecs:
@@ -1062,6 +1066,7 @@ class Finder:
                             r["hard_none"] = ecs[0]["text"]
                     elif ecs:   # (nothing left after dropping a soft date: no history judgement)
                         r["hard_none"] = ecs[0]["text"]
+            _mark(r, "history")
             if rer == "ce":
                 lit = self.literal_files(p.get("text") or q)
                 if lit:
@@ -1069,6 +1074,7 @@ class Finder:
                     extra = [f_ for f_ in lit if f_ not in {x["fid"] for x in have}][:max(0, k - len(have))]
                     rest_ = [x for x in r["results"] if x["fid"] not in lit]
                     r["results"] = (have + self.files_out(extra) + rest_)[:k]; r["literal"] = len(lit)
+                _mark(r, "literal")
                 j = xling_name_first(q, r["results"])   # Korean words, English name: Remote_Access_Design.pdf (#19)
                 if j:
                     r["results"] = [r["results"][j]] + r["results"][:j] + r["results"][j + 1:]; r["xling"] = 1
@@ -1083,6 +1089,7 @@ class Finder:
                         if top_:
                             top_[0]["why"] = (top_[0].get("why") or []) + ["이름에 찾는 뜻이 모두 있음(영어)"]
                             r["results"] = (top_ + r["results"])[:k]; r["xling"] = 2
+                _mark(r, "xling")
                 # version questions last: a page that quotes the question ('…최종본이 아닙니다') must not undo the version choice
                 if PREVQ.search(q):   # "최종본 말고 그 직전 판": the version right before the latest
                     r["results"] = self.version_first(q, r["results"])
@@ -1090,7 +1097,9 @@ class Finder:
                     r["results"] = self.version_first(q, r["results"], latest=True)
                 elif OLDQ.search(q):
                     r["results"] = older_sibling_first(r["results"])
+                _mark(r, "version")
                 r["results"] = self.name_floor(q, r["results"])   # never worse than the system's own name search
+                _mark(r, "name")
                 ces = sorted((x.get("ce") or 0 for x in r["results"]), reverse=True) + [0, 0]
                 unchecked = bool(r.get("_cq")) and not r.get("episodic_ok") and not r.get("hard_none") and not r.get("agree")
                 gate_text = r["_cq"] if (unchecked and os.environ.get("GATE_CONTENT", "0") == "1") else (p.get("text") or q)
@@ -1119,6 +1128,7 @@ class Finder:
             r["ms"] = int(1000 * (time.time() - t0))
         if pfut is not None:
             self.photo_merge(q, r, pfut, k, p)
+        _mark(r, "photo")
         if pre_period and os.environ.get("TIME_WORDS", "1") == "1":
             # later stages (repair across the whole index, history, cross-language and name passes) bring files from outside
             # the period; on a Mac "작년에 만든 발표자료" ended with ten files of this year while the period held ten (11/9).
@@ -1129,6 +1139,7 @@ class Finder:
             have_ = {x.get("fid") for x in now_}
             back_ = [x for x in pre_period if fit(x) and x.get("fid") not in have_]
             r["results"] = (now_ + back_ + [x for x in r["results"] if not fit(x)])[:k]
+        _mark(r, "period")
         if not r["results"]:
             r["note"] = "조건에 맞는 파일이 없습니다."
         if cond is not None:
@@ -1437,6 +1448,13 @@ def format_first(q, rs):
         return rs
     fit = lambda x: os.path.splitext(x.get("name") or x.get("path") or "")[1].lower() in exts
     return [x for x in rs if fit(x)] + [x for x in rs if not fit(x)]
+
+
+def _mark(r, stage):
+    """STAGE_TRACE=1: the first ten files after each stage of a search, so that what every stage changed can be measured
+    (11/11: ten rule stages reorder the reranker's list one after another; which of them earn their place?)"""
+    if os.environ.get("STAGE_TRACE") == "1":
+        r.setdefault("trace", []).append([stage, [x.get("path") for x in (r.get("results") or [])[:10]], int(1000 * (time.time() - _QT[0]))])
 
 
 def collapse_copies(con, res):
@@ -2387,7 +2405,7 @@ def result_key(f, q, mode, k, prev, pin):
         return None
     pm = personal()
     mem = len(getattr(pm, "rows", []) or []) if pm is not None else 0
-    flags = tuple(os.environ.get(x, "") for x in ("KIND_GATE", "DUP_COLLAPSE", "TIME_WORDS", "CE_TAIL", "CE_MATCHED", "VERSION_GROUP", "XLING2", "XFAIR"))
+    flags = tuple(os.environ.get(x, "") for x in ("KIND_GATE", "DUP_COLLAPSE", "TIME_WORDS", "CE_TAIL", "CE_MATCHED", "VERSION_GROUP", "XLING2", "XFAIR", "STAGE_TRACE"))
     return (q, mode, k, prev, pin, dt.date.today().isoformat(), ver, mem, flags)
 
 
@@ -2668,6 +2686,7 @@ def serve(f, port):
                 if personal() is not None and res.get("results"):
                     with SEARCH_LOCK:
                         res = personal().apply(f, q_, res)
+                _mark(res, "personal")
                 res = add_probs(res)
                 if res.get("results") and os.environ.get("TIME_WORDS", "1") == "1":
                     try:   # the same 'today' the search used (an evaluation pins it; EVAL_NOW is already reset here)
@@ -2682,15 +2701,19 @@ def serve(f, port):
                         # (a Mac with no files from last year showed other years silently; a note counted as 'none' at the gate)
                         msg_ = "말씀하신 기간의 파일은 찾지 못해, 다른 시기의 비슷한 파일을 보여 드려요."
                         res["info"] = (res["info"] + " " + msg_) if res.get("info") else msg_
+                _mark(res, "period2")
                 if os.environ.get("DUP_COLLAPSE", "1") == "1":
                     with SEARCH_LOCK:
                         res = collapse_copies(f.con, res)
+                _mark(res, "copies")
                 # on by default after the sealed sets of two real PCs (11/9: 38 -> 40 of 58 at #1, none worse by it); =0 turns it off
                 if os.environ.get("VERSION_GROUP", "1") == "1":
                     with SEARCH_LOCK:
                         res = group_versions(f.con, res)
+                _mark(res, "versions")
                 if res.get("results") and os.environ.get("KIND_GATE", "1") == "1":
                     res["results"] = format_first(q_, res["results"])
+                    _mark(res, "format")
                 # the page's '서버' time: the whole request, not the search alone (a Mac page showed 서버 3.4 s · 화면 7.1 s and
                 # the rest had no name: the index refresh check before the search and the steps after it were left out)
                 res["search_ms"] = int(res.get("ms") or 0); res["ms"] = max(res["search_ms"], int((time.time() - t_req) * 1000))
