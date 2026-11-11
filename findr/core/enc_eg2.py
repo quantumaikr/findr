@@ -69,7 +69,15 @@ class EG2:
         # The towers go first, then the text part alone is widened to float32: widening the whole model and dropping after
         # made a CPU engine peak at 3 GB more and keep 2.4 GB (11/11); this order peaks at the stored 16-bit size
         if device in ("mps", "cpu"):
-            self.st = SentenceTransformer(PATH, device="cpu")
+            # the library warns that a 16-bit model on a CPU is slow: it is widened two lines below, so the warning is
+            # wrong here and only worried the people who read the log (field, Mac). Silenced for this one load
+            import logging
+            lg = logging.getLogger("sentence_transformers.base.model"); was = lg.level
+            lg.setLevel(logging.ERROR)
+            try:
+                self.st = SentenceTransformer(PATH, device="cpu")
+            finally:
+                lg.setLevel(was)
             drop_unused_towers(self.st)
             self.st.float()
             if device == "mps":
