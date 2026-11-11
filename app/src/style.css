@@ -24,7 +24,8 @@ button { font: inherit; font-size: 14px; border-radius: 8px; padding: 9px 16px; 
          background: var(--card); color: var(--ink); }
 button.primary { background: var(--acc); border-color: var(--acc); color: var(--acc-ink); font-weight: 600; }
 button:disabled { opacity: .45; cursor: default; }
-button:focus-visible, input:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+select { font: inherit; font-size: 14px; border-radius: 8px; padding: 8px 12px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
 dl { display: grid; grid-template-columns: 130px 1fr; gap: 6px 14px; margin: 0; font-size: 14px; }
 dt { color: var(--mut); } dd { margin: 0; word-break: break-all; }
 
