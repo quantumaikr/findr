@@ -3055,6 +3055,16 @@ def serve(f, port):
                 f_ = Path(os.environ.get("FINDR_DATA") or Path.home() / ".findr") / "pause"
                 f_.write_text("1") if on else f_.unlink(missing_ok=True)
                 return self.reply(200, json.dumps({"ok": True, "paused": on}).encode(), "application/json")
+            if self.headers.get("X-Findr") == "1" and urlparse(self.path).path == "/lang":
+                # the language chosen on the search page, for the app around it (its menu and messages read this file)
+                try:
+                    v = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 64)) or b"{}").get("lang")
+                except Exception:
+                    v = None
+                if v not in ("ko", "en"):
+                    return self.reply(400, b'{"ok": false}', "application/json")
+                (Path(os.environ.get("FINDR_DATA") or Path.home() / ".findr") / "lang").write_text(v, encoding="utf-8")
+                return self.reply(200, b'{"ok": true}', "application/json")
             if self.headers.get("X-Findr") == "1" and urlparse(self.path).path == "/refresh":
                 # '지금 반영' (#106): the app's refresher looks for this file every few seconds and takes in new files at once
                 f_ = Path(os.environ.get("FINDR_DATA") or Path.home() / ".findr") / "refresh_now"

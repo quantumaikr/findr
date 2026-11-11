@@ -133,8 +133,10 @@ const T=(ko,en)=>LANG==='ko'?ko:en;
  document.querySelectorAll('[data-en]').forEach(e=>{e.textContent=e.dataset.en});
  document.querySelectorAll('a[href="/learned"]').forEach(a=>{a.href='/learned?lang=en'});   // pages the engine writes take the language in the address
  ['title','placeholder','aria-label'].forEach(a=>document.querySelectorAll('[data-en-'+a+']').forEach(e=>e.setAttribute(a,e.getAttribute('data-en-'+a))))})();
-$('#lang').onclick=e=>{const b=e.target.closest('[data-lang]'); if(!b||b.dataset.lang===LANG)return; const v=b.dataset.lang; let kept=false;
+$('#lang').onclick=async e=>{const b=e.target.closest('[data-lang]'); if(!b||b.dataset.lang===LANG)return; const v=b.dataset.lang; let kept=false;
  try{localStorage.setItem('findr.lang',v);kept=localStorage.getItem('findr.lang')===v}catch(_){}
+ // the app around this page (its menu, its messages) follows through the data folder: this page cannot call the app
+ await fetch('/lang',{method:'POST',headers:{'X-Findr':'1','Content-Type':'application/json'},body:JSON.stringify({lang:v})}).catch(()=>{});
  if(kept){location.reload();return}
  try{const u=new URL(location.href);u.searchParams.set('lang',v);location.replace(u)}catch(_){}};   // storage blocked: the choice rides in the address
 const EX={[T('막연하게 말해도','Vague is fine')]:[T('지난달에 고객사에 보낸 견적서','the quote we sent a client last month'),T('팀 회식 장소 정리해 둔 문서','the doc listing places for team dinners'),T('작년 여름 휴가 때 찍은 바다 사진',"beach photos from last summer's vacation")],

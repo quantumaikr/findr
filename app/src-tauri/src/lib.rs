@@ -49,10 +49,51 @@ fn l(ko: &str, en: &str) -> String {
 #[tauri::command]
 fn set_lang(app: AppHandle, lang: String) {
     let ko = lang == "ko";
+    let _ = std::fs::write(home().join("lang"), if ko { "ko" } else { "en" }); // the search page and the next start see it
+    use_lang(&app, ko);
+}
+
+/// the language chosen on either screen: the app screen tells it (set_lang), the search page is served by the engine and
+/// cannot, so the engine writes the file `lang` and the app looks at it every few seconds (watch_lang)
+fn use_lang(app: &AppHandle, ko: bool) {
     LANG_SAID.store(true, std::sync::atomic::Ordering::Relaxed);
     if KOREAN.swap(ko, std::sync::atomic::Ordering::Relaxed) != ko {
-        let _ = set_app_menu(&app);
+        let _ = set_app_menu(app);
     }
+}
+
+/// the language last chosen on either screen ('ko', 'en', or '' before any choice): the app screen starts in it
+#[tauri::command]
+fn saved_lang_choice() -> String {
+    match saved_lang() {
+        Some(true) => "ko".into(),
+        Some(false) => "en".into(),
+        None => String::new(),
+    }
+}
+
+fn saved_lang() -> Option<bool> {
+    match std::fs::read_to_string(home().join("lang")).ok()?.trim() {
+        "ko" => Some(true),
+        "en" => Some(false),
+        _ => None,
+    }
+}
+
+fn watch_lang(app: AppHandle) {
+    thread::spawn(move || {
+        let mut last = saved_lang();
+        loop {
+            thread::sleep(std::time::Duration::from_secs(3));
+            let now = saved_lang();
+            if now != last {
+                if let Some(ko) = now {
+                    use_lang(&app, ko);
+                }
+                last = now;
+            }
+        }
+    });
 }
 
 fn set_app_menu(h: &AppHandle) -> tauri::Result<()> {
@@ -1058,8 +1099,19 @@ fn quit_app(app: AppHandle) {
 
 // ---------- app ----------
 
+/// the address of the app's own screens. Read from the window at the start, but on Windows the window is still at
+/// about:blank then, and the menu's '검색' and '폴더와 설정' opened about:blank#settings: a white page (field, 0.2.20).
+/// Then the address Tauri serves its screens from on that OS
+fn app_page(seen: Option<Url>) -> Option<Url> {
+    match seen {
+        Some(u) if u.scheme() != "about" && u.scheme() != "data" => Some(u),
+        _ => Url::parse(if cfg!(windows) { "http://tauri.localhost/" } else { "tauri://localhost/" }).ok(),
+    }
+}
+
 fn go_app(app: &AppHandle, hash: &str) {
-    if let (Some(w), Some(u)) = (app.get_webview_window("main"), app.state::<AppUrl>().0.lock().unwrap().clone()) {
+    let seen = app.state::<AppUrl>().0.lock().unwrap().clone();
+    if let (Some(w), Some(u)) = (app.get_webview_window("main"), app_page(seen)) {
         let mut u = u;
         u.set_fragment(Some(hash));
         let _ = w.navigate(u);
@@ -1078,8 +1130,15 @@ pub fn run() {
             if let Some(w) = app.get_webview_window("main") {
                 *app.state::<AppUrl>().0.lock().unwrap() = w.url().ok();
             }
-            KOREAN.store(system_korean(), std::sync::atomic::Ordering::Relaxed);
+            match saved_lang() {
+                Some(ko) => {
+                    KOREAN.store(ko, std::sync::atomic::Ordering::Relaxed);
+                    LANG_SAID.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                None => KOREAN.store(system_korean(), std::sync::atomic::Ordering::Relaxed),
+            }
             set_app_menu(app.handle())?;
+            watch_lang(app.handle().clone());
             Ok(())
         })
         .on_menu_event(|app, e| match e.id().as_ref() {
@@ -1091,7 +1150,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_state, setup_runtime, list_roots, start_index, start_engine, stop_engine, open_path, open_data_dir, save_folders, load_folders,
-            upgrade_state, set_upgrade, read_progress, set_pause, uninstall_data, quit_app, set_lang
+            upgrade_state, set_upgrade, read_progress, set_pause, uninstall_data, quit_app, set_lang, saved_lang_choice
         ])
         .build(tauri::generate_context!())
         .expect("findr 창을 여는 중 오류가 났습니다")
