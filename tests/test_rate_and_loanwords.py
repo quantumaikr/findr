@@ -91,14 +91,18 @@ def test_scores_are_cached_by_question_and_text(monkeypatch, tmp_path):
     monkeypatch.setenv("CE_DIR", d)
     monkeypatch.setitem(search.CE, d, (_Tok(), _Count()))
     monkeypatch.setattr(search, "CE_RATE", {})
+    # every candidate scored on every call: the CPU's count (cpu_candidates, 5 at most) is set by the speed measured in the
+    # first call, and a slow test machine (CI) then left the sixth to the unscored tail on the second call
+    monkeypatch.setattr(search, "cpu_candidates", lambda d: 100)
     search.CE_CACHE.clear()
     docs = [{"name": f"{i}.txt", "path": f"/x/{i}.txt", "head": "본문", "summary": ""} for i in range(6)]
     import time
-    search._QT[0] = time.time(); first = search.ce_scores("견적서", docs)
-    search._QT[0] = time.time(); again = search.ce_scores("견적서", docs)
+    t0 = time.time()   # one start per question: Windows' clock (15 ms steps) gave two questions the same start
+    search._QT[0] = t0 + 1; first = search.ce_scores("견적서", docs)
+    search._QT[0] = t0 + 2; again = search.ce_scores("견적서", docs)
     assert again == first and seen == [6]   # nothing new to score the second time
     docs[2] = {**docs[2], "head": "고친 본문"}
-    search._QT[0] = time.time(); search.ce_scores("견적서", docs)
+    search._QT[0] = t0 + 3; search.ce_scores("견적서", docs)
     assert seen == [6, 1]   # only the edited file
-    search._QT[0] = time.time(); search.ce_scores("계약서", docs)
+    search._QT[0] = t0 + 4; search.ce_scores("계약서", docs)
     assert seen[-1] == 6   # another question: its own scores
