@@ -18,7 +18,7 @@ def test_page_feedback_and_order():
     assert "const my=++seq;" in PAGE and "if(my!==seq)return;" in PAGE
     assert "if(e.isComposing||e.keyCode===229)return;go()" in PAGE
     assert "dir(x.path)===fDir||dir(x.path).startsWith(fDir+'/')" in PAGE
-    assert "toast('기록하지 못했습니다')" in PAGE and "j.why=='FileNotFoundError'" in PAGE
+    assert "toast(T('기록하지 못했습니다'," in PAGE and "j.why=='FileNotFoundError'" in PAGE
 
 
 def test_server_feedback_learning():
