@@ -31,6 +31,33 @@ def pick_device(device=None):
     return d or ("cuda" if torch.cuda.is_available() else "mps" if mps else "cpu")
 
 
+def drop_unused_towers(st):
+    """findr reads text with this encoder, never images or sound, but the model carries a vision tower (167M parameters)
+    and an audio tower (305M): 60% of it. Without them the vectors are the same (cosine 1.000 on questions and
+    documents) and a CPU engine holds 1.6 GB where it held 3.4 GB (11/11). Returns the parameters let go"""
+    freed = 0
+    try:
+        am = st[0].auto_model
+    except Exception:
+        return 0
+    for name in ("vision_tower", "audio_tower"):
+        tower = getattr(am, name, None)
+        if tower is not None:
+            freed += sum(p.numel() for p in tower.parameters())
+            setattr(am, name, None)
+    if freed:
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        try:   # give the pages back to the system now (glibc keeps them otherwise); not there on Windows or macOS
+            import ctypes
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except (OSError, AttributeError):
+            pass
+    return freed
+
+
 class EG2:
     def __init__(self, device=None, max_len=512):   # no GPU on this PC: fall back to the CPU (FINDR_DEVICE can force it)
         import os
@@ -42,6 +69,7 @@ class EG2:
         kw = {"model_kwargs": {"torch_dtype": torch.float32}} if device in ("mps", "cpu") else {}
         self.st = SentenceTransformer(PATH, device=device, **kw); self.st.max_seq_length = max_len; self.dev = device
         self.bs = int(os.environ.get("FINDR_BATCH") or (16 if device == "mps" else 64))
+        drop_unused_towers(self.st)
 
     @torch.no_grad()
     def emb(self, texts, bs=None, query=True):
