@@ -1,32 +1,30 @@
-# 보안 정책 (Security)
+# Security
 
-findr는 사용자의 파일을 다룹니다. 보안을 기능만큼 중요하게 다룹니다.
+findr reads a person's own files. This page says what it does with them, what it does not protect against, and how to report a problem. [한국어 요약](#한국어-요약)은 아래에 있습니다.
 
-## 설계 원칙
-- **로컬 처리**: 파일 내용·질문·검색 기록은 이 컴퓨터 밖으로 보내지 않습니다. 인터넷은 모델 다운로드(`findr models pull`)에만 씁니다.
-- **선택 기능도 로컬**: 언어 모델 기능은 사용자가 지정한 로컬 주소(`FINDR_CHAT_LLM` 등)로만 연결합니다. 원격 주소를 지정하면 그 서버로 문서 일부가 전달되므로 권하지 않습니다.
-- **비밀 파일 보호**: `.env`, `.netrc`, SSH 키, 인증서(`*.pem`, `*.key`, `*.pfx` 등), 비밀번호 관리자 파일은 내용을 읽지 않습니다. 문서 안의 API 키·토큰처럼 보이는 문자열은 색인 전에 가립니다.
-- **웹 화면**: 비밀번호가 항상 필요합니다. 기본 주소는 `127.0.0.1`(이 컴퓨터만)입니다. 비밀번호 10회 실패 시 10분 차단, 보안 헤더(CSP, 프레임 금지, 캐시 금지), 입력 길이·모드 제한, 다른 사이트에서 보내는 변경 요청 차단(전용 헤더 필요)을 적용합니다.
-- **실제 파일 불변**: 탐색기의 정리·이름 바꾸기는 화면 안의 가상 구조일 뿐, 실제 파일을 옮기거나 바꾸지 않습니다.
+## What findr does
+- **Everything runs on the PC.** File contents, questions and search history are not sent anywhere. The internet is used to download models and the engine during setup and updates, and for nothing else.
+- **Files are only read.** findr never changes, moves or deletes the files it searches.
+- **Secret files are not read.** Files such as `.env`, `.netrc`, SSH keys, certificates and key stores (`*.pem`, `*.pfx`, `*.p12`, `*.kdbx` and similar) are skipped by name. Folders such as `.ssh`, `.aws`, `.kube` and `.docker` and shell history are never indexed.
+- **Key-like strings are masked.** Text that looks like an API key or token is replaced before it is stored in the index.
+- **The search page is local and needs a password.** It listens on `127.0.0.1` only. Repeated wrong passwords are refused for a while. Responses carry a content security policy, forbid framing and are not cached.
+- **One data folder.** The index, models, settings, logs and what findr learned from use are in `%LOCALAPPDATA%\findr` (Windows) or `~/.findr` (macOS, Linux). Uninstalling removes it; see the README.
 
-## 원격으로 쓰려면
-`--host 0.0.0.0`은 같은 네트워크의 누구나 로그인 화면에 닿을 수 있게 합니다. 외부에서 쓸 때는 공개 터널 대신
-VPN(Tailscale, WireGuard 등)이나 인증 프록시 뒤에 두세요. 검색 결과에는 파일 경로와 내용 일부가 보인다는 점에 유의하세요.
+## What findr does not do
+- **The index is not encrypted.** It holds pieces of document text and is protected only by the file permissions of the user account. Against a lost or stolen PC, use the operating system's disk encryption (BitLocker, FileVault, LUKS).
+- **Other programs running as the same user can read the index**, as they can read the files themselves.
+- **Installers are not code-signed yet.** Download them only from this repository's releases page.
 
-## 데이터 위치
-색인(`index.db`), 변환 캐시, 피드백, 탐색기 수정 기록, 비밀번호(`.password`)는 데이터 폴더에만 있습니다
-(`findr doctor`로 위치 확인). 지우려면 그 폴더를 삭제하면 됩니다.
+## AI tools (MCP)
+When an AI assistant uses findr through MCP, the file names, locations and excerpts it asks for go to that assistant. If the assistant runs in the cloud, they leave the PC there. Set the assistant to ask before each use of a tool. `read_file` returns only text of files already in the index.
 
-## 취약점 신고
-공개 이슈 대신 GitHub의 **Security → Report a vulnerability**(비공개 신고)로 알려 주세요. 확인 후 7일 안에 답하겠습니다.
+## Reporting a vulnerability
+Please do not open a public issue. Use GitHub's **Security → Report a vulnerability** on this repository. We answer within 7 days.
 
-## 색인 암호화 (선택)
-색인에는 문서 본문 조각이 들어 있습니다. PC 분실이나 악성코드에 대비하려면 색인 전체를 암호화하세요.
-```bash
-pip install "findr-ai[secure]"
-findr encrypt                 # 기존 색인을 암호화 (처음부터라면 생략)
-export FINDR_ENCRYPT=1        # Windows PowerShell: $env:FINDR_ENCRYPT="1"  (또는 findr.toml에 encrypt = true)
-```
-- 색인 전체(본문 조각, 단어 색인, 의미 벡터)가 AES-256으로 암호화됩니다(SQLCipher). 검색 속도 차이는 거의 없습니다.
-- 키는 무작위로 만들어 OS 키 보관소(Windows 자격 증명 관리자, macOS 키체인, Linux Secret Service)에 보관합니다. 키 보관소가 없는 환경에서는 이 사용자만 읽을 수 있는 키 파일을 쓰고 경고를 표시합니다.
-- 키를 잃으면 색인을 다시 만들면 됩니다(원본 파일은 영향 없음).
+## 한국어 요약
+- 모든 처리는 PC 안에서 합니다. 인터넷은 설치·업데이트 때 모델과 엔진을 받는 데만 씁니다.
+- 검색 대상 파일은 읽기만 합니다. 비밀 파일(`.env`, SSH 키, 인증서 등)은 읽지 않고, 키처럼 보이는 문자열은 가려서 저장합니다.
+- 검색 화면은 이 PC(127.0.0.1)에서만 열리고 비밀번호가 필요합니다.
+- **색인은 암호화되어 있지 않습니다.** PC 분실에 대비하려면 운영체제의 디스크 암호화(BitLocker, FileVault)를 쓰세요.
+- AI 도구(MCP)에 연결하면 찾은 파일의 이름과 내용 일부가 그 AI 도구로 전달됩니다. 클라우드 AI라면 PC 밖으로 나갑니다.
+- 취약점은 공개 이슈 대신 GitHub의 **Security → Report a vulnerability**로 알려 주세요. 7일 안에 답합니다.
