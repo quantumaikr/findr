@@ -338,15 +338,17 @@ document.addEventListener('click',e=>{
  const fk=e.target.closest('[data-kind]');if(fk){fKind=fKind===fk.dataset.kind?null:fk.dataset.kind;document.querySelectorAll('[data-kind]').forEach(x=>x.classList.toggle('on',x.dataset.kind===fKind));list();return}
  const fd=e.target.closest('[data-fdir]');if(fd){fDir=fDir===fd.dataset.fdir?null:fd.dataset.fdir;document.querySelectorAll('[data-fdir]').forEach(x=>x.classList.toggle('on',x.dataset.fdir===fDir));list();return}
  const sd=e.target.closest('[data-dir]');if(sd){fDir=sd.dataset.dir;list();toast(T('폴더로 거름: ','Filtered to folder: ')+fDir.split('/').slice(-2).join('/'));return}
- const vo=e.target.closest('[data-vopen]');if(vo&&(APP||LOCAL)){const [ci,vi]=vo.dataset.vopen.split(':').map(Number),vp=filtered()[ci].versions[vi].path;
-  if(APP){window.__TAURI__.core.invoke('open_path',{path:vp,reveal:false}).catch(err=>toast(String(err)));return}
-  fetch('/open',{method:'POST',headers:{'X-Findr':'1','Content-Type':'application/json'},body:JSON.stringify({path:vp,reveal:false})}).then(r=>toast(r.ok?T('파일을 열었습니다','File opened'):T('열지 못했습니다',"Couldn't open it"))).catch(err=>toast(String(err)));return}
- const op=e.target.closest('[data-open],[data-reveal]');if(op&&(APP||LOCAL)){const x=filtered()[+(op.dataset.open!=null?op.dataset.open:op.dataset.reveal)],rv=op.dataset.reveal!=null;
-  if(APP){window.__TAURI__.core.invoke('open_path',{path:x.path,reveal:rv}).catch(err=>toast(String(err)));return}
+ const vo=e.target.closest('[data-vopen]');if(vo&&(APP||LOCAL)){const [ci,vi]=vo.dataset.vopen.split(':').map(Number),vx=filtered()[ci],vp=vx.versions[vi].path,
+   vfb=()=>fb('open',vp,last.results.indexOf(vx)+1,vx.prob,1);   // opened from 'other versions': that version's path, ver=1
+  if(APP){window.__TAURI__.core.invoke('open_path',{path:vp,reveal:false}).then(vfb).catch(err=>toast(String(err)));return}
+  fetch('/open',{method:'POST',headers:{'X-Findr':'1','Content-Type':'application/json'},body:JSON.stringify({path:vp,reveal:false})}).then(r=>{if(r.ok)vfb();toast(r.ok?T('파일을 열었습니다','File opened'):T('열지 못했습니다',"Couldn't open it"))}).catch(err=>toast(String(err)));return}
+ const op=e.target.closest('[data-open],[data-reveal]');if(op&&(APP||LOCAL)){const x=filtered()[+(op.dataset.open!=null?op.dataset.open:op.dataset.reveal)],rv=op.dataset.reveal!=null,
+   ofb=()=>fb(rv?'reveal':'open',x.path,last.results.indexOf(x)+1,x.prob);   // what was really opened is what findr learns from
+  if(APP){window.__TAURI__.core.invoke('open_path',{path:x.path,reveal:rv}).then(ofb).catch(err=>toast(String(err)));return}
   fetch('/open',{method:'POST',headers:{'X-Findr':'1','Content-Type':'application/json'},body:JSON.stringify({path:x.path,reveal:rv})})
-   .then(r=>r.ok?toast(rv?T('폴더를 열었습니다','Folder opened'):T('파일을 열었습니다','File opened')):r.json().then(j=>toast(T('열지 못했습니다',"Couldn't open it")+(j.why=='not indexed'?T(': 색인에 없는 파일',': not in the index'):j.why=='FileNotFoundError'?T(': 파일이 옮겨졌거나 지워졌습니다',': the file was moved or deleted'):''))))
+   .then(r=>r.ok?(ofb(),toast(rv?T('폴더를 열었습니다','Folder opened'):T('파일을 열었습니다','File opened'))):r.json().then(j=>toast(T('열지 못했습니다',"Couldn't open it")+(j.why=='not indexed'?T(': 색인에 없는 파일',': not in the index'):j.why=='FileNotFoundError'?T(': 파일이 옮겨졌거나 지워졌습니다',': the file was moved or deleted'):''))))
    .catch(err=>toast(String(err)));return}
- const cp=e.target.closest('[data-copy]');if(cp){copy(filtered()[+cp.dataset.copy].path);return}
+ const cp=e.target.closest('[data-copy]');if(cp){const x=filtered()[+cp.dataset.copy];copy(x.path);fb('copy',x.path,last.results.indexOf(x)+1,x.prob);return}
  const no=e.target.closest('[data-no]');if(no){const x=filtered()[+no.dataset.no];x.no=true;fb('reject',x.path,last.results.indexOf(x)+1,x.prob);list();toast(T('기록: 이 파일은 아님','Noted: not this file'));return}
  const ok=e.target.closest('[data-ok]');if(ok){const x=filtered()[+ok.dataset.ok];fb('hit',x.path,last.results.indexOf(x)+1,x.prob);last.picked=1;ok.classList.add('done');ok.textContent=T('✔ 기록됨','✔ Saved');
   const h=hist(),hi=h.find(y=>y.q===last.q0);if(hi){hi.hit=1;store.set('findr.hist',h);renderHist()}return}
@@ -354,9 +356,10 @@ document.addEventListener('click',e=>{
 });
 function copy(p){try{navigator.clipboard.writeText(p).then(()=>toast(T('경로를 복사했습니다','Path copied')),()=>toast(p))}catch(e){toast(p)}}
 // the question that made this list (not what is being typed now), and the route that answered it
-function fb(v,p,k,pr){const L=last||{};fetch('/fb?'+new URLSearchParams({q:L.q0||q.value,mode:L.route||mode,path:p||'',rank:k||'',verdict:v,prob:pr==null?'':pr,
+function fb(v,p,k,pr,ver){const L=last||{},quiet=v==='open'||v==='reveal'||v==='copy';   // those three keep their own toast
+ fetch('/fb?'+new URLSearchParams({q:L.q0||q.value,mode:L.route||mode,path:p||'',rank:k||'',verdict:v,prob:pr==null?'':pr,
  first_rank:(L.first&&p)?(L.first.indexOf(p)+1):'',secs:L.t0?Math.round((Date.now()-L.t0)/1000):'',page:'',
- shown:(L.results||[]).slice(0,30).map(x=>x.path).join(String.fromCharCode(10)),tried:tried.join(String.fromCharCode(10))})).then(r=>{if(!r.ok){toast(T('기록하지 못했습니다',"Couldn't save that"));return}if(v==='hit'){toast(T(k+'위가 정답으로 기록됐습니다','Saved #'+k+' as the right file'));tried=[]}}).catch(()=>toast(T('기록하지 못했습니다',"Couldn't save that")))}
+ shown:(L.results||[]).slice(0,30).map(x=>x.path).join(String.fromCharCode(10)),tried:tried.join(String.fromCharCode(10)),...(ver?{ver:'1'}:{})})).then(r=>{if(quiet)return;if(!r.ok){toast(T('기록하지 못했습니다',"Couldn't save that"));return}if(v==='hit'){toast(T(k+'위가 정답으로 기록됐습니다','Saved #'+k+' as the right file'));tried=[]}}).catch(()=>{if(!quiet)toast(T('기록하지 못했습니다',"Couldn't save that"))})}
 // keyboard
 document.addEventListener('keydown',e=>{
  if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();q.select();return}
@@ -365,7 +368,7 @@ document.addEventListener('keydown',e=>{
  const cards=[...document.querySelectorAll('.card')];if(!cards.length)return;
  if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();sel=Math.max(0,Math.min(cards.length-1,sel+(e.key==='ArrowDown'?1:-1)));
   cards.forEach((c,i)=>c.classList.toggle('sel',i===sel));cards[sel].scrollIntoView({block:'nearest'})}
- if(e.key==='Enter'&&sel>=0&&document.activeElement!==q){copy(filtered()[sel].path)}
+ if(e.key==='Enter'&&sel>=0&&document.activeElement!==q){const x=filtered()[sel];copy(x.path);fb('copy',x.path,last.results.indexOf(x)+1,x.prob)}
 });
 // placeholder rotation, status
 let pi=0;q.placeholder=PH[0];setInterval(()=>{if(!q.value){pi=(pi+1)%PH.length;q.placeholder=PH[pi]}},3500);

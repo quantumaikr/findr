@@ -2181,6 +2181,17 @@ def personal():
     return _PM
 
 
+def habits():
+    """what this person opens, as counts (habits.py): the formats opened for each purpose, the folders, how recent. This PC only"""
+    import habits as HMOD
+    return HMOD.store()
+
+
+def index_path_forms(p):
+    """the ways one path may be written in the index: as shown on the page (C:\\a\\b), with slashes, and as WSL keeps it (/mnt/c/a/b)"""
+    return (p, p.replace(chr(92), "/"), re.sub(r"^([A-Za-z]):[\\/]", lambda m: f"/mnt/{m.group(1).lower()}/", p).replace(chr(92), "/"))
+
+
 def indexer_alive(p):
     """progress.json still describes a running indexer. A stopped or killed one leaves its last line behind.
     POSIX: the recorded pid must exist (signal 0 only checks). Windows: os.kill(pid, 0) would end the process,
@@ -2602,7 +2613,9 @@ def result_key(f, q, mode, k, prev, pin):
         return None
     pm = personal()
     mem = len(getattr(pm, "rows", []) or []) if pm is not None else 0
-    flags = tuple(os.environ.get(x, "") for x in ("KIND_GATE", "DUP_COLLAPSE", "TIME_WORDS", "CE_TAIL", "CE_MATCHED", "VERSION_GROUP", "XLING2", "XFAIR", "STAGE_TRACE", "LANE2"))
+    if os.environ.get("HABITS", "0") == "1":   # a file opened since can settle a near-tie the other way
+        mem = (mem, habits().state())
+    flags = tuple(os.environ.get(x, "") for x in ("KIND_GATE", "DUP_COLLAPSE", "TIME_WORDS", "CE_TAIL", "CE_MATCHED", "VERSION_GROUP", "XLING2", "XFAIR", "STAGE_TRACE", "LANE2", "HABITS"))
     return (q, mode, k, prev, pin, dt.date.today().isoformat(), ver, mem, flags, lang())
 
 
@@ -2763,7 +2776,8 @@ def serve(f, port):
                 rec["shown"] = [x[:4096] for x in qs.get("shown", [""])[0].split(chr(10)) if x][:30]   # what the person saw, in order
                 rec["tried"] = [x[:MAX_Q] for x in qs.get("tried", [""])[0].split(chr(10)) if x][:8]   # earlier requests in this session
                 fbp = Path(os.environ.get("FINDR_DATA") or (Path.home() / ".findr")) / "feedback.jsonl"
-                if rec["verdict"] not in ("hit", "none", "reject"):
+                # open / reveal / copy: the person acted on a file without saying 'right' (most never press ✔)
+                if rec["verdict"] not in ("hit", "none", "reject", "open", "reveal", "copy"):
                     return self.reply(400, b'{"ok": false}', "application/json")
                 if fbp.exists() and fbp.stat().st_size > 5_000_000:   # set aside, keep learning (it used to refuse every click from then on)
                     fbp.rename(fbp.with_name(f"feedback.{dt.datetime.now():%Y%m%d%H%M%S}.jsonl"))
@@ -2779,6 +2793,13 @@ def serve(f, port):
                                 personal().add(q0, row[0])
                         else:
                             personal().add(rec["q"], None, [row[0]])
+                # habits: counted only where they are used for the order (HABITS=1), and under the same switch as the memory
+                # above. The question and the file's name stay out of it (purpose kind, format, folder, age)
+                if os.environ.get("HABITS", "0") == "1" and personal() is not None and rec["verdict"] in ("open", "reveal", "copy", "hit") and rec["path"]:
+                    with SEARCH_LOCK:
+                        row = f.con.execute("SELECT mtime, ext FROM files WHERE path IN (?, ?, ?)", index_path_forms(rec["path"])).fetchone()
+                    habits().record(rec["verdict"], rec["q"], rec["path"], mtime=row[0] if row else None, ext=row[1] if row else None,
+                                    from_versions=qs.get("ver", [""])[0] == "1")
                 return self.reply(200, b'{"ok": true}', "application/json")
             if u.path in ("/learned", "/learned/forget"):   # what findr learned about this person (this PC only)
                 mem_ = personal()
@@ -2786,7 +2807,10 @@ def serve(f, port):
                     return self.reply(200, ("<meta charset=utf-8><p>" + M("나에게 맞추는 학습이 꺼져 있습니다.", "Learning from your choices is turned off.") + "</p>").encode(), "text/html; charset=utf-8")
                 if u.path == "/learned/forget":
                     i = parse_qs(u.query).get("i", [""])[0]
-                    mem_.forget(None if i == "all" else int(i) if i.isdigit() else -1)
+                    if i == "habits":
+                        habits().forget()
+                    else:
+                        mem_.forget(None if i == "all" else int(i) if i.isdigit() else -1)
                     # back to /learned: a reload of /learned/forget?i=N forgot the entry that had moved into slot N
                     self.send_response(303)
                     if lang() == "en":   # back to the page in the same language
@@ -2815,6 +2839,27 @@ def serve(f, port):
                         + M("배운 것을 모두 잊을까요?", "Forget everything findr has learned?") + "')\">" + M("모두 잊기", "Forget all")
                         + "</a> · <a href='/'>" + M("검색으로", "Back to search") + "</a></p>"
                         f"<table>{rows or '<tr><td>' + M('아직 배운 것이 없습니다.', 'Nothing learned yet.') + '</td></tr>'}</table>")
+                # habits: counts only (no question, no file name), with their own 'forget'
+                if os.environ.get("HABITS", "0") == "1":
+                    hs_ = habits().summary()
+                    kn_ = {"present": M("발표 자료를 찾을 때", "Looking for presentations"), "table": M("표·목록을 찾을 때", "Looking for tables and lists"),
+                           "paper": M("문서를 찾을 때", "Looking for documents"), "photo": M("사진을 찾을 때", "Looking for photos")}
+                    gn_ = {"slides": M("슬라이드", "slides"), "sheet": M("표", "spreadsheets"), "doc": M("문서", "documents"), "pdf": "PDF",
+                           "image": M("사진", "images"), "text": M("글", "text"), "other": M("기타", "other")}
+                    hrows = "".join(f"<tr><td>{e(kn_.get(k_, k_))}</td><td>" + ", ".join(f"{e(gn_.get(g_, g_))} {v_:g}" for g_, v_ in gs_) + "</td></tr>"
+                                    for k_, gs_ in hs_["formats"].items())
+                    hrows += "".join(f"<tr><td>{M('자주 여는 폴더', 'A folder you open often')}</td><td>{e(d_)} · {v_:g}</td></tr>" for d_, v_ in hs_["folders"])
+                    if hs_["recent"] is not None:
+                        hrows += (f"<tr><td>{M('여신 파일 중 최근 30일 안에 고친 파일', 'Opened files that were changed in the 30 days before')}</td>"
+                                  f"<td>{round(100 * hs_['recent'])}%</td></tr>")
+                    page += ("<h2>" + M("파일을 여는 습관", "How you open files") + "</h2><p>"
+                             + M("열거나 경로를 복사한 파일의 형식·폴더·새로움만 셉니다. 질문과 파일 이름은 남기지 않으며, 오래된 것은 차츰 덜 셉니다. "
+                                 "가능성이 거의 같은 파일 사이에서만 순서에 쓰입니다.",
+                                 "Only the format, the folder and the age of files you open or copy are counted. The question and the file name "
+                                 "are not kept, and older counts fade. They are used only to order files that are almost equally likely.")
+                             + f"</p><p>{M('관찰', 'Observations')} {hs_['n']}{M('개', '')} · <a href='/learned/forget?i=habits{ln_}' onclick=\"return confirm('"
+                             + M("습관을 모두 지울까요?", "Forget all habits?") + "')\">" + M("습관 모두 지우기", "Forget all habits") + "</a></p>"
+                             f"<table>{hrows or '<tr><td>' + M('아직 센 것이 없습니다.', 'Nothing counted yet.') + '</td></tr>'}</table>")
                 return self.reply(200, page.encode(), "text/html; charset=utf-8")
             if u.path == "/refine":
                 qs = parse_qs(u.query)
@@ -2900,7 +2945,17 @@ def serve(f, port):
                     with SEARCH_LOCK:
                         res = personal().apply(f, q_, res)
                 _mark(res, "personal")
+                if os.environ.get("HABITS", "0") == "1" and res.get("results"):   # near-ties settled by purpose and habit (score bonus <= 0.08)
+                    try:   # the same 'today' the search used, so that an evaluation gives the same answer on any day
+                        hnow_ = dt.datetime.fromisoformat(self.headers.get("X-Findr-Today")) if self.headers.get("X-Findr-Today") else None
+                    except ValueError:
+                        hnow_ = None
+                    res = habits().apply(q_, res, now=hnow_)
+                    _mark(res, "habits")
                 res = add_probs(res)
+                for c_ in res.get("results") or []:   # add_probs writes the reasons anew: the habit's line goes back in
+                    if c_.get("habit") and c_["habit"] not in (c_.get("why") or []):
+                        c_.setdefault("why", []).append(c_["habit"])
                 if res.get("results") and os.environ.get("TIME_WORDS", "1") == "1":
                     try:   # the same 'today' the search used (an evaluation pins it; EVAL_NOW is already reset here)
                         now_ = dt.datetime.fromisoformat(self.headers.get("X-Findr-Today")) if self.headers.get("X-Findr-Today") else None
