@@ -184,7 +184,7 @@ async function indexing(list: string[], deep = false) {
     <p class="muted auto" id="auto"></p>
     <details><summary>${L('자세한 기록', 'Details')}</summary><pre id="log"></pre></details>`
   const log: string[] = []
-  let found = 0, engine: Promise<string> | null = null, moved = false, ready = false, stay = false, countdown = 0, P: Progress = {}
+  let found = 0, engine: Promise<string> | null = null, moved = false, ready = false, stay = false, countdown = 0, P: Progress = {}, pollErr = false
   const $ = (id: string) => document.getElementById(id)!
   const set = (id: string, t: string) => { const e = document.getElementById(id); if (e) e.textContent = t }
   let ti = 0; const tip = () => set('tip', '“' + TIPS()[ti++ % TIPS().length] + '”'); tip()
@@ -236,7 +236,9 @@ async function indexing(list: string[], deep = false) {
     setTimeout(tickDown, 1000)
   }
   const poll = setInterval(async () => {
-    try { const t = await invoke<string>('read_progress'); if (t) { P = JSON.parse(t); render() } } catch { /* not written yet */ }
+    // a refused or failing command is said in the detailed log once: swallowed, it left the bar at 0% for the whole first index
+    try { const t = await invoke<string>('read_progress'); if (t) { P = JSON.parse(t); render() } }
+    catch (e) { if (!pollErr) { pollErr = true; log.push('read_progress: ' + String(e)); set('log', log.join('\n')) } }
   }, 700)
   unlisten.push(await listen<Line>('index', e => {
     const l = e.payload.line

@@ -19,6 +19,10 @@
     "allow-save-folders",
     "allow-load-folders",
     "allow-uninstall-data",
-    "allow-quit-app"
+    "allow-quit-app",
+    "allow-upgrade-state",
+    "allow-set-upgrade",
+    "allow-read-progress",
+    "allow-set-pause"
   ]
 }
