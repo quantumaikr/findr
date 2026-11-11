@@ -452,7 +452,128 @@ XFAIR_DOCS = {".pdf", ".hwp", ".hwpx", ".doc", ".docx", ".ppt", ".pptx", ".xls",
 XFAIR_CUE = re.compile(r"영어|영문|english|원문|외국어", re.I)
 
 
+# LANE2 (default 0: off, answers exactly as before): a second meaning lane on a PC indexed with the small encoder. The
+# idle-time upgrade (index.py upgrade) fills each file's first piece with the larger encoder's vector first (chunks.emb2);
+# long before the whole index can switch, those first pieces alone are read as one more candidate list. Measured on a
+# small-encoder index of 4,771 real files (45 questions): answer among the first 10 candidates 22 -> 33; on virtual PCs
+# (2,000 questions) 1,530 -> 1,850. Taking turns with the fused list did better than adding one more 1/(60+rank) vote.
+# Costs: the larger encoder is loaded beside the small one at the first question (memory, seconds once) and reads every
+# question (one short text).
+LANE2_DIM = 256    # the first 256 of the larger encoder's dimensions (it is trained to be cut there): 1 KB a file in memory
+LANE2_TOP = 100    # how many first pieces the lane offers; the measured gain is within the first 100
+LANE2_EPS = 1e-7   # 'right after': below the fused score it follows by less than any rank step (1/160 - 1/161 = 4e-5)
+
+
+def lane2_on():
+    return os.environ.get("LANE2", "0") == "1"
+
+
+def lane2_interleave(score, lane, top=LANE2_TOP, eps=LANE2_EPS):
+    """take turns: the lane's r-th piece (from 0) comes right after the r-th piece of the fused order. A piece already
+    above that place stays where it is; past the end of the fused order the lane's pieces follow in their own order.
+    fused a, b, c and lane x, b, y -> a, x, b, c, y. Changes `score` in place (the filters and name boosts that follow
+    in _search apply to the lane's pieces as to any other). No clock, no randomness: ties go by piece id."""
+    L = sorted(score.items(), key=lambda x: (-x[1], x[0]))
+    for r, cid in enumerate(list(dict.fromkeys(lane))[:top]):
+        if r < len(L):
+            s = L[r][1] - eps
+        elif L:
+            s = L[-1][1] - eps * (r - len(L) + 2)
+        else:   # no other lane found anything: the lane's own order, on the scale of one lane's vote
+            s = 1 / (60 + r)
+        if s > score.get(cid, float("-inf")):
+            score[cid] = s
+    return score
+
+
 class Finder:
+    def lane2_sig(self, con):
+        """how many first pieces carry the larger encoder's vector, and the sum of their ids (cheap to ask; a change means
+        read them again). None when LANE2 is off or the index has no emb2 column"""
+        if not lane2_on():
+            return None
+        try:
+            return tuple(con.execute("SELECT count(*), total(id) FROM chunks WHERE n=0 AND emb2 IS NOT NULL").fetchone())
+        except sqlite3.Error:   # an index made before the upgrade existed: no emb2 column
+            return None
+
+    def lane2_read(self, con, encoder):
+        """(sig, target, ids, M): the first pieces' vectors by the upgrade's target encoder, cut to LANE2_DIM and
+        normalized. Empty when LANE2 is off, when the index already is on the target, or when nothing is filled yet"""
+        none = (None, "", np.zeros(0, np.int64), np.zeros((0, LANE2_DIM), np.float32))
+        sig = self.lane2_sig(con)
+        if not sig or not sig[0]:
+            return (sig,) + none[1:]
+        try:
+            mark = con.execute("SELECT value FROM meta WHERE key='upgrade'").fetchone()
+            target = (mark[0] if mark and mark[0] else "") or "embeddinggemma-2"
+            if target == encoder:
+                return (sig,) + none[1:]
+            rows = con.execute("SELECT id, emb2 FROM chunks WHERE n=0 AND emb2 IS NOT NULL ORDER BY id").fetchall()
+            wide = max(len(r[1]) for r in rows)
+            rows = [r for r in rows if len(r[1]) == wide]   # (a half-written or foreign vector is left out)
+            M = np.stack([np.frombuffer(r[1], np.float16) for r in rows]).astype(np.float32)[:, :LANE2_DIM]
+            M = M / np.maximum(np.linalg.norm(M, axis=1, keepdims=True), 1e-9)
+            return sig, target, np.array([r[0] for r in rows], dtype=np.int64), np.ascontiguousarray(M)
+        except Exception:   # noqa: BLE001  (the lane is an extra: without it the search answers as before)
+            return (sig,) + none[1:]
+
+    def lane2_set(self, got):
+        self._l2sig, self.l2target, self.l2ids, self.l2M = got
+
+    def lane2_enc(self):
+        """the larger encoder, loaded at the first question that has first pieces to compare with. When it cannot be
+        loaded (no model folder, not enough memory) the lane goes off for this run, with one line on standard error"""
+        if getattr(self, "_l2off", False):
+            return None
+        if getattr(self, "_l2enc", None) is not None and self._l2enc[0] == self.l2target:
+            return self._l2enc[1]
+        try:
+            import enc_eg2
+            if self.l2target == "embeddinggemma-2" and not Path(enc_eg2.PATH).is_dir():
+                raise FileNotFoundError("model folder missing")   # never a download in the middle of a question
+            self._l2enc = (self.l2target, enc_eg2.make_encoder(self.l2target, DEVICE, max_len=128))
+            return self._l2enc[1]
+        except BaseException as e:   # noqa: BLE001
+            if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                raise
+            self.lane2_off(e)
+            return None
+
+    def lane2_off(self, e):
+        self._l2off = True; self._l2enc = None
+        print(f"FINDR_LANE2 off ({type(e).__name__}): the second meaning lane is not used in this run", file=sys.stderr, flush=True)
+
+    def lane2(self, text, ok=None):
+        """first pieces closest to the question by the larger encoder, best first (chunk ids, at most LANE2_TOP).
+        ok: the pieces that meet the question's conditions (kind, period, chosen files), or None for all"""
+        M = getattr(self, "l2M", None)
+        if not lane2_on() or M is None or not len(M) or not (text or "").strip():
+            return []
+        enc = self.lane2_enc()
+        if enc is None:
+            return []
+        try:
+            import torch
+            with torch.no_grad():
+                v = enc.emb([text]).cpu().numpy()[0].astype(np.float32)[:LANE2_DIM]
+        except BaseException as e:   # noqa: BLE001
+            if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                raise
+            self.lane2_off(e)
+            return []
+        if len(v) != M.shape[1]:
+            return []
+        v = v / max(float(np.linalg.norm(v)), 1e-9)
+        ids, out = self.l2ids, []
+        for i in np.argsort(-(M @ v), kind="stable"):   # stable: equal vectors (copies) keep the order of their ids
+            cid = int(ids[i])
+            if ok is None or cid in ok:
+                out.append(cid)
+                if len(out) >= LANE2_TOP:
+                    break
+        return out
+
     def __init__(self, db, model="bge-m3"):
         self.db_uri = Path(db).expanduser().resolve().as_uri() + "?mode=ro"   # the reload thread reads on its own connection
         self.con = sqlite3.connect(Path(db).expanduser(), check_same_thread=False)
@@ -472,6 +593,7 @@ class Finder:
         self.enc = make_encoder(self.encoder, DEVICE, max_len=128)
         if not len(self.ids):   # no vectors yet: an empty matrix of this encoder's width (words and names still answer)
             self.M = np.zeros((0, len(self.qvec("준비"))), np.float32)
+        self.lane2_set(self.lane2_read(self.con, self.encoder))
         # installed package names: a question that names one (peft, trl, bitsandbytes) means the library
         self.pkgs = {m.group(1).lower() for (p,) in self.con.execute("SELECT path FROM files WHERE tier=2")
                      for m in [re.search(r"site-packages/([A-Za-z0-9_]+)/", p)] if m and len(m.group(1)) >= 3}
@@ -504,9 +626,16 @@ class Finder:
                 n = con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL").fetchone()[0]
                 top = con.execute("SELECT max(id) FROM chunks").fetchone()[0] or 0
                 e_ = encoder_of(con)
+                l2 = self.lane2_sig(con)   # None with LANE2 off
                 if n == len(self.ids) and top == getattr(self, "_top", top) and e_ == self.encoder:   # (an idle-time upgrade switches the encoder, counts unchanged)
                     self._top = top
+                    if l2 != getattr(self, "_l2sig", None):   # only the first pieces' side vectors grew (an upgrade run in between)
+                        got = self.lane2_read(con, e_)
+                        with SEARCH_LOCK:
+                            self.lane2_set(got)
+                        print(f"FINDR_RELOAD lane2 {len(got[2])}", flush=True)
                     return
+                got = self.lane2_read(con, e_)
                 enc = make_encoder(e_, DEVICE, max_len=128) if e_ in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and e_ != self.encoder else None
                 rows = con.execute("SELECT c.id, c.emb FROM chunks c WHERE c.emb IS NOT NULL").fetchall()
             finally:
@@ -519,6 +648,7 @@ class Finder:
                 self.ids = ids
                 self.M = M if M is not None else np.zeros((0, len(self.qvec("준비"))), np.float32)
                 self.Mg = None; self.name_rows = None; self._top = top
+                self.lane2_set(got)
             print(f"FINDR_RELOAD vectors {len(ids)}", flush=True)
         except Exception as e:   # a failed reload keeps the vectors the page already has
             print(f"FINDR_RELOAD failed {type(e).__name__}", flush=True)
@@ -1245,6 +1375,8 @@ class Finder:
                 score[cid] = score.get(cid, 0) + 1 / (60 + r)
         if os.environ.get("XFAIR", "0") == "1":
             self.fair_fusion(q, dense, lex, score)
+        if lane2_on():   # the larger encoder's reading of each file's first piece takes turns with the fused order
+            lane2_interleave(score, self.lane2(text, ok if pool is not None else None))
         if not score:
             return {"parsed": show(p), "results": [], "ms": int(1000 * (time.time() - t0))}
         qm = ",".join("?" * len(score))
@@ -2467,7 +2599,7 @@ def result_key(f, q, mode, k, prev, pin):
         return None
     pm = personal()
     mem = len(getattr(pm, "rows", []) or []) if pm is not None else 0
-    flags = tuple(os.environ.get(x, "") for x in ("KIND_GATE", "DUP_COLLAPSE", "TIME_WORDS", "CE_TAIL", "CE_MATCHED", "VERSION_GROUP", "XLING2", "XFAIR", "STAGE_TRACE"))
+    flags = tuple(os.environ.get(x, "") for x in ("KIND_GATE", "DUP_COLLAPSE", "TIME_WORDS", "CE_TAIL", "CE_MATCHED", "VERSION_GROUP", "XLING2", "XFAIR", "STAGE_TRACE", "LANE2"))
     return (q, mode, k, prev, pin, dt.date.today().isoformat(), ver, mem, flags, lang())
 
 
