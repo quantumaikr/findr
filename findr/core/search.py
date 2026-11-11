@@ -84,6 +84,28 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import threading as _thl  # noqa: E402
+
+_LANG = _thl.local()   # the language of the request this thread answers: 'ko' unless the request says lang=en
+
+
+def set_lang(v):
+    """the language of the sentences made for this request (anything but 'en' is Korean)"""
+    _LANG.v = "en" if v == "en" else "ko"
+
+
+def lang():
+    return getattr(_LANG, "v", "ko")
+
+
+def M(ko, en):
+    """a sentence for the person, in the request's language. The Korean one is the original; code that tests a sentence
+    (a note that starts with a quoted word, the closing 'closest files' sentence) holds for both"""
+    return en if lang() == "en" else ko
+
+
+CLOSEST = ("가장 가까운 파일을 보여 드립니다.", "Showing the closest files.")   # the closing sentence add_probs replaces
+
 import numpy as np
 
 KINDS = [  # (words in the query, extensions); a format name filters, a topic-like word ("영상", "코드") only boosts
@@ -815,7 +837,7 @@ class Finder:
             return res
         top = self.files_out(hit[:1])
         if top:
-            top[0]["why"] = (top[0].get("why") or []) + ["이름에 찾는 말이 모두 있음"]
+            top[0]["why"] = (top[0].get("why") or []) + [M("이름에 찾는 말이 모두 있음", "The name has every word you asked for")]
         return (top + [x for x in res if x.get("fid") != hit[0]])[:len(res)]
 
     def version_first(self, q, res, cap=50, latest=False):
@@ -856,7 +878,7 @@ class Finder:
                for path, name, size, mt, tr, fid, txt in rows]
         n = self.con.execute(f"SELECT count(*) FROM files f WHERE {' AND '.join(cond)}", args).fetchone()[0]
         return {"parsed": show(p), "results": out, "ms": int(1000 * (time.time() - t0)),
-                "note": "" if out else "그 기간에 만든 파일이 없습니다.", "total": n}
+                "note": "" if out else M("그 기간에 만든 파일이 없습니다.", "No files were made in that period."), "total": n}
 
     def load_jenc(self):
         """the JEPA-style small encoder (jtrain.py) and its one vector per file (table jvec)"""
@@ -935,7 +957,7 @@ class Finder:
                 p["since"] = p["until"] = None   # the 4B's period replaces the rule's
             if fids is not None and not fids:
                 r = self._search(q, p, text, eng, k, t0)
-                r["note"] = "조건에 맞는 파일이 없습니다. 가장 가까운 파일을 보여 드립니다."
+                r["note"] = M("조건에 맞는 파일이 없습니다. 가장 가까운 파일을 보여 드립니다.", "No file meets those conditions. Showing the closest files.")
                 r["cond"] = cond
                 return r
             p["fids"] = fids
@@ -973,7 +995,7 @@ class Finder:
             _mark(r, "rerank")
             for x in r["results"]:
                 x.pop("head", None)
-            r["note"] = "확실히 맞는 파일을 찾지 못했습니다. 가장 가까운 파일을 보여 드립니다." if none else ""
+            r["note"] = M("확실히 맞는 파일을 찾지 못했습니다. 가장 가까운 파일을 보여 드립니다.", "Couldn't find a file that clearly matches. Showing the closest files.") if none else ""
             if os.environ.get("VERIFY", "1") == "1" and not none:
                 hd = {x["fid"]: t_ for x in r["results"][:3] for t_ in [self.full_text(x["fid"])]}
                 miss = verify_none(q, r["results"], hd)
@@ -984,9 +1006,11 @@ class Finder:
                         r["results"] = self.files_out(found) + [x for x in r["results"] if x["fid"] not in set(found)]
                         r["results"] = r["results"][:k]; r["repaired"] = miss[2]
                     elif found:   # the word is in some file, which fits the rest of the question less
-                        r["note"] = f"'{miss[2]}'이(가) 들어간 파일은 있지만 질문 전체와는 덜 맞습니다. 가장 가까운 파일을 보여 드립니다."
+                        r["note"] = M(f"'{miss[2]}'이(가) 들어간 파일은 있지만 질문 전체와는 덜 맞습니다. 가장 가까운 파일을 보여 드립니다.",
+                                      f"'{miss[2]}' is in some files, but they fit the rest of your question less well. Showing the closest files.")
                     else:
-                        r["note"] = f"'{miss[2]}'이(가) 들어간 파일은 없습니다. 가장 가까운 파일을 보여 드립니다."
+                        r["note"] = M(f"'{miss[2]}'이(가) 들어간 파일은 없습니다. 가장 가까운 파일을 보여 드립니다.",
+                                      f"'{miss[2]}' is not in any file. Showing the closest files.")
             _mark(r, "repair")
             if rer == "ce" and r["results"]:
                 need = strong_needs(q)
@@ -1043,9 +1067,11 @@ class Finder:
                         if agree >= EPI_AGREE or max(sc_.values()) < EPI_G or (K_ and r["epi_rank"] <= K_):   # weak content evidence cannot overrule the history
                             r["episodic_ok"] = True   # history and content point to the same file
                         else:
-                            r["hard_none"] = "기억하신 이력(" + ", ".join(c_["text"] for c_ in ecs) + ")"
-                            r["none_msg"] = ("기억하신 이력(" + ", ".join(c_["text"] for c_ in ecs) + ")에 맞는 파일은 있지만, 말씀하신 내용과는 달라 보입니다. "
-                                             "이력에 맞는 파일을 먼저 보여 드립니다.")   # the history did match: say so, do not deny it
+                            r["hard_none"] = M("기억하신 이력(", "the history you remember (") + ", ".join(c_["text"] for c_ in ecs) + ")"
+                            r["none_msg"] = M("기억하신 이력(" + ", ".join(c_["text"] for c_ in ecs) + ")에 맞는 파일은 있지만, 말씀하신 내용과는 달라 보입니다. "
+                                              "이력에 맞는 파일을 먼저 보여 드립니다.",
+                                              "Some files match the history you remember (" + ", ".join(c_["text"] for c_ in ecs) + "), but they look "
+                                              "different from what you described. Showing the files that match the history first.")   # the history did match: say so, do not deny it
                     elif len(sets) >= 2:   # memory of one detail can be off: files meeting all cues but one
                         cnt = {}
                         for x_ in sets:
@@ -1087,7 +1113,7 @@ class Finder:
                         at = next((i for i, x in enumerate(r["results"]) if x["fid"] == xf[0]), None)
                         top_ = [r["results"].pop(at)] if at is not None else self.files_out(xf[:1])
                         if top_:
-                            top_[0]["why"] = (top_[0].get("why") or []) + ["이름에 찾는 뜻이 모두 있음(영어)"]
+                            top_[0]["why"] = (top_[0].get("why") or []) + [M("이름에 찾는 뜻이 모두 있음(영어)", "The name has everything you asked for (in English)")]
                             r["results"] = (top_ + r["results"])[:k]; r["xling"] = 2
                 _mark(r, "xling")
                 # version questions last: a page that quotes the question ('…최종본이 아닙니다') must not undo the version choice
@@ -1112,17 +1138,20 @@ class Finder:
                     z = NONE_M["b"] + sum(NONE_M["w"][k_] * (nf[k_] - NONE_M["mu"][k_]) / NONE_M["sd"][k_] for k_ in NONE_M["w"])
                     pz = 1 / (1 + math.exp(-z)); r["p_none"] = round(pz, 3)
                     if pz >= NONE_T and r["results"] and self.has_all_words(gate_text, r["results"][0]):
-                        pz = 0.0; r["evidence"] = "질문의 단어가 모두 1위 파일에 있음"
+                        pz = 0.0; r["evidence"] = M("질문의 단어가 모두 1위 파일에 있음", "Every word of the question is in the top file")
                     if r.get("episodic_ok") and not r.get("hard_none"):   # remembered history matches: the file exists
-                        pz = 0.0; r["evidence"] = "기억 단서(" + ", ".join(r.get("episodic", [])) + ")가 모두 맞음"
+                        pz = 0.0; r["evidence"] = M("기억 단서(" + ", ".join(r.get("episodic", [])) + ")가 모두 맞음", "Every remembered cue (" + ", ".join(r.get("episodic", [])) + ") matches")
                     if r.get("hard_none"):   # a condition the question insists on is in none of the top files
-                        pz = 1.0; r["note"] = r.get("none_msg") or f"'{r['hard_none']}'에 맞는 파일은 찾지 못했습니다. 가장 가까운 파일을 보여 드립니다."
+                        pz = 1.0; r["note"] = r.get("none_msg") or M(f"'{r['hard_none']}'에 맞는 파일은 찾지 못했습니다. 가장 가까운 파일을 보여 드립니다.",
+                                                                    f"Couldn't find a file that matches '{r['hard_none']}'. Showing the closest files.")
                     if unchecked and r.get("episodic"):   # be honest about what could not be checked; the person decides
-                        r["info"] = ("기억하신 이력(" + ", ".join(r["episodic"]) + ")은 이 PC 기록으로 확인할 수 없어 내용으로만 찾았습니다. "
-                                     "맞는 파일인지 확인해 주세요.")
+                        r["info"] = M("기억하신 이력(" + ", ".join(r["episodic"]) + ")은 이 PC 기록으로 확인할 수 없어 내용으로만 찾았습니다. "
+                                      "맞는 파일인지 확인해 주세요.",
+                                      "The history you remember (" + ", ".join(r["episodic"]) + ") can't be checked against this PC's records, "
+                                      "so the search went by content only. Please check that it is the right file.")
                     if pz >= (float(os.environ.get("NONE_T_UNCHECKED", "0.97")) if unchecked else NONE_T):
                         if not r.get("note"):
-                            r["note"] = "확실히 맞는 파일을 찾지 못했습니다. 가장 가까운 파일을 보여 드립니다."
+                            r["note"] = M("확실히 맞는 파일을 찾지 못했습니다. 가장 가까운 파일을 보여 드립니다.", "Couldn't find a file that clearly matches. Showing the closest files.")
                     else:
                         r["note"] = ""
             r["ms"] = int(1000 * (time.time() - t0))
@@ -1141,7 +1170,7 @@ class Finder:
             r["results"] = (now_ + back_ + [x for x in r["results"] if not fit(x)])[:k]
         _mark(r, "period")
         if not r["results"]:
-            r["note"] = "조건에 맞는 파일이 없습니다."
+            r["note"] = M("조건에 맞는 파일이 없습니다.", "No file meets those conditions.")
         if cond is not None:
             r["cond"] = cond
         return r
@@ -1258,7 +1287,7 @@ class Finder:
         # say so when nothing is close in meaning and no words matched (the answer may be outside the indexed folders)
         weak = top_sim < (JWEAK if p.get("jenc") else WEAK) and not lex
         return {"parsed": show(p), "results": out, "ms": int(1000 * (time.time() - t0)), "top_sim": round(top_sim, 3),
-                "note": "가까운 파일이 없습니다. 색인 범위 밖에 있을 수 있습니다." if weak else ""}
+                "note": M("가까운 파일이 없습니다. 색인 범위 밖에 있을 수 있습니다.", "No file is close. It may be outside the indexed folders.") if weak else ""}
 
 
 def specifics(q):
@@ -2005,7 +2034,7 @@ READY = threading.Event()   # set when the warm-up is done: /healthz answers at 
 MODES = {"auto", "ng", "xce", "base"}   # what the web page may ask for; 4B modes stay CLI-only
 MAX_Q = 300
 _CALIB = None
-_LAST = {}          # (q, mode) -> last results, for /refine
+_LAST = {}          # (q, mode, lang) -> last results, for /refine
 _PM = None          # personal memory (stage 5), this PC only
 
 
@@ -2339,16 +2368,17 @@ def add_probs(res):
         x["prob"] = round(1 / (1 + math.exp(-z)), 3)
         why = []
         if pos == 1 and res.get("episodic_ok") and res.get("episodic"):
-            why.append("기억하신 이력과 맞음: " + ", ".join(res["episodic"]))
+            why.append(M("기억하신 이력과 맞음: ", "Matches the history you remember: ") + ", ".join(res["episodic"]))
         if c > 0.5:
-            why.append("내용이 질문과 잘 맞음")
+            why.append(M("내용이 질문과 잘 맞음", "The content fits the question well"))
         elif c > 0.1:
-            why.append("내용이 일부 맞음")
+            why.append(M("내용이 일부 맞음", "The content fits in part"))
         if x.get("photo_p") is not None:   # a photo: its own odds from the photo model
-            x["prob"] = x["photo_p"]; why = ["사진 내용이 질문과 맞음" if x["photo_p"] >= 0.5 else "사진 내용이 일부 맞음"]
+            x["prob"] = x["photo_p"]; why = [M("사진 내용이 질문과 맞음", "The photo fits the question") if x["photo_p"] >= 0.5 else M("사진 내용이 일부 맞음", "The photo fits in part")]
         x["why"] = why
     if res.get("note") and rs:   # soften: keep the reason, but say the list is ordered by likelihood
-        res["note"] = res["note"].replace("가장 가까운 파일을 보여 드립니다.", "").strip() + " 가능성이 높은 순서로 보여 드립니다. 맞는 파일을 골라 주세요."
+        res["note"] = res["note"].replace(M(*CLOSEST), "").strip() + M(" 가능성이 높은 순서로 보여 드립니다. 맞는 파일을 골라 주세요.",
+                                                                       " They are listed most likely first. Please pick the right one.")
     return res
 FAILS = {}   # client -> [count, first failure time]; slows password guessing through the tunnel
 SEC_HEADERS = [("X-Content-Type-Options", "nosniff"), ("X-Frame-Options", "DENY"), ("Referrer-Policy", "no-referrer"),
@@ -2426,7 +2456,8 @@ RESULTS_LOCK = _th.Lock()   # the server answers on several threads
 def result_key(f, q, mode, k, prev, pin):
     """the key of a whole answer, or None (cache off). It holds what can change the answer: the question, the route, how
     many, the question before, a pinned 'today' and the day itself (relative dates), the index (SQLite data_version moves
-    when the indexer commits), and the personal memory (a choice made since lifts another file). On a Mac a repeated
+    when the indexer commits), the personal memory (a choice made since lifts another file), and the language of the
+    sentences (an answer asked in English must not come back from the Korean one). On a Mac a repeated
     question still took 1.3-1.5 s (only some reranker scores cached); the same answer comes back at once"""
     if not RESULTS_MAX:
         return None
@@ -2437,7 +2468,7 @@ def result_key(f, q, mode, k, prev, pin):
     pm = personal()
     mem = len(getattr(pm, "rows", []) or []) if pm is not None else 0
     flags = tuple(os.environ.get(x, "") for x in ("KIND_GATE", "DUP_COLLAPSE", "TIME_WORDS", "CE_TAIL", "CE_MATCHED", "VERSION_GROUP", "XLING2", "XFAIR", "STAGE_TRACE"))
-    return (q, mode, k, prev, pin, dt.date.today().isoformat(), ver, mem, flags)
+    return (q, mode, k, prev, pin, dt.date.today().isoformat(), ver, mem, flags, lang())
 
 
 def _slow_line(res, mode, total):
@@ -2534,6 +2565,7 @@ def serve(f, port):
             self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
 
         def do_GET(self):
+            set_lang(parse_qs(urlparse(self.path).query).get("lang", [""])[0])   # every request sets it: Korean unless lang=en
             if urlparse(self.path).path == "/healthz":   # for the watchdog: says nothing but "ok"
                 return self.reply(200, b"ok", "text/plain")
             if urlparse(self.path).path == "/ready":   # 'answers' is not 'ready' (#68): the page says so while the engine warms up
@@ -2584,7 +2616,7 @@ def serve(f, port):
                 self.route()
             except Exception:
                 traceback.print_exc()
-                self.reply(500, json.dumps({"error": "검색 중 오류가 났습니다. 잠시 후 다시 시도해 주세요.", "results": []}, ensure_ascii=False).encode(),
+                self.reply(500, json.dumps({"error": M("검색 중 오류가 났습니다. 잠시 후 다시 시도해 주세요.", "Something went wrong while searching. Please try again in a moment."), "results": []}, ensure_ascii=False).encode(),
                            "application/json; charset=utf-8")
 
         def route(self):
@@ -2614,33 +2646,45 @@ def serve(f, port):
                             personal().add(rec["q"], None, [row[0]])
                 return self.reply(200, b'{"ok": true}', "application/json")
             if u.path in ("/learned", "/learned/forget"):   # what findr learned about this person (this PC only)
-                M = personal()
-                if M is None:
-                    return self.reply(200, "<meta charset=utf-8><p>나에게 맞추는 학습이 꺼져 있습니다.</p>".encode(), "text/html; charset=utf-8")
+                mem_ = personal()
+                if mem_ is None:
+                    return self.reply(200, ("<meta charset=utf-8><p>" + M("나에게 맞추는 학습이 꺼져 있습니다.", "Learning from your choices is turned off.") + "</p>").encode(), "text/html; charset=utf-8")
                 if u.path == "/learned/forget":
                     i = parse_qs(u.query).get("i", [""])[0]
-                    M.forget(None if i == "all" else int(i) if i.isdigit() else -1)
+                    mem_.forget(None if i == "all" else int(i) if i.isdigit() else -1)
                     # back to /learned: a reload of /learned/forget?i=N forgot the entry that had moved into slot N
-                    self.send_response(303); self.send_header("Location", "/learned"); self.send_header("Content-Length", "0")
+                    self.send_response(303)
+                    if lang() == "en":   # back to the page in the same language
+                        self.send_header("Location", "/learned?lang=en")
+                    else:
+                        self.send_header("Location", "/learned")
+                    self.send_header("Content-Length", "0")
                     self.end_headers(); return
                 with SEARCH_LOCK:
-                    ids = {r["chosen"] for r in M.rows if r.get("chosen")} | {x for r in M.rows for x in r.get("rejected", [])}
+                    ids = {r["chosen"] for r in mem_.rows if r.get("chosen")} | {x for r in mem_.rows for x in r.get("rejected", [])}
                     names = {i_: n for i_, n in f.con.execute(f"SELECT id, name FROM files WHERE id IN ({','.join('?' * len(ids))})", list(ids))} if ids else {}
-                e = html.escape
-                rows = "".join(f"<tr><td>{e(r['q'])}</td><td>{'→ ' + e(names.get(r['chosen'], '(지워진 파일)')) if r.get('chosen') else ''}"
-                               f"{'아님: ' + ', '.join(e(names.get(x, '?')) for x in r.get('rejected', [])) if r.get('rejected') else ''}</td>"
-                               f"<td><a href='/learned/forget?i={j}'>잊기</a></td></tr>" for j, r in enumerate(M.rows))
-                page = ("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>findr가 배운 것</title>"
+                e = html.escape; ln_ = M("", "&lang=en")   # the links keep the language
+                rows = "".join(f"<tr><td>{e(r['q'])}</td><td>{'→ ' + e(names.get(r['chosen'], M('(지워진 파일)', '(deleted file)'))) if r.get('chosen') else ''}"
+                               f"{M('아님: ', 'not: ') + ', '.join(e(names.get(x, '?')) for x in r.get('rejected', [])) if r.get('rejected') else ''}</td>"
+                               f"<td><a href='/learned/forget?i={j}{ln_}'>{M('잊기', 'Forget')}</a></td></tr>" for j, r in enumerate(mem_.rows))
+                page = ("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>"
+                        + M("findr가 배운 것", "What findr has learned") + "</title>"
                         "<style>body{font:15px/1.5 sans-serif;max-width:860px;margin:0 auto;padding:16px}td{border-bottom:1px solid #ddd;padding:6px}</style>"
-                        "<h2>findr가 배운 것</h2><p>고르신 파일과 그때의 요청을 이 PC 안에만 기억합니다. 비슷하게 물으시면 그 파일을 먼저 보여 드립니다. "
-                        "검색 엔진이 확실한 답을 찾았을 때는 기억보다 요청을 따릅니다.</p>"
-                        f"<p>{len(M.rows)}개 · <a href='/learned/forget?i=all' onclick=\"return confirm('배운 것을 모두 잊을까요?')\">모두 잊기</a> · <a href='/'>검색으로</a></p>"
-                        f"<table>{rows or '<tr><td>아직 배운 것이 없습니다.</td></tr>'}</table>")
+                        "<h2>" + M("findr가 배운 것", "What findr has learned") + "</h2><p>"
+                        + M("고르신 파일과 그때의 요청을 이 PC 안에만 기억합니다. 비슷하게 물으시면 그 파일을 먼저 보여 드립니다. "
+                            "검색 엔진이 확실한 답을 찾았을 때는 기억보다 요청을 따릅니다.",
+                            "findr remembers the files you chose and what you asked for, on this PC only. When you ask something similar, "
+                            "that file is shown first. When the search engine finds a sure answer, it follows your request rather than this memory.")
+                        + "</p>"
+                        f"<p>{len(mem_.rows)}{M('개', ' learned')} · <a href='/learned/forget?i=all{ln_}' onclick=\"return confirm('"
+                        + M("배운 것을 모두 잊을까요?", "Forget everything findr has learned?") + "')\">" + M("모두 잊기", "Forget all")
+                        + "</a> · <a href='/'>" + M("검색으로", "Back to search") + "</a></p>"
+                        f"<table>{rows or '<tr><td>' + M('아직 배운 것이 없습니다.', 'Nothing learned yet.') + '</td></tr>'}</table>")
                 return self.reply(200, page.encode(), "text/html; charset=utf-8")
             if u.path == "/refine":
                 qs = parse_qs(u.query)
                 q_ = qs.get("q", [""])[0].strip()[:MAX_Q]; mode = qs.get("mode", ["xce"])[0]
-                res = _LAST.get((q_, mode))
+                res = _LAST.get((q_, mode, lang()))
                 if not res or len(res.get("results") or []) < 2:
                     return self.reply(200, b'{"changed": false}', "application/json; charset=utf-8")
                 skip = refine_skip(res)
@@ -2656,9 +2700,11 @@ def serve(f, port):
                 tr = (new.get("trail") or [{}])[0]
                 for c in new["results"]:
                     if c["fid"] in {new["results"][i]["fid"] for i in range(len(tr.get("picked") or []))}:
-                        c["why"] = (c.get("why") or []) + ["열어 보고 비교함" + (": " + tr["why"] if tr.get("why") else "")]
+                        # the checker writes its reason in Korean: an English answer keeps it only when it has no Korean in it
+                        c["why"] = (c.get("why") or []) + [M("열어 보고 비교함" + (": " + tr["why"] if tr.get("why") else ""),
+                                                             "Opened and compared" + (": " + tr["why"] if tr.get("why") and not re.search("[가-힣]", tr["why"]) else ""))]
                 new["changed"] = bool(tr.get("picked")) and new["results"][0]["fid"] != res["results"][0]["fid"]
-                _LAST[(q_, mode)] = new
+                _LAST[(q_, mode, lang())] = new
                 body = json.dumps({"changed": new["changed"], "results": new["results"], "trail": new.get("trail")}, ensure_ascii=False, default=str).encode()
                 return self.reply(200, body, "application/json; charset=utf-8")
             if u.path == "/api":
@@ -2713,7 +2759,8 @@ def serve(f, port):
                 if wait_ >= 0.05:   # the time the person waited counts: a question queued behind another one or the warm-up
                     res["wait_ms"] = int(wait_ * 1000); res["ms"] = int(res.get("ms") or 0) + res["wait_ms"]   # (Mac 에어: 13.9 s shown as 5.1)
                 if no_facts:
-                    res["info"] = "이 PC의 색인에는 업무 정보(사람·기관·금액 등)가 없어 정밀 검색으로 찾았습니다."
+                    res["info"] = M("이 PC의 색인에는 업무 정보(사람·기관·금액 등)가 없어 정밀 검색으로 찾았습니다.",
+                                    "This PC's index has no work details (people, organizations, amounts), so the detailed search was used.")
                 if personal() is not None and res.get("results"):
                     with SEARCH_LOCK:
                         res = personal().apply(f, q_, res)
@@ -2730,7 +2777,8 @@ def serve(f, port):
                                                                < (p_["until"].strftime("%Y-%m-%d %H:%M") if p_["until"] else "9999")):
                         # nothing of that period among the answers: said as information beside the list, not as 'nothing here'
                         # (a Mac with no files from last year showed other years silently; a note counted as 'none' at the gate)
-                        msg_ = "말씀하신 기간의 파일은 찾지 못해, 다른 시기의 비슷한 파일을 보여 드려요."
+                        msg_ = M("말씀하신 기간의 파일은 찾지 못해, 다른 시기의 비슷한 파일을 보여 드려요.",
+                                 "Couldn't find files from the period you mentioned, so these are similar files from other times.")
                         res["info"] = (res["info"] + " " + msg_) if res.get("info") else msg_
                 _mark(res, "period2")
                 if os.environ.get("DUP_COLLAPSE", "1") == "1":
@@ -2753,7 +2801,7 @@ def serve(f, port):
                 _ST.d = None
                 if len(_LAST) > 50:
                     _LAST.clear()
-                _LAST[(q_, mode)] = res
+                _LAST[(q_, mode, lang())] = res
                 body = json.dumps(res, ensure_ascii=False, default=str).encode()
                 if rkey:
                     with RESULTS_LOCK:

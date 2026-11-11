@@ -131,6 +131,7 @@ const T=(ko,en)=>LANG==='ko'?ko:en;
  document.querySelectorAll('#lang [data-lang]').forEach(b=>{b.classList.toggle('on',b.dataset.lang===LANG);b.setAttribute('aria-pressed',String(b.dataset.lang===LANG))});
  if(LANG==='ko')return;
  document.querySelectorAll('[data-en]').forEach(e=>{e.textContent=e.dataset.en});
+ document.querySelectorAll('a[href="/learned"]').forEach(a=>{a.href='/learned?lang=en'});   // pages the engine writes take the language in the address
  ['title','placeholder','aria-label'].forEach(a=>document.querySelectorAll('[data-en-'+a+']').forEach(e=>e.setAttribute(a,e.getAttribute('data-en-'+a))))})();
 $('#lang').onclick=e=>{const b=e.target.closest('[data-lang]'); if(!b||b.dataset.lang===LANG)return; const v=b.dataset.lang; let kept=false;
  try{localStorage.setItem('findr.lang',v);kept=localStorage.getItem('findr.lang')===v}catch(_){}
@@ -202,10 +203,10 @@ async function go(){
  // fast first, then smarter: where the full search takes over a second (a Mac or a CPU laptop: the reranker, 2-3 s), the
  // first stage's list (~0.1 s) is shown at once and the reranked order replaces it in place, without the fade
  let pre=false, slowMs=0; try{slowMs=+localStorage.getItem('findr_full_ms')||0}catch(e){}
- if(mode==='auto'&&slowMs>1000){try{const p=await (await fetch('/api?'+new URLSearchParams({q:qq,mode:'base',k:30}))).json();
+ if(mode==='auto'&&slowMs>1000){try{const p=await (await fetch('/api?'+new URLSearchParams({q:qq,mode:'base',k:30,lang:LANG}))).json();
   if(my!==seq)return; if(p&&p.results&&p.results.length&&!p.error){p._rt=Math.round(performance.now()-t0);p.q0=qq;p.rfText=T('정밀하게 정리하는 중…','Refining the order…');
    last=p;last.first=p.results.map(x=>x.path);show(p);pre=true}}catch(e){}}
- try{const r=await (await fetch('/api?'+new URLSearchParams({q:qq,mode,k:30}))).json(); if(my!==seq)return;
+ try{const r=await (await fetch('/api?'+new URLSearchParams({q:qq,mode,k:30,lang:LANG}))).json(); if(my!==seq)return;
   try{localStorage.setItem('findr_full_ms',String(r.ms||0))}catch(e){} r._rt=Math.round(performance.now()-t0); if(r.error){$('#res').innerHTML='';$('#notice').innerHTML='<div class="notice">'+esc(r.error)+'</div>';return} if(DEMO&&r.results)r.results=r.results.filter(x=>!/googledrive/i.test(x.path)); last=r; last.q0=qq; last.first=(r.results||[]).map(x=>x.path); last.t0=Date.now(); if(DEMO)speed(r); sel=-1;
   show(r,!pre); remember(qq,mode,r.results&&r.results[0]?base(r.results[0].path):''); refine(qq,r)}
  catch(e){$('#res').classList.remove('dim');$('#res').innerHTML='';$('#notice').innerHTML='<div class="notice">'+T('검색 서버에 연결하지 못했습니다.',"Couldn't reach the search engine.")+'</div>'}
@@ -215,7 +216,7 @@ async function refine(qq,r){   // a small local model lays the top 10 side by si
  // the status sits inline in the count line (no block that pushes the list down), and the list is drawn again only when
  // the order really changed: redrawing an unchanged list a few seconds after the results made the page flicker
  if(!r.results||r.results.length<2)return; const say=t=>{r.rfText=t;const e=$('#rf');if(e)e.textContent=t};say(T('후보를 열어 보고 비교하는 중…','Opening the top results to compare…'));
- try{const f=await (await fetch('/refine?'+new URLSearchParams({q:qq,mode:r.route||mode}))).json(); if(!last||last.q0!==qq)return;
+ try{const f=await (await fetch('/refine?'+new URLSearchParams({q:qq,mode:r.route||mode,lang:LANG}))).json(); if(!last||last.q0!==qq)return;
   if(f.skipped){say('');return}   // not needed this time (clear order, or indexing on a slower PC)
   if(f.results){const no=new Set(last.results.filter(x=>x.no).map(x=>x.path)); f.results.forEach(x=>{if(no.has(x.path))x.no=true});
    const moved=f.results.map(x=>x.path).join('\n')!==last.results.map(x=>x.path).join('\n'); last.results=f.results;

@@ -107,17 +107,17 @@ class NG:
                                                                       and (not pl.get("거래처") or self.partner_ok(f, pl["거래처"]))
                                                                       and (not item or item in F[f]["text"])}
             if num and num not in self.own:
-                return [], f"문서 번호 {num}인 문서가 없습니다.", why
+                return [], S.M(f"문서 번호 {num}인 문서가 없습니다.", f"There is no document numbered {num}."), why
             if not anchors:
-                return [], f"기준이 되는 {src_kind}를 찾지 못했습니다.", why
-            why.append(f"기준 {src_kind} {len(anchors)}건")
+                return [], S.M(f"기준이 되는 {src_kind}를 찾지 못했습니다.", f"Couldn't find the {src_kind} to start from."), why
+            why.append(S.M(f"기준 {src_kind} {len(anchors)}건", f"Starting from {len(anchors)} × {src_kind}"))
             hop = {s for s, d in self.cites if d in anchors}
             if rel == "견적에서명세":
                 hop = {s for s, d in self.cites if d in hop}
             want = "발주서" if rel == "견적에서발주" else "거래명세서"
             cand = {f for f in hop if F.get(f, {}).get("kind") == want}
             if not cand:
-                return [], f"그 {src_kind}에 이어진 {want}가 없습니다.", why
+                return [], S.M(f"그 {src_kind}에 이어진 {want}가 없습니다.", f"No {want} follows from that {src_kind}."), why
             kinds = []
         elif rel == "회의후":
             meetings = {f for f in F if F[f]["kind"] == "회의록" and (not pl.get("거래처") or self.partner_ok(f, pl["거래처"]))}
@@ -125,11 +125,11 @@ class NG:
             if "단가" in q or "단가" in topic:
                 meetings = {f for f in meetings if "단가" in self.text.get(f, "")}
             if not meetings:
-                return [], f"{pl.get('거래처') or ''} 관련 그런 회의 기록이 없습니다.".strip(), why
+                return [], S.M(f"{pl.get('거래처') or ''} 관련 그런 회의 기록이 없습니다.".strip(), f"There is no such meeting record{' about ' + pl['거래처'] if pl.get('거래처') else ''}."), why
             cand = {s for s, d in self.follows if d in meetings}
-            why.append(f"관련 회의 {len(meetings)}건")
+            why.append(S.M(f"관련 회의 {len(meetings)}건", f"{len(meetings)} related meetings"))
             if not cand:
-                return [], "그 회의 결정을 반영한 문서가 없습니다.", why
+                return [], S.M("그 회의 결정을 반영한 문서가 없습니다.", "No document reflects what that meeting decided."), why
         # people by role (the fact lives only in the HR notice)
         name = pl.get("사람"); role = pl.get("사람역할")
         if re.search(r"넘겨받|인계|이어받|후임|물려받", q):   # "X 퇴사하고 업무 넘겨받은 사람" is the successor, not X
@@ -140,9 +140,9 @@ class NG:
             role = role or "퇴사자"
         after = None
         if role == "퇴사자" and "left" in self.person:
-            name = self.person["left"]["name"]; why.append(f"퇴사자 = {name}(인사 안내)")
+            name = self.person["left"]["name"]; why.append(S.M(f"퇴사자 = {name}(인사 안내)", f"Person who left = {name} (staff notice)"))
         elif role == "인계자" and "successor" in self.person:
-            name = self.person["successor"]["name"]; after = self.person["successor"]["day"]; why.append(f"인계자 = {name}, {after} 이후")
+            name = self.person["successor"]["name"]; after = self.person["successor"]["day"]; why.append(S.M(f"인계자 = {name}, {after} 이후", f"Successor = {name}, from {after}"))
         c = {}
         if kinds:
             c["kinds"] = kinds + (["비밀유지계약서"] if "계약서" in kinds else [])
@@ -168,7 +168,7 @@ class NG:
             own = {f for f in cand if re.search(rf"/(PC|퇴사자백업)/{re.escape(nm)}", F[f]["path"])
                    or re.search(rf"(작성|담당|출장자|점검자|확인)\s*:\s*{re.escape(nm)}", self.text.get(f, ""))}
             if own:
-                cand = own; why.append(f"{nm}이(가) 담당한 문서만")
+                cand = own; why.append(S.M(f"{nm}이(가) 담당한 문서만", f"Only documents {nm} was in charge of"))
         if after:
             cand = {f for f in cand if F[f]["date"] > after}
         # versions: choose within each contract chain the plan asks for
@@ -215,12 +215,13 @@ class NG:
                     tgt = max(uns) if uns else -1
                 pick += sorted(f2 for f2, v2 in allv if v2[1] == tgt and f2 not in pick)
             if chains:
-                why.append(f"버전 '{ver}' (계약 묶음 {len(chains)}개 중 질문과 가장 맞는 것부터)")
-                return pick, ("" if pick else "그 버전이 없습니다."), why
-            why.append(f"버전 '{ver}'")
-        why.append(f"조건 {json.dumps({k: v for k, v in c.items() if k != 'kinds'}, ensure_ascii=False)}" if c else "조건 없음")
+                why.append(S.M(f"버전 '{ver}' (계약 묶음 {len(chains)}개 중 질문과 가장 맞는 것부터)", f"Version '{ver}' (of {len(chains)} contract sets, the best fit to the question first)"))
+                return pick, ("" if pick else S.M("그 버전이 없습니다.", "There is no such version.")), why
+            why.append(S.M(f"버전 '{ver}'", f"Version '{ver}'"))
+        cj = json.dumps({k: v for k, v in c.items() if k != 'kinds'}, ensure_ascii=False)
+        why.append(S.M(f"조건 {cj}", f"Conditions {cj}") if c else S.M("조건 없음", "No conditions"))
         if not cand:
-            return [], "조건에 맞는 파일이 없습니다.", why
+            return [], S.M("조건에 맞는 파일이 없습니다.", "No file meets those conditions."), why
         return sorted(cand), "", why
 
     def search(self, q, prev=None, k=10):
@@ -240,7 +241,7 @@ class NG:
         ids, note, why = self.execute(pl, q, prev_answer)
         empty_plan = not any(pl.get(x) for x in ("종류", "거래처", "사람", "사람역할", "시기", "상태", "관계", "기준번호", "버전", "금액"))
         if empty_plan:   # the plan says nothing usable: fall back to ordinary search
-            r = self.f.search(q, k=k, mode="xce"); r["plan"] = pl; r["why"] = ["계획 없음 → 일반 검색"]
+            r = self.f.search(q, k=k, mode="xce"); r["plan"] = pl; r["why"] = [S.M("계획 없음 → 일반 검색", "No plan → ordinary search")]
             return r
         order = list(ids) if pl.get("버전") else self.rank(q, ids, pl)   # version picks come already ordered
         res = self.f.files_out(order[:k])

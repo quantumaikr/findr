@@ -2,7 +2,7 @@
 Memory: (query, chosen file, rejected files). A new query that resembles a past one lifts the file chosen then (and lowers
 files rejected then). Similarity: character bigrams of the request with particles and filler removed (no model, no GPU).
     M = Memory(path); M.add(q, chosen_fid, rejected_fids); res = M.apply(F, q, res)"""
-import json, os, re
+import json, os, re, sys
 from pathlib import Path
 
 FILL = re.compile(r"(찾아\s*줘|찾아줘|어디\s*있지|어디\s*있더라|어딨지|어디|파일|문서|거|것|좀|그|관련|했던|하던|있던|지난번|최신|최근|예전|요즘|이번)")   # what the file is, not when or which version
@@ -83,6 +83,8 @@ class Memory:
         rs.sort(key=lambda c: -(base.get(c["fid"], 0) + w.get(c["fid"], 0) * bonus.get(c["fid"], 0)))
         for c in rs:
             if bonus.get(c["fid"], 0) > 0:
-                c.setdefault("why", []).append("예전에 비슷하게 찾았을 때 고른 파일")
+                S_ = sys.modules.get("search")   # the engine's sentence helper, when this runs inside the engine
+                c.setdefault("why", []).append(S_.M("예전에 비슷하게 찾았을 때 고른 파일", "The file you chose when you asked something similar")
+                                               if S_ is not None and hasattr(S_, "M") else "예전에 비슷하게 찾았을 때 고른 파일")
         res["results"] = rs
         return res
