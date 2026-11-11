@@ -1567,7 +1567,7 @@ def upgrade(con, target, minutes=50, bs=None, first_only=False):
         returned = False
         if back and time.time() - looked >= LOOK_EVERY:   # not every step: on a fast GPU 16 pieces take a fraction of a second
             looked = time.time(); returned = person_is_back(back)
-        if time.time() > stop or returned:
+        if time.time() >= stop or returned:   # >=: minutes=0 stops at once on Windows' 15 ms clock too
             left = con.execute(f"SELECT count(*) FROM chunks WHERE emb IS NOT NULL AND emb2 IS NULL{scope}").fetchone()[0]
             rate = did / max(time.time() - t0, 1e-6)
             if returned:   # a run cut short (often while the model was still loading) says nothing about the speed: keep the

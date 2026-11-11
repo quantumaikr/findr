@@ -97,11 +97,12 @@ def test_scores_are_cached_by_question_and_text(monkeypatch, tmp_path):
     search.CE_CACHE.clear()
     docs = [{"name": f"{i}.txt", "path": f"/x/{i}.txt", "head": "본문", "summary": ""} for i in range(6)]
     import time
-    search._QT[0] = time.time(); first = search.ce_scores("견적서", docs)
-    search._QT[0] = time.time(); again = search.ce_scores("견적서", docs)
+    t0 = time.time()   # one start per question: Windows' clock (15 ms steps) gave two questions the same start
+    search._QT[0] = t0 + 1; first = search.ce_scores("견적서", docs)
+    search._QT[0] = t0 + 2; again = search.ce_scores("견적서", docs)
     assert again == first and seen == [6]   # nothing new to score the second time
     docs[2] = {**docs[2], "head": "고친 본문"}
-    search._QT[0] = time.time(); search.ce_scores("견적서", docs)
+    search._QT[0] = t0 + 3; search.ce_scores("견적서", docs)
     assert seen == [6, 1]   # only the edited file
-    search._QT[0] = time.time(); search.ce_scores("계약서", docs)
+    search._QT[0] = t0 + 4; search.ce_scores("계약서", docs)
     assert seen[-1] == 6   # another question: its own scores
