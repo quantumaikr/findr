@@ -81,25 +81,27 @@ mark{background:var(--mark);color:inherit;border-radius:3px;padding:0 1px}
 .ixa{display:flex;align-items:center;gap:10px;margin-top:12px}.ixpause,.ixnow{border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:5px 12px;font-size:12.5px}
 .ixnote{background:var(--acc2);border-radius:8px;padding:8px 12px;font-size:12.5px;margin:0 0 10px}.ixmore{border:0;background:none;color:var(--acc);font-size:12.5px;padding:0 0 0 4px;text-decoration:underline}
 @keyframes ixb{50%{opacity:.35}}@media (prefers-reduced-motion:reduce){.ixp li.now .ic{animation:none}.ixb i{transition:none}}
+.lang{margin-top:18px;font-size:12px;color:var(--faint)}.lang button{border:0;background:none;padding:0;font-size:12px;color:var(--faint)}.lang button:hover{color:var(--acc)}.lang button.on{color:var(--fg);font-weight:600;cursor:default}
 </style></head><body>
 <div class="app">
 <aside>
-  <div class="brand"><span class="dot"></span>findr<a href="/explore" style="margin-left:auto;font-size:12px;font-weight:500;color:var(--acc);text-decoration:none">✦ 내 작업 보기</a><a href="/learned" style="margin-left:12px;font-size:12px;font-weight:500;color:var(--acc);text-decoration:none">findr가 배운 것</a></div>
-  <div class="sec">결과 거르기</div>
+  <div class="brand"><span class="dot"></span>findr<a href="/explore" style="margin-left:auto;font-size:12px;font-weight:500;color:var(--acc);text-decoration:none" data-en="✦ My work">✦ 내 작업 보기</a><a href="/learned" style="margin-left:12px;font-size:12px;font-weight:500;color:var(--acc);text-decoration:none" data-en="What findr learned">findr가 배운 것</a></div>
+  <div class="sec" data-en="Filter results">결과 거르기</div>
   <div id="kinds"></div>
-  <div class="sec">폴더</div>
-  <div id="folders"><div class="facet" style="color:var(--faint)">검색하면 폴더가 나타납니다</div></div>
-  <div class="sec">즐겨찾기</div><ul class="hist" id="pins"></ul>
-  <div class="sec">최근 검색 <button id="clr">지우기</button></div><ul class="hist" id="hist"></ul>
+  <div class="sec" data-en="Folders">폴더</div>
+  <div id="folders"><div class="facet" style="color:var(--faint)" data-en="Folders appear after you search">검색하면 폴더가 나타납니다</div></div>
+  <div class="sec" data-en="Pinned">즐겨찾기</div><ul class="hist" id="pins"></ul>
+  <div class="sec"><span data-en="Recent searches">최근 검색</span> <button id="clr" data-en="Clear">지우기</button></div><ul class="hist" id="hist"></ul>
+  <div class="lang" id="lang" role="group" aria-label="Language"><button data-lang="ko" lang="ko">한국어</button> / <button data-lang="en" lang="en">English</button></div>
 </aside>
 <main>
   <div class="searchbox">
     <input id="q" autocomplete="off" spellcheck="false">
     <div class="modes" id="modes">
-      <button data-m="auto" class="on" title="질문에 맞게 자동으로">자동</button>
-      <button data-m="ng" title="조건·관계·버전을 이해해 찾기">이해 우선</button>
-      <button data-m="xce" title="관련도를 정밀하게 따져 찾기">정밀</button>
-      <button data-m="base" title="가장 빠르게 찾기">빠른</button>
+      <button data-m="auto" class="on" title="질문에 맞게 자동으로" data-en="Auto" data-en-title="Picks the best way for your question">자동</button>
+      <button data-m="ng" title="조건·관계·버전을 이해해 찾기" data-en="Smart" data-en-title="Understands conditions, relations and versions">이해 우선</button>
+      <button data-m="xce" title="관련도를 정밀하게 따져 찾기" data-en="Precise" data-en-title="Weighs relevance carefully">정밀</button>
+      <button data-m="base" title="가장 빠르게 찾기" data-en="Fast" data-en-title="The quickest search">빠른</button>
     </div>
     <span class="kbd">/</span>
   </div>
@@ -109,23 +111,38 @@ mark{background:var(--mark);color:inherit;border-radius:3px;padding:0 1px}
   <div class="meta" id="meta"></div>
   <div class="res" id="res"></div>
   <div class="empty" id="empty">
-    <h2>기억나는 대로 물어보세요.</h2>
-    <div>파일 이름을 몰라도 됩니다. 언제·누구·무엇·어떤 버전이었는지 말하면 이해해서 찾고, 없으면 없다고 말합니다.</div>
+    <h2 data-en="Ask the way you remember it.">기억나는 대로 물어보세요.</h2>
+    <div data-en="You don't need the file name. Say when, who, what or which version, and findr works it out. If it isn't there, it says so.">파일 이름을 몰라도 됩니다. 언제·누구·무엇·어떤 버전이었는지 말하면 이해해서 찾고, 없으면 없다고 말합니다.</div>
     <div class="groups" id="groups"></div>
   </div>
 </main>
 </div>
-<div class="status" id="status"><span class="live">● 모든 처리는 이 PC 안에서</span><span id="st1"></span><span id="st2"></span></div>
+<div class="status" id="status"><span class="live" data-en="● Everything stays on this PC">● 모든 처리는 이 PC 안에서</span><span id="st1"></span><span id="st2"></span></div>
 <div class="toast" id="toast"></div><div id="cap"></div><div id="tcard"></div><div id="spd"></div>
 <script>
 const $=s=>document.querySelector(s), q=$('#q');
-const EX={'막연하게 말해도':['지난달에 고객사에 보낸 견적서','팀 회식 장소 정리해 둔 문서','작년 여름 휴가 때 찍은 바다 사진'],
- '하는 일로 찾기':['월말에 부서별 경비를 합쳐 보고서로 만드는 엑셀','신입 사원에게 주는 업무 안내 자료'],
- '내용 속 숫자·사실':['계약 금액이 3천만 원이라고 적힌 계약서','임대료와 관리비를 비교한 사무실 후보지 자료','출장비 한도가 하루 10만 원이라고 적힌 규정'],
- '날짜 + 내용':['지난주 화요일 회의에서 일정을 정한 회의록','3월에 고친 사업계획서'],
- '여러 버전 중 하나':['계약서 최종본 말고 그 전 판','발표 자료 중 한 장 요약 말고 전체 버전'],
- '없으면 없다고':['남극 기지 방문 일정표','1998년 월드컵 응원 포스터 원본']};
-const PH=['기억나는 대로 물어보세요 — 예: 지난주에 만든 보고서','예: 그만둔 직원이 맡았던 견적서','예: 음성 받아쓰기 설치하는 스크립트','예: 품질 매뉴얼 개정 5판'];
+// language: the saved choice (findr.lang, a plain 'ko' or 'en'), else ?lang= (only where storage is blocked), else the browser's.
+// T('한국어','English') picks the wording; fixed HTML carries data-en (text) and data-en-title / -placeholder / -aria-label
+let LANG='', LANG_SAVED=false; try{LANG=(localStorage.getItem('findr.lang')||'').replace(/"/g,'')}catch(e){}
+if(LANG==='ko'||LANG==='en')LANG_SAVED=true; else{try{LANG=new URLSearchParams(location.search).get('lang')||''}catch(e){}
+ if(LANG!=='ko'&&LANG!=='en')LANG=/^ko/i.test(navigator.language||'')?'ko':'en'}
+const T=(ko,en)=>LANG==='ko'?ko:en;
+(function(){document.documentElement.lang=LANG;
+ document.querySelectorAll('#lang [data-lang]').forEach(b=>{b.classList.toggle('on',b.dataset.lang===LANG);b.setAttribute('aria-pressed',String(b.dataset.lang===LANG))});
+ if(LANG==='ko')return;
+ document.querySelectorAll('[data-en]').forEach(e=>{e.textContent=e.dataset.en});
+ ['title','placeholder','aria-label'].forEach(a=>document.querySelectorAll('[data-en-'+a+']').forEach(e=>e.setAttribute(a,e.getAttribute('data-en-'+a))))})();
+$('#lang').onclick=e=>{const b=e.target.closest('[data-lang]'); if(!b||b.dataset.lang===LANG)return; const v=b.dataset.lang; let kept=false;
+ try{localStorage.setItem('findr.lang',v);kept=localStorage.getItem('findr.lang')===v}catch(_){}
+ if(kept){location.reload();return}
+ try{const u=new URL(location.href);u.searchParams.set('lang',v);location.replace(u)}catch(_){}};   // storage blocked: the choice rides in the address
+const EX={[T('막연하게 말해도','Vague is fine')]:[T('지난달에 고객사에 보낸 견적서','the quote we sent a client last month'),T('팀 회식 장소 정리해 둔 문서','the doc listing places for team dinners'),T('작년 여름 휴가 때 찍은 바다 사진',"beach photos from last summer's vacation")],
+ [T('하는 일로 찾기',"By what it's for")]:[T('월말에 부서별 경비를 합쳐 보고서로 만드는 엑셀','the spreadsheet that rolls up department expenses at month-end'),T('신입 사원에게 주는 업무 안내 자료','the onboarding guide for new hires')],
+ [T('내용 속 숫자·사실','Numbers and facts inside')]:[T('계약 금액이 3천만 원이라고 적힌 계약서','the contract that puts the amount at $30,000'),T('임대료와 관리비를 비교한 사무실 후보지 자료','office options comparing rent and maintenance fees'),T('출장비 한도가 하루 10만 원이라고 적힌 규정','the policy that caps travel expenses at $100 a day')],
+ [T('날짜 + 내용','Date + content')]:[T('지난주 화요일 회의에서 일정을 정한 회의록',"minutes from last Tuesday's meeting where we set the schedule"),T('3월에 고친 사업계획서','the business plan revised in March')],
+ [T('여러 버전 중 하나','One of several versions')]:[T('계약서 최종본 말고 그 전 판','the contract version before the final one'),T('발표 자료 중 한 장 요약 말고 전체 버전','the full deck, not the one-page summary')],
+ [T('없으면 없다고',"Says so when it's not there")]:[T('남극 기지 방문 일정표','itinerary for a visit to an Antarctic base'),T('1998년 월드컵 응원 포스터 원본','original 1998 World Cup fan poster')]};
+const PH=[T('기억나는 대로 물어보세요 — 예: 지난주에 만든 보고서','Ask the way you remember it — e.g. the report I made last week'),T('예: 그만둔 직원이 맡았던 견적서','e.g. the quote a former employee handled'),T('예: 음성 받아쓰기 설치하는 스크립트','e.g. the script that installs voice dictation'),T('예: 품질 매뉴얼 개정 5판','e.g. quality manual, 5th revision')];
 let mode='auto', last=null, sel=-1, fKind=null, fDir=null, seq=0;   // seq: only the newest question's answer is shown
 const store={get(k,d){try{const v=JSON.parse(localStorage.getItem(k));return v==null?d:v}catch(e){return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}};
 // the first question of a visit: without a past search time, the device says whether the quick list should come first
@@ -141,9 +158,10 @@ const KIND={pdf:['PDF','#c0392b','문서'],hwp:['HWP','#2e86de','문서'],hwpx:[
  py:['PY','#3572a5','코드'],sh:['SH','#4b6b2f','코드'],js:['JS','#b39b00','코드'],ts:['TS','#2f74c0','코드'],json:['JSON','#6c757d','데이터'],jsonl:['JSONL','#6c757d','데이터'],csv:['CSV','#6c757d','데이터'],log:['LOG','#95a5a6','데이터'],
  jpg:['IMG','#16a085','이미지'],jpeg:['IMG','#16a085','이미지'],png:['IMG','#16a085','이미지'],mp4:['VID','#9b59b6','영상'],m4a:['AUD','#e67e22','음성'],mp3:['AUD','#e67e22','음성'],wav:['AUD','#e67e22','음성']};
 const kindOf=p=>KIND[ext(p)]||[(ext(p)||'FILE').toUpperCase().slice(0,4),'#7f8c8d','기타'];
+const KN={'문서':'Documents','코드':'Code','데이터':'Data','이미지':'Images','영상':'Video','음성':'Audio','기타':'Other'}, kindName=k=>T(k,KN[k]||k);   // the Korean kind stays the filter key (and demo.kind's); only the label is translated
 const ago=d=>{if(!d)return '';const t=new Date(d.replace(' ','T'));const s=(Date.now()-t)/1000;if(isNaN(s))return d;
- if(s<3600)return Math.max(1,Math.round(s/60))+'분 전';if(s<86400)return Math.round(s/3600)+'시간 전';if(s<86400*30)return Math.round(s/86400)+'일 전';
- if(s<86400*365)return Math.round(s/86400/30)+'개월 전';return (s/86400/365).toFixed(1)+'년 전'};
+ if(s<3600)return Math.max(1,Math.round(s/60))+T('분 전',' min ago');if(s<86400)return Math.round(s/3600)+T('시간 전',' hr ago');if(s<86400*30){const n=Math.round(s/86400);return n+T('일 전',n===1?' day ago':' days ago')}
+ if(s<86400*365)return Math.round(s/86400/30)+T('개월 전',' mo ago');return (s/86400/365).toFixed(1)+T('년 전',' yr ago')};
 const fmt=n=>n>1e6?(n/1e6).toFixed(1)+' MB':n>1e3?Math.round(n/1e3)+' KB':(n||0)+' B';
 function toast(t){const e=$('#toast');e.textContent=t;e.style.opacity=1;clearTimeout(e._t);e._t=setTimeout(()=>e.style.opacity=0,1400)}
 function words(){return q.value.split(/\s+/).filter(w=>w.length>=2).map(w=>w.replace(/(으로|에서|이랑|하고|랑|를|을|이|가|은|는|의|에)$/,'')).filter(w=>w.length>=2)}
@@ -155,8 +173,8 @@ function renderHist(){
  const h=hist(),p=pins();
  const row=(x,i,isPin)=>'<li data-q="'+esc(x.q)+'" data-m="'+x.m+'"><button class="s'+(p.some(y=>y.q===x.q)?' on':'')+'" data-pin="'+esc(x.q)+'">★</button><span class="t">'+esc(x.q)+'</span><span class="m">'+(x.hit?'✔':'')+'</span>'+
   (isPin?'':'<button class="x" data-del="'+i+'">✕</button>')+'</li>';
- $('#hist').innerHTML=h.slice(0,14).map((x,i)=>row(x,i,false)).join('')||'<li style="color:var(--faint);cursor:default">아직 없음</li>';
- $('#pins').innerHTML=p.map((x,i)=>row(x,i,true)).join('')||'<li style="color:var(--faint);cursor:default">★로 고정</li>';
+ $('#hist').innerHTML=h.slice(0,14).map((x,i)=>row(x,i,false)).join('')||'<li style="color:var(--faint);cursor:default">'+T('아직 없음','Nothing yet')+'</li>';
+ $('#pins').innerHTML=p.map((x,i)=>row(x,i,true)).join('')||'<li style="color:var(--faint);cursor:default">'+T('★로 고정','Pin with ★')+'</li>';
 }
 function remember(qq,m,top){let h=hist().filter(x=>x.q!==qq);h.unshift({q:qq,m,top,t:Date.now()});store.set('findr.hist',h.slice(0,50));renderHist()}
 document.addEventListener('click',e=>{
@@ -185,83 +203,83 @@ async function go(){
  // first stage's list (~0.1 s) is shown at once and the reranked order replaces it in place, without the fade
  let pre=false, slowMs=0; try{slowMs=+localStorage.getItem('findr_full_ms')||0}catch(e){}
  if(mode==='auto'&&slowMs>1000){try{const p=await (await fetch('/api?'+new URLSearchParams({q:qq,mode:'base',k:30}))).json();
-  if(my!==seq)return; if(p&&p.results&&p.results.length&&!p.error){p._rt=Math.round(performance.now()-t0);p.q0=qq;p.rfText='정밀하게 정리하는 중…';
+  if(my!==seq)return; if(p&&p.results&&p.results.length&&!p.error){p._rt=Math.round(performance.now()-t0);p.q0=qq;p.rfText=T('정밀하게 정리하는 중…','Refining the order…');
    last=p;last.first=p.results.map(x=>x.path);show(p);pre=true}}catch(e){}}
  try{const r=await (await fetch('/api?'+new URLSearchParams({q:qq,mode,k:30}))).json(); if(my!==seq)return;
   try{localStorage.setItem('findr_full_ms',String(r.ms||0))}catch(e){} r._rt=Math.round(performance.now()-t0); if(r.error){$('#res').innerHTML='';$('#notice').innerHTML='<div class="notice">'+esc(r.error)+'</div>';return} if(DEMO&&r.results)r.results=r.results.filter(x=>!/googledrive/i.test(x.path)); last=r; last.q0=qq; last.first=(r.results||[]).map(x=>x.path); last.t0=Date.now(); if(DEMO)speed(r); sel=-1;
   show(r,!pre); remember(qq,mode,r.results&&r.results[0]?base(r.results[0].path):''); refine(qq,r)}
- catch(e){$('#res').classList.remove('dim');$('#res').innerHTML='';$('#notice').innerHTML='<div class="notice">검색 서버에 연결하지 못했습니다.</div>'}
+ catch(e){$('#res').classList.remove('dim');$('#res').innerHTML='';$('#notice').innerHTML='<div class="notice">'+T('검색 서버에 연결하지 못했습니다.',"Couldn't reach the search engine.")+'</div>'}
 }
 let tried=[];
 async function refine(qq,r){   // a small local model lays the top 10 side by side and moves its picks up
  // the status sits inline in the count line (no block that pushes the list down), and the list is drawn again only when
  // the order really changed: redrawing an unchanged list a few seconds after the results made the page flicker
- if(!r.results||r.results.length<2)return; const say=t=>{r.rfText=t;const e=$('#rf');if(e)e.textContent=t};say('후보를 열어 보고 비교하는 중…');
+ if(!r.results||r.results.length<2)return; const say=t=>{r.rfText=t;const e=$('#rf');if(e)e.textContent=t};say(T('후보를 열어 보고 비교하는 중…','Opening the top results to compare…'));
  try{const f=await (await fetch('/refine?'+new URLSearchParams({q:qq,mode:r.route||mode}))).json(); if(!last||last.q0!==qq)return;
   if(f.skipped){say('');return}   // not needed this time (clear order, or indexing on a slower PC)
   if(f.results){const no=new Set(last.results.filter(x=>x.no).map(x=>x.path)); f.results.forEach(x=>{if(no.has(x.path))x.no=true});
    const moved=f.results.map(x=>x.path).join('\n')!==last.results.map(x=>x.path).join('\n'); last.results=f.results;
-   if(moved){last.rfText='열어 보고 순서를 다듬었습니다.';list();return}}
-  say('열어 보고 확인했습니다.')}catch(e){say('')}}
+   if(moved){last.rfText=T('열어 보고 순서를 다듬었습니다.','Opened them and refined the order.');list();return}}
+  say(T('열어 보고 확인했습니다.','Opened them and checked.'))}catch(e){say('')}}
 function understanding(r){
  const chips=[]; const p=r.parsed||{};
  const plan=r.plan||{};
  const add=(k,v)=>{if(v&&v!=='전체'&&!(Array.isArray(v)&&!v.length))chips.push('<span class="chip">'+esc(k)+' · '+esc(Array.isArray(v)?v.join(', '):String(v))+'</span>')};
- if(r.plan){add('종류',plan['종류']);add('거래처',plan['거래처']);add('사람',plan['사람']);add('역할',plan['사람역할']);add('시기',plan['시기']);
-  add('금액',plan['금액']);add('버전',plan['버전']);add('관계',plan['관계']);add('번호',plan['기준번호']);add('주제',plan['주제'])}
- else{add('찾을 내용',p['찾을 내용']);add('형식',p['형식']);add('기간',p['기간'])}
- return chips.join('')||'<span class="chip k">조건 없음 · 내용으로 찾기</span>';
+ if(r.plan){add(T('종류','Type'),plan['종류']);add(T('거래처','Client'),plan['거래처']);add(T('사람','Person'),plan['사람']);add(T('역할','Role'),plan['사람역할']);add(T('시기','When'),plan['시기']);
+  add(T('금액','Amount'),plan['금액']);add(T('버전','Version'),plan['버전']);add(T('관계','Relation'),plan['관계']);add(T('번호','Number'),plan['기준번호']);add(T('주제','Topic'),plan['주제'])}
+ else{add(T('찾을 내용','Looking for'),p['찾을 내용']);add(T('형식','Format'),p['형식']);add(T('기간','Period'),p['기간'])}
+ return chips.join('')||'<span class="chip k">'+T('조건 없음 · 내용으로 찾기','No conditions · searching by content')+'</span>';
 }
 function pipeline(r){
  const route=r.route||mode; const st=[];
- st.push(['이해',route==='ng'||r.plan?'조건·관계 파악':'질문 분석']);
- if(r.why&&r.why.length){for(const w of r.why.slice(0,3))st.push(['추론',String(w).replace(/[{}"]/g,'').replace(/person/g,'사람').replace(/kind/g,'종류').replace(/period/g,'기간')])}
- else st.push(['찾기','후보 수집']);
- if(route!=='base')st.push(['정렬','관련도 순']);
- if(r.repaired)st.push(['확인','"'+r.repaired+'" 다시 찾아 올림']);
- if(r.note)st.push(['판단',(r.results||[]).length?'정확히 맞는 파일 없음 · 가까운 것':'없음']); else st.push(['결과',(r.results||[]).length+'개']);
+ st.push([T('이해','Understand'),route==='ng'||r.plan?T('조건·관계 파악','conditions and relations'):T('질문 분석','reading the question')]);
+ if(r.why&&r.why.length){for(const w of r.why.slice(0,3))st.push([T('추론','Reasoning'),String(w).replace(/[{}"]/g,'').replace(/person/g,T('사람','person')).replace(/kind/g,T('종류','kind')).replace(/period/g,T('기간','period'))])}
+ else st.push([T('찾기','Find'),T('후보 수집','gathering candidates')]);
+ if(route!=='base')st.push([T('정렬','Rank'),T('관련도 순','by relevance')]);
+ if(r.repaired)st.push([T('확인','Check'),T('"'+r.repaired+'" 다시 찾아 올림','found "'+r.repaired+'" again and moved it up')]);
+ if(r.note)st.push([T('판단','Verdict'),(r.results||[]).length?T('정확히 맞는 파일 없음 · 가까운 것','no exact match · closest ones'):T('없음','not found')]); else st.push([T('결과','Results'),T((r.results||[]).length+'개',String((r.results||[]).length))]);
  return st.map((s,i)=>(i?'<span class="ar"></span>':'')+'<span class="st" style="animation-delay:'+(i*70)+'ms">'+esc(s[0])+' <b>'+esc(s[1])+'</b></span>').join('');
 }
 const APP=!!(window.__TAURI__&&window.__TAURI__.core);   // inside the desktop app: open files and folders directly
 let LOCAL=false;   // a browser on this PC: the engine opens files for it (never through a tunnel)
 if(!APP)fetch('/canopen').then(r=>r.json()).then(j=>{LOCAL=!!j.local;if(LOCAL&&last)list()}).catch(()=>{});
 // the engine answers at once but warms up for a few seconds after a start: say so instead of a silent first wait (#68)
-(function waitReady(n){fetch('/ready').then(r=>r.json()).then(j=>{const m=$('#meta');if(!j.ready){if(!last&&m)m.textContent='검색 엔진을 준비하는 중입니다… 곧 바로 답합니다';if(n<900)setTimeout(()=>waitReady(n+1),n<120?1000:3000)}else if(!last&&m)m.textContent=''}).catch(()=>{})})(0);
+(function waitReady(n){fetch('/ready').then(r=>r.json()).then(j=>{const m=$('#meta');if(!j.ready){if(!last&&m)m.textContent=T('검색 엔진을 준비하는 중입니다… 곧 바로 답합니다','Getting the search engine ready… it will answer in a moment');if(n<900)setTimeout(()=>waitReady(n+1),n<120?1000:3000)}else if(!last&&m)m.textContent=''}).catch(()=>{})})(0);
 // indexing: a small live chip in the status line; it opens a panel with what can be found now (search works meanwhile)
 (function(){
- const ST=[['names','이름으로 찾기','파일 목록을 만드는 중'],['namevec','비슷한 말로 이름 찾기','이름의 뜻을 파악하는 중'],
-  ['content','문서 속 글자로 찾기','문서를 읽는 중'],['meaning','기억나는 대로 물어보기','내용의 뜻을 파악하는 중'],['ocr','스캔·스크린샷 속 글자','스캔 글자를 읽는 중']];
+ const ST=[['names',T('이름으로 찾기','Find by name'),T('파일 목록을 만드는 중','Listing your files')],['namevec',T('비슷한 말로 이름 찾기','Find names by similar words'),T('이름의 뜻을 파악하는 중','Learning what the names mean')],
+  ['content',T('문서 속 글자로 찾기','Find by text inside documents'),T('문서를 읽는 중','Reading documents')],['meaning',T('기억나는 대로 물어보기','Ask the way you remember it'),T('내용의 뜻을 파악하는 중','Learning what the contents mean')],['ocr',T('스캔·스크린샷 속 글자','Text in scans and screenshots'),T('스캔 글자를 읽는 중','Reading text in scans')]];
  const esc_=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
  const st=document.getElementById('status'); if(!st)return;
  const chip=document.createElement('button'); chip.className='ix'; chip.hidden=true; chip.setAttribute('aria-haspopup','dialog');
  chip.innerHTML='<span class="ring" aria-hidden="true"></span><span class="ixt"></span>'; st.appendChild(chip);
- const pan=document.createElement('div'); pan.className='ixp'; pan.hidden=true; pan.setAttribute('role','dialog'); pan.setAttribute('aria-label','파일 살펴보기 진행');
+ const pan=document.createElement('div'); pan.className='ixp'; pan.hidden=true; pan.setAttribute('role','dialog'); pan.setAttribute('aria-label',T('파일 살펴보기 진행','File scan progress'));
  document.body.appendChild(pan);
  let P={},active=false,wasActive=false,doneAt=0,timer=null;
  window.__ix=()=>({active,P});
  const hm=t=>{const d=new Date(t*1000);return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')};
- const mins=m=>m==null?'':m<1?'1분 안에 끝나요':`약 ${m}분 남았어요`;
+ const mins=m=>m==null?'':m<1?T('1분 안에 끝나요','under a minute left'):T(`약 ${m}분 남았어요`,`about ${m} min left`);
  function now(){const k=ST.find(s=>(P.stages||{})[s[0]]==='now');return k||ST.find(s=>s[0]===P.stage)}
  function pct(){const sg=P.stages||{};let d=0;ST.forEach(s=>{if(sg[s[0]]==='done'||sg[s[0]]==='later')d+=1});
   const c=now();if(c&&P.total)d+=Math.min(1,P.done/P.total);return Math.round(100*d/ST.length)}
  function render(){
   const p=pct(),c=now();chip.style.setProperty('--p',p);chip.classList.toggle('paused',!!P.paused);chip.classList.toggle('ok',!active);
-  chip.querySelector('.ixt').textContent=!active?'모두 준비됐어요':P.paused?'잠시 멈춤':`살펴보는 중 ${p}%`;
-  chip.setAttribute('aria-label',chip.querySelector('.ixt').textContent+' · 자세히 보기');
+  chip.querySelector('.ixt').textContent=!active?T('모두 준비됐어요','All set'):P.paused?T('잠시 멈춤','Paused'):T(`살펴보는 중 ${p}%`,`Scanning ${p}%`);
+  chip.setAttribute('aria-label',chip.querySelector('.ixt').textContent+T(' · 자세히 보기',' · details'));
   if(pan.hidden)return;
   const sg=P.stages||{};
   const rows=ST.map(([k,can,doing])=>{const v=sg[k]||'wait';
-   const ic={done:'✓',now:'●',later:'◷',wait:'○'}[v],lab={done:'준비됨',now:P.paused?'멈춤':'진행 중',later:'쉬는 시간에',wait:'대기'}[v];
+   const ic={done:'✓',now:'●',later:'◷',wait:'○'}[v],lab={done:T('준비됨','Ready'),now:P.paused?T('멈춤','Paused'):T('진행 중','In progress'),later:T('쉬는 시간에','When idle'),wait:T('대기','Waiting')}[v];
    let sub='';if(v==='now'&&P.total)sub=`<div class="ixs">${doing} · ${Number(P.done).toLocaleString()}/${Number(P.total).toLocaleString()}${P.minutes_left!=null?' · '+mins(P.minutes_left):''}</div><div class="ixb"><i style="width:${Math.round(100*P.done/P.total)}%"></i></div>`;
-   else if(v==='later')sub='<div class="ixs">PC를 쓰지 않을 때 조금씩 읽어요</div>';
+   else if(v==='later')sub='<div class="ixs">'+T('PC를 쓰지 않을 때 조금씩 읽어요','Read bit by bit while the PC is idle')+'</div>';
    return `<li class="${v}"><span class="ic" aria-hidden="true">${ic}</span><div><div class="ixl">${can}</div>${sub}</div><span class="ixv">${lab}</span></li>`}).join('');
-  const files=P.files?`파일 ${Number(P.files).toLocaleString()}개 · `:'';
-  pan.innerHTML=`<div class="ixh"><div><h3>${active?(P.paused?'잠시 멈췄어요':'내 파일을 살펴보는 중'):'모두 준비됐어요'}</h3>
-   <div class="ixsub">${files}이 PC 안에서만 처리해요</div></div><button class="ixx" aria-label="닫기">✕</button></div>
-   <p class="ixn">${active?'지금도 검색할 수 있어요. 새로 읽은 내용은 곧 결과에 들어가요.':'처음부터 끝까지 살펴봤어요. 바뀐 파일은 알아서 다시 읽어요.'}</p>
+  const files=P.files?T(`파일 ${Number(P.files).toLocaleString()}개 · `,`${Number(P.files).toLocaleString()} files · `):'';
+  pan.innerHTML=`<div class="ixh"><div><h3>${active?(P.paused?T('잠시 멈췄어요','Paused'):T('내 파일을 살펴보는 중','Scanning your files')):T('모두 준비됐어요','All set')}</h3>
+   <div class="ixsub">${files}${T('이 PC 안에서만 처리해요','Processed only on this PC')}</div></div><button class="ixx" aria-label="${T('닫기','Close')}">✕</button></div>
+   <p class="ixn">${active?T('지금도 검색할 수 있어요. 새로 읽은 내용은 곧 결과에 들어가요.','You can search now. Newly read files show up in results soon.'):T('처음부터 끝까지 살펴봤어요. 바뀐 파일은 알아서 다시 읽어요.','Everything has been scanned. Changed files are re-read automatically.')}</p>
    ${active||Object.keys(sg).length?`<ol>${rows}</ol>`:''}
-   ${!active&&P.app?`<div class="ixa"><button class="ixnow" ${P.refresh_asked?'disabled':''}>${P.refresh_asked?'곧 시작해요…':'지금 반영'}</button><span class="ixsub">${P.last_refresh?'마지막 반영 '+hm(P.last_refresh)+' · ':''}새 파일은 10분마다 알아서 들어와요</span></div>`:''}
-   ${active?`<div class="ixa"><button class="ixpause">${P.paused?'이어서 하기':'잠시 멈추기'}</button><span class="ixsub">${P.paused?'1시간 뒤에는 저절로 이어서 해요':'PC가 느려지면 멈춰 두세요'}</span></div>`:''}`;
+   ${!active&&P.app?`<div class="ixa"><button class="ixnow" ${P.refresh_asked?'disabled':''}>${P.refresh_asked?T('곧 시작해요…','Starting soon…'):T('지금 반영','Update now')}</button><span class="ixsub">${P.last_refresh?T('마지막 반영 ','Last update ')+hm(P.last_refresh)+' · ':''}${T('새 파일은 10분마다 알아서 들어와요','New files are picked up every 10 minutes')}</span></div>`:''}
+   ${active?`<div class="ixa"><button class="ixpause">${P.paused?T('이어서 하기','Resume'):T('잠시 멈추기','Pause')}</button><span class="ixsub">${P.paused?T('1시간 뒤에는 저절로 이어서 해요','Resumes on its own after 1 hour'):T('PC가 느려지면 멈춰 두세요','Pause it if your PC feels slow')}</span></div>`:''}`;
  }
  async function tick(){clearTimeout(timer);
   try{const q=await (await fetch('/progress')).json();
@@ -284,8 +302,8 @@ if(!APP)fetch('/canopen').then(r=>r.json()).then(j=>{LOCAL=!!j.local;if(LOCAL&&l
  document.addEventListener('click',e=>{if(!pan.hidden&&!pan.contains(e.target)&&!chip.contains(e.target))close_()});
  const _show=show; show=function(r,f){_show(r,f);   // while files are still being read, say why some were found by name only
   if(!active||!r||!r.results)return;const sg=P.stages||{};
-  const msg=sg.content!=='done'?'아직 파일을 살펴보는 중이라, 일부는 이름으로만 찾았어요.':sg.meaning!=='done'?'아직 내용의 뜻을 파악하는 중이라, 비슷한 말로 찾기는 일부 파일만 돼요.':'';
-  if(msg)document.getElementById('notice')?.insertAdjacentHTML('afterbegin',`<div class="ixnote">${msg} <button class="ixmore">진행 보기</button></div>`)};
+  const msg=sg.content!=='done'?T('아직 파일을 살펴보는 중이라, 일부는 이름으로만 찾았어요.','Still scanning your files, so some results were found by name only.'):sg.meaning!=='done'?T('아직 내용의 뜻을 파악하는 중이라, 비슷한 말로 찾기는 일부 파일만 돼요.','Still learning what your files mean, so similar-word search covers only some of them.'):'';
+  if(msg)document.getElementById('notice')?.insertAdjacentHTML('afterbegin',`<div class="ixnote">${msg} <button class="ixmore">${T('진행 보기','See progress')}</button></div>`)};
  document.addEventListener('click',e=>{if(e.target.closest('.ixmore'))open_()});
  tick()})();
 function show(r,fresh=true){   // fresh=false: the reranked order replacing the quick list (no fade, no empty moment)
@@ -299,45 +317,45 @@ function filtered(){return (last&&last.results||[]).filter(x=>(!fKind||kindOf(x.
 // are: a redraw that replayed the fade emptied the whole list for a moment, a few seconds after the results (field, Mac)
 function list(fresh){
  const rs=filtered(), r=last;
- const routeTxt={auto:'자동',ng:'이해 우선',xce:'정밀',base:'빠른 찾기'}[r.route||mode]||'';
- $('#meta').innerHTML='<span>'+rs.length+'개'+(fKind||fDir?' (거름)':'')+' · '+routeTxt+' <span id="rf" class="rf">'+esc(r.rfText||'')+'</span></span><span>서버 '+r.ms+'ms · 화면 '+r._rt+'ms</span>';
+ const routeTxt={auto:T('자동','Auto'),ng:T('이해 우선','Smart'),xce:T('정밀','Precise'),base:T('빠른 찾기','Fast')}[r.route||mode]||'';
+ $('#meta').innerHTML='<span>'+T(rs.length+'개',rs.length+(rs.length===1?' result':' results'))+(fKind||fDir?T(' (거름)',' (filtered)'):'')+' · '+routeTxt+' <span id="rf" class="rf">'+esc(r.rfText||'')+'</span></span><span>'+T('서버 ','engine ')+r.ms+'ms · '+T('화면 ','page ')+r._rt+'ms</span>';
  $('#res').innerHTML=rs.map((x,i)=>{const k=kindOf(x.path);const d=dir(x.path);
   return '<div class="card'+(x.no?' rej':'')+(fresh?'':' still')+'" data-i="'+i+'" style="animation-delay:'+Math.min(i,8)*30+'ms"><div class="badge" style="background:'+k[1]+'">'+k[0]+'</div>'+
   '<div><div class="nm"><span class="rank">'+(i+1)+'</span>'+(x.prob!=null?'<span class="odds" style="background:'+(x.prob>=.7?'var(--acc)':x.prob>=.3?'#c27a2c':'#8a8780')+'">'+Math.round(x.prob*100)+'%</span>':'')+hl(base(x.path))+'</div><div class="path">'+
   d.split('/').map((seg,j,a)=>'<span data-dir="'+esc(a.slice(0,j+1).join('/'))+'">'+esc(seg)+'</span>').join(' / ')+'</div>'+
-  (x.why&&x.why.length?'<div class="why">'+x.why.map(esc).join(' · ')+'</div>':'')+(x.snippet?'<div class="snip">'+hl(x.snippet)+'</div>':'')+(x.versions&&x.versions.length?'<div class="vers">다른 판 '+x.versions.length+'개: '+x.versions.map((v,j)=>'<span data-vopen="'+i+':'+j+'" title="'+esc(v.path)+'">'+esc(base(v.path))+' · '+ago(v.date)+'</span>').join('')+'</div>':'')+(x.copies&&x.copies.length?'<div class="vers">같은 파일이 '+x.copies.length+'곳에 더 있음</div>':'')+'</div>'+
-  '<div class="side"><span title="'+esc(x.date)+'">'+ago(x.date)+'</span><span>'+fmt(x.size)+'</span><div class="act">'+(APP||LOCAL?'<button data-open="'+i+'">열기</button><button data-reveal="'+i+'">폴더</button>':'')+'<button data-copy="'+i+'">경로 복사</button><button data-ok="'+i+'">✔ 맞음</button><button data-no="'+i+'">✘ 아님</button></div></div></div>'}).join('')+
-  (rs.length?'<div style="text-align:center;margin-top:10px"><button class="act" id="none" style="border:1px solid var(--line);background:transparent;border-radius:8px;padding:6px 12px;color:var(--mut)">✘ 찾는 파일이 여기 없음</button></div>':'');
+  (x.why&&x.why.length?'<div class="why">'+x.why.map(esc).join(' · ')+'</div>':'')+(x.snippet?'<div class="snip">'+hl(x.snippet)+'</div>':'')+(x.versions&&x.versions.length?'<div class="vers">'+T('다른 판 '+x.versions.length+'개: ',x.versions.length+(x.versions.length===1?' other version: ':' other versions: '))+x.versions.map((v,j)=>'<span data-vopen="'+i+':'+j+'" title="'+esc(v.path)+'">'+esc(base(v.path))+' · '+ago(v.date)+'</span>').join('')+'</div>':'')+(x.copies&&x.copies.length?'<div class="vers">'+T('같은 파일이 '+x.copies.length+'곳에 더 있음','also saved in '+x.copies.length+(x.copies.length===1?' more place':' more places'))+'</div>':'')+'</div>'+
+  '<div class="side"><span title="'+esc(x.date)+'">'+ago(x.date)+'</span><span>'+fmt(x.size)+'</span><div class="act">'+(APP||LOCAL?'<button data-open="'+i+'">'+T('열기','Open')+'</button><button data-reveal="'+i+'">'+T('폴더','Folder')+'</button>':'')+'<button data-copy="'+i+'">'+T('경로 복사','Copy path')+'</button><button data-ok="'+i+'">'+T('✔ 맞음','✔ Right')+'</button><button data-no="'+i+'">'+T('✘ 아님','✘ Not this')+'</button></div></div></div>'}).join('')+
+  (rs.length?'<div style="text-align:center;margin-top:10px"><button class="act" id="none" style="border:1px solid var(--line);background:transparent;border-radius:8px;padding:6px 12px;color:var(--mut)">'+T('✘ 찾는 파일이 여기 없음',"✘ My file isn't here")+'</button></div>':'');
 }
 function facets(rs){
  const kc={},dc={};
  rs.forEach(x=>{const k=kindOf(x.path)[2];kc[k]=(kc[k]||0)+1;const d=dir(x.path);dc[d]=(dc[d]||0)+1});
- $('#kinds').innerHTML=Object.entries(kc).sort((a,b)=>b[1]-a[1]).map(([k,n])=>'<div class="facet" data-kind="'+esc(k)+'"><span>'+esc(k)+'</span><span class="n">'+n+'</span></div>').join('');
+ $('#kinds').innerHTML=Object.entries(kc).sort((a,b)=>b[1]-a[1]).map(([k,n])=>'<div class="facet" data-kind="'+esc(k)+'"><span>'+esc(kindName(k))+'</span><span class="n">'+n+'</span></div>').join('');
  $('#folders').innerHTML=Object.entries(dc).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([d,n])=>'<div class="facet" data-fdir="'+esc(d)+'" title="'+esc(d)+'"><span class="fn">'+esc(d.split('/').filter(Boolean).slice(-2).join('/'))+'</span><span class="n">'+n+'</span></div>').join('');
 }
 document.addEventListener('click',e=>{
  const fk=e.target.closest('[data-kind]');if(fk){fKind=fKind===fk.dataset.kind?null:fk.dataset.kind;document.querySelectorAll('[data-kind]').forEach(x=>x.classList.toggle('on',x.dataset.kind===fKind));list();return}
  const fd=e.target.closest('[data-fdir]');if(fd){fDir=fDir===fd.dataset.fdir?null:fd.dataset.fdir;document.querySelectorAll('[data-fdir]').forEach(x=>x.classList.toggle('on',x.dataset.fdir===fDir));list();return}
- const sd=e.target.closest('[data-dir]');if(sd){fDir=sd.dataset.dir;list();toast('폴더로 거름: '+fDir.split('/').slice(-2).join('/'));return}
+ const sd=e.target.closest('[data-dir]');if(sd){fDir=sd.dataset.dir;list();toast(T('폴더로 거름: ','Filtered to folder: ')+fDir.split('/').slice(-2).join('/'));return}
  const vo=e.target.closest('[data-vopen]');if(vo&&(APP||LOCAL)){const [ci,vi]=vo.dataset.vopen.split(':').map(Number),vp=filtered()[ci].versions[vi].path;
   if(APP){window.__TAURI__.core.invoke('open_path',{path:vp,reveal:false}).catch(err=>toast(String(err)));return}
-  fetch('/open',{method:'POST',headers:{'X-Findr':'1','Content-Type':'application/json'},body:JSON.stringify({path:vp,reveal:false})}).then(r=>toast(r.ok?'파일을 열었습니다':'열지 못했습니다')).catch(err=>toast(String(err)));return}
+  fetch('/open',{method:'POST',headers:{'X-Findr':'1','Content-Type':'application/json'},body:JSON.stringify({path:vp,reveal:false})}).then(r=>toast(r.ok?T('파일을 열었습니다','File opened'):T('열지 못했습니다',"Couldn't open it"))).catch(err=>toast(String(err)));return}
  const op=e.target.closest('[data-open],[data-reveal]');if(op&&(APP||LOCAL)){const x=filtered()[+(op.dataset.open!=null?op.dataset.open:op.dataset.reveal)],rv=op.dataset.reveal!=null;
   if(APP){window.__TAURI__.core.invoke('open_path',{path:x.path,reveal:rv}).catch(err=>toast(String(err)));return}
   fetch('/open',{method:'POST',headers:{'X-Findr':'1','Content-Type':'application/json'},body:JSON.stringify({path:x.path,reveal:rv})})
-   .then(r=>r.ok?toast(rv?'폴더를 열었습니다':'파일을 열었습니다'):r.json().then(j=>toast('열지 못했습니다'+(j.why=='not indexed'?': 색인에 없는 파일':j.why=='FileNotFoundError'?': 파일이 옮겨졌거나 지워졌습니다':''))))
+   .then(r=>r.ok?toast(rv?T('폴더를 열었습니다','Folder opened'):T('파일을 열었습니다','File opened')):r.json().then(j=>toast(T('열지 못했습니다',"Couldn't open it")+(j.why=='not indexed'?T(': 색인에 없는 파일',': not in the index'):j.why=='FileNotFoundError'?T(': 파일이 옮겨졌거나 지워졌습니다',': the file was moved or deleted'):''))))
    .catch(err=>toast(String(err)));return}
  const cp=e.target.closest('[data-copy]');if(cp){copy(filtered()[+cp.dataset.copy].path);return}
- const no=e.target.closest('[data-no]');if(no){const x=filtered()[+no.dataset.no];x.no=true;fb('reject',x.path,last.results.indexOf(x)+1,x.prob);list();toast('기록: 이 파일은 아님');return}
- const ok=e.target.closest('[data-ok]');if(ok){const x=filtered()[+ok.dataset.ok];fb('hit',x.path,last.results.indexOf(x)+1,x.prob);last.picked=1;ok.classList.add('done');ok.textContent='✔ 기록됨';
+ const no=e.target.closest('[data-no]');if(no){const x=filtered()[+no.dataset.no];x.no=true;fb('reject',x.path,last.results.indexOf(x)+1,x.prob);list();toast(T('기록: 이 파일은 아님','Noted: not this file'));return}
+ const ok=e.target.closest('[data-ok]');if(ok){const x=filtered()[+ok.dataset.ok];fb('hit',x.path,last.results.indexOf(x)+1,x.prob);last.picked=1;ok.classList.add('done');ok.textContent=T('✔ 기록됨','✔ Saved');
   const h=hist(),hi=h.find(y=>y.q===last.q0);if(hi){hi.hit=1;store.set('findr.hist',h);renderHist()}return}
- if(e.target.id==='none'){fb('none');toast('기록: 여기 없음');return}
+ if(e.target.id==='none'){fb('none');toast(T('기록: 여기 없음','Noted: not in this list'));return}
 });
-function copy(p){try{navigator.clipboard.writeText(p).then(()=>toast('경로를 복사했습니다'),()=>toast(p))}catch(e){toast(p)}}
+function copy(p){try{navigator.clipboard.writeText(p).then(()=>toast(T('경로를 복사했습니다','Path copied')),()=>toast(p))}catch(e){toast(p)}}
 // the question that made this list (not what is being typed now), and the route that answered it
 function fb(v,p,k,pr){const L=last||{};fetch('/fb?'+new URLSearchParams({q:L.q0||q.value,mode:L.route||mode,path:p||'',rank:k||'',verdict:v,prob:pr==null?'':pr,
  first_rank:(L.first&&p)?(L.first.indexOf(p)+1):'',secs:L.t0?Math.round((Date.now()-L.t0)/1000):'',page:'',
- shown:(L.results||[]).slice(0,30).map(x=>x.path).join(String.fromCharCode(10)),tried:tried.join(String.fromCharCode(10))})).then(r=>{if(!r.ok){toast('기록하지 못했습니다');return}if(v==='hit'){toast(k+'위가 정답으로 기록됐습니다');tried=[]}}).catch(()=>toast('기록하지 못했습니다'))}
+ shown:(L.results||[]).slice(0,30).map(x=>x.path).join(String.fromCharCode(10)),tried:tried.join(String.fromCharCode(10))})).then(r=>{if(!r.ok){toast(T('기록하지 못했습니다',"Couldn't save that"));return}if(v==='hit'){toast(T(k+'위가 정답으로 기록됐습니다','Saved #'+k+' as the right file'));tried=[]}}).catch(()=>toast(T('기록하지 못했습니다',"Couldn't save that")))}
 // keyboard
 document.addEventListener('keydown',e=>{
  if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();q.select();return}
@@ -350,12 +368,12 @@ document.addEventListener('keydown',e=>{
 });
 // placeholder rotation, status
 let pi=0;q.placeholder=PH[0];setInterval(()=>{if(!q.value){pi=(pi+1)%PH.length;q.placeholder=PH[pi]}},3500);
-fetch('/stats').then(r=>r.json()).then(s=>{$('#st1').innerHTML='색인 <b>'+s.files.toLocaleString()+'</b>개 파일';
- $('#st2').innerHTML='인터넷 연결 없이 동작'}).catch(()=>{});
+fetch('/stats').then(r=>r.json()).then(s=>{$('#st1').innerHTML=T('색인 <b>'+s.files.toLocaleString()+'</b>개 파일','<b>'+s.files.toLocaleString()+'</b> files indexed');
+ $('#st2').innerHTML=T('인터넷 연결 없이 동작','Works offline')}).catch(()=>{});
 // demo mode (?demo=1): captions, title cards, typed questions, speed badge; Drive results are left out of the picture
 const DEMO=/[?&]demo=1/.test(location.search);
 const sleep=t=>new Promise(r=>setTimeout(r,t));
-function speed(r){const e=$('#spd');e.classList.remove('on');void e.offsetWidth;e.textContent='⚡ '+(r.ms/1000).toFixed(2)+'초';setTimeout(()=>e.classList.add('on'),30)}
+function speed(r){const e=$('#spd');e.classList.remove('on');void e.offsetWidth;e.textContent='⚡ '+(r.ms/1000).toFixed(2)+T('초','s');setTimeout(()=>e.classList.add('on'),30)}
 window.demo={
  async type(s,ms){q.value='';q.focus();for(const ch of s){q.value+=ch;await sleep(ms||24)}await sleep(160);await go()},
  cap(t,sub){const e=$('#cap');if(!t){e.classList.remove('on');return}e.innerHTML=esc(t)+(sub?'<small>'+esc(sub)+'</small>':'');e.classList.add('on')},
@@ -364,7 +382,7 @@ window.demo={
  down(){document.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown'}))},
  histClick(i){const l=document.querySelectorAll('#hist li[data-q]')[i||0];if(l)l.click()}
 };
-if(DEMO){try{localStorage.clear()}catch(e){}}
+if(DEMO){try{localStorage.clear();if(LANG_SAVED)localStorage.setItem('findr.lang',LANG)}catch(e){}}
 setMode(DEMO?'auto':store.get('findr.mode','auto'));renderHist();q.focus();
 try{const q0=new URLSearchParams(location.search).get('q');if(q0){q.value=q0.slice(0,300);go()}}catch(_){}
 </script></body></html>
