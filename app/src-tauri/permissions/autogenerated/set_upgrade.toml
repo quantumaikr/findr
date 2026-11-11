@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-upgrade"
+description = "Enables the set_upgrade command without any pre-configured scope."
+commands.allow = ["set_upgrade"]
+
+[[permission]]
+identifier = "deny-set-upgrade"
+description = "Denies the set_upgrade command without any pre-configured scope."
+commands.deny = ["set_upgrade"]

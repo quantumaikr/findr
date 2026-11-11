@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-upgrade-state"
+description = "Enables the upgrade_state command without any pre-configured scope."
+commands.allow = ["upgrade_state"]
+
+[[permission]]
+identifier = "deny-upgrade-state"
+description = "Denies the upgrade_state command without any pre-configured scope."
+commands.deny = ["upgrade_state"]
