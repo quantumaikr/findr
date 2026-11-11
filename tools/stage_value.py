@@ -37,16 +37,24 @@ def ask(q):
 
 S = collections.OrderedDict()
 ms = collections.defaultdict(list)
-n = 0
+n = in_versions = 0
 for x in qs:
     answers = x.get("answers") or ([x["answer"]] if x.get("answer") else [])
     if not answers:
         continue
-    tr = ask(x["q"]).get("trace") or []
+    res = ask(x["q"])
+    tr = res.get("trace") or []
     if not tr:
         continue
     n += 1
     want = {norm(a) for a in answers}
+    # a copy of the answer (the same file saved elsewhere, folded under one line at the end) is the answer at every
+    # stage: on a Mac with many copies the reranker putting the twin first was counted as a loss (11/11)
+    for y in res.get("results") or []:
+        line = {norm(y.get("path"))} | {norm(c) for c in y.get("copies") or []}
+        if line & want:
+            want |= line
+    in_versions += any(want & {norm(v.get("path") if isinstance(v, dict) else v) for v in y.get("versions") or []} for y in res.get("results") or [])
     prev, t_prev = None, 0
     for stage, paths, *tm in tr:
         cur = next((i + 1 for i, p in enumerate(paths) if norm(p) in want), 11)
@@ -58,7 +66,7 @@ for x in qs:
             s["better"] += cur < prev; s["worse"] += cur > prev
             s["to1"] += cur == 1 and prev != 1; s["from1"] += prev == 1 and cur != 1
         prev = cur
-print(f"questions with an answer and a trace: {n}")
+print(f"questions with an answer and a trace: {n} | answer folded among the versions of a line at the end: {in_versions}")
 print(f"{'stage':11s} {'ran':>4s} {'#1':>4s} {'in3':>4s} {'in10':>4s} {'better':>6s} {'worse':>5s} {'to#1':>4s} {'from#1':>6s} {'ms p50':>6s} {'ms p90':>6s}")
 for k, s in S.items():
     m = sorted(ms.get(k) or [0])
