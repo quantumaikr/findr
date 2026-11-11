@@ -111,7 +111,21 @@ Apple M1 Pro에서는 질문 절반이 1.8초 안에 답합니다(0.2.15는 2.4�
 
 ### 데스크톱 앱 (권장)
 
-[배포 페이지](https://github.com/quantumaikr/findr/releases/latest)에서 운영체제에 맞는 파일을 받으세요.
+한 줄로 설치하기 (권장). 최신 배포를 받아 배포된 파일과 같은지(SHA-256) 확인한 뒤 설치합니다.
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/quantumaikr/findr/main/get-app.ps1 | iex
+```
+
+```bash
+# macOS (Apple 칩), Linux
+curl -fsSL https://raw.githubusercontent.com/quantumaikr/findr/main/get-app.sh | sh
+```
+
+이렇게 받으면 브라우저로 받을 때 붙는 '인터넷에서 받은 파일' 표시가 없어, 서명 전인 지금도 Windows의 "PC 보호" 창과 macOS의 "확인되지 않은 개발자" 확인이 대개 나오지 않습니다. 보안 설정은 바꾸지 않습니다. Windows의 스마트 앱 컨트롤이나 회사 정책이 서명 없는 프로그램을 막는 PC에서는 그대로 막힙니다.
+
+직접 받으려면 [배포 페이지](https://github.com/quantumaikr/findr/releases/latest)에서 운영체제에 맞는 파일을 받으세요. 같은 곳의 `SHA256SUMS.txt`로 파일을 확인할 수 있습니다.
 
 | 운영체제 | 파일 |
 |---|---|
@@ -123,7 +137,7 @@ Apple M1 Pro에서는 질문 절반이 1.8초 안에 답합니다(0.2.15는 2.4�
 
 처음 실행하면 PC에 맞는 구성을 준비합니다. 사양에 따라 5~20분, 2~18GB가 걸립니다 (GPU 16GB PC에서 사진 검색까지: Windows 11 실측 5분, 17.6GB). 그다음 색인할 폴더를 묻고, 파일 이름이 들어오는 대로 검색 화면으로 넘어갑니다.
 
-아직 코드 서명 전이라 처음 실행할 때 경고가 나올 수 있습니다.
+아직 코드 서명 전이라, 브라우저로 받은 파일은 처음 실행할 때 경고가 나올 수 있습니다.
 
 - Windows: "Windows의 PC 보호" 창에서 "추가 정보" → "실행"을 누르세요.
 - macOS: 앱을 오른쪽 클릭해 "열기"를 고르세요. "손상되었기 때문에 열 수 없습니다"가 나오면 앱을 응용 프로그램 폴더로 옮긴 뒤 터미널에서 `xattr -cr /Applications/findr.app`을 한 번 실행하세요.
