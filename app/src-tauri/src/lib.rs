@@ -30,6 +30,9 @@ static BG_RUN: Mutex<Option<u32>> = Mutex::new(None);   // the background refres
 
 // the language of the messages and the menu made here: the system's at the start, then what the screens say (`set_lang`)
 static KOREAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+// the screens have said the language: from then on the programs started here are told it (FINDR_LANG). Before that they
+// read the system's language themselves (on Windows the display language, which is not read here)
+static LANG_SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Korean for a Korean system, English for everyone else (LC_ALL, LC_MESSAGES, LANG; a PC that sets none is told by the screens)
 fn system_korean() -> bool {
@@ -46,6 +49,7 @@ fn l(ko: &str, en: &str) -> String {
 #[tauri::command]
 fn set_lang(app: AppHandle, lang: String) {
     let ko = lang == "ko";
+    LANG_SAID.store(true, std::sync::atomic::Ordering::Relaxed);
     if KOREAN.swap(ko, std::sync::atomic::Ordering::Relaxed) != ko {
         let _ = set_app_menu(&app);
     }
@@ -469,6 +473,9 @@ fn command(prog: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut c = Command::new(prog);
     c.env("PYTHONUTF8", "1").env("PYTHONUNBUFFERED", "1").env("FINDR_HOME", home())
         .env("UV_NATIVE_TLS", "1");   // company networks that inspect TLS: trust the system's certificates
+    if LANG_SAID.load(std::sync::atomic::Ordering::Relaxed) {
+        c.env("FINDR_LANG", if KOREAN.load(std::sync::atomic::Ordering::Relaxed) { "ko" } else { "en" });
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
