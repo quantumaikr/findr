@@ -11,6 +11,7 @@ import zipfile
 from pathlib import Path
 
 from . import paths
+from .lang import L
 
 OWN = os.environ.get("FINDR_MODEL_REPO", "quantumaikr/findr-models")   # rank/, gate/, qu/ (private while in testing)
 PUBLIC = {   # folder -> (repository, files or None for all, what it is for)
@@ -20,6 +21,10 @@ PUBLIC = {   # folder -> (repository, files or None for all, what it is for)
     "checker": ("Qwen/Qwen3-1.7B-GGUF", ["Qwen3-1.7B-Q8_0.gguf"], "후보 나란히 비교 (GPU)"),
     "kanana-2-v-decide-3b-2611": ("kakaocorp/kanana-2-v-decide-3b-2611", None, "사진 내용 검색 (GPU 8GB 이상)"),
 }
+
+
+_WHY_EN = {"더 정확한 의미 검색 (큰 모델)": "More accurate meaning search (larger model)", "의미 검색 (작은 모델)": "Meaning search (small model)",
+           "후보 나란히 비교 (GPU)": "Side-by-side comparison of candidates (GPU)", "사진 내용 검색 (GPU 8GB 이상)": "Photo content search (GPU with 8GB or more)"}
 
 
 def gpu():
@@ -97,7 +102,7 @@ def big_ok():
     try:
         import time
         import enc_eg2
-        print("  Apple GPU에서 큰 모델 속도를 재는 중입니다 (처음 한 번, 몇 분 걸릴 수 있음) ...", flush=True)
+        print(L("  Apple GPU에서 큰 모델 속도를 재는 중입니다 (처음 한 번, 몇 분 걸릴 수 있음) ...", "  Measuring the larger model's speed on the Apple GPU (once; may take a few minutes) ..."), flush=True)
         piece = ("회의 전에 고친 견적서 | 영업/2025/고객사\n" + "스마트센서 게이트웨이 납품 일정과 단가 조건을 정리했습니다. " * 30)[:1200]
         e = enc_eg2.EG2("mps"); e.emb([piece] * e.bs, query=False)   # compiles the GPU kernels
         n = e.bs * 4; t = time.time(); e.emb([piece] * n, query=False); rate = n / max(time.time() - t, 1e-6)
@@ -105,7 +110,7 @@ def big_ok():
     except Exception:
         ok = False
     mark.write_text(json.dumps({"v": 2, "device": dev, "big_ok": ok, "pieces_per_s": round(rate, 1)}))
-    print(f"  큰 모델 속도: 초당 {rate:.0f}조각 → {'큰 모델 사용' if ok else '작은 모델로 전환 (더 빠름)'}", flush=True)
+    print(L(f"  큰 모델 속도: 초당 {rate:.0f}조각 → {'큰 모델 사용' if ok else '작은 모델로 전환 (더 빠름)'}", f"  Larger model speed: {rate:.0f} pieces/s → {'using the larger model' if ok else 'switching to the small model (faster)'}"), flush=True)
     return ok
 
 
@@ -209,7 +214,7 @@ def pull(folders, token=None):
     from huggingface_hub import snapshot_download
     own = [f for f in folders if f in OWN_FOLDERS and not have(f)]
     if own:
-        print(f"  findr 모델 받는 중 ({', '.join(own)}) ...", flush=True)
+        print(L(f"  findr 모델 받는 중 ({', '.join(own)}) ...", f"  Downloading findr models ({', '.join(own)}) ..."), flush=True)
         # one download for findr's own folders, with the files _patterns() names (and download_plan() sizes): a CPU-only
         # PC ranks with the int8 model (543 MB); a GPU PC never uses it
         sel = [_patterns(f) for f in own]
@@ -218,21 +223,21 @@ def pull(folders, token=None):
     for f in folders:   # the public models (meaning search, photos): without them the engine would fetch them at search time
         if f in PUBLIC and not have(f):
             repo, files, why = PUBLIC[f]
-            print(f"  {why}: {repo} 받는 중 ...", flush=True)
+            print(L(f"  {why}: {repo} 받는 중 ...", f"  {_WHY_EN.get(why, why)}: downloading {repo} ..."), flush=True)
             snapshot_download(repo, local_dir=paths.MODELS / f, allow_patterns=files, token=token)
 
 
 def pull_rank_int8(token=None):
     """the int8 reranker for a CPU-only PC that was set up before it existed (an update finds the rank folder already there)"""
     from huggingface_hub import hf_hub_download
-    print("  가벼운 재정렬 모델 받는 중 (543MB, 한 번) ...", flush=True)
+    print(L("  가벼운 재정렬 모델 받는 중 (543MB, 한 번) ...", "  Downloading the light reranker (543MB, once) ..."), flush=True)
     hf_hub_download(OWN, "rank/model_int8.onnx", local_dir=paths.MODELS, token=token)
 
 
 def pull_rank_fp32(token=None):
     """the full-precision reranker weights, when the int8 model cannot run on this PC"""
     from huggingface_hub import snapshot_download
-    print("  재정렬 모델(전체 정밀도) 받는 중 ...", flush=True)
+    print(L("  재정렬 모델(전체 정밀도) 받는 중 ...", "  Downloading the reranker (full precision) ..."), flush=True)
     snapshot_download(OWN, local_dir=paths.MODELS, allow_patterns=["rank/*"], ignore_patterns=["*.onnx"], token=token)
 
 
@@ -273,18 +278,18 @@ def pull_llama_server(dev):
     try:
         rel = json.load(urllib.request.urlopen(f"https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/{tag}", timeout=30))
     except Exception as e:
-        print(f"  llama.cpp 정보를 못 받았습니다 ({type(e).__name__}): 질문은 규칙으로 읽습니다.")
+        print(L(f"  llama.cpp 정보를 못 받았습니다 ({type(e).__name__}): 질문은 규칙으로 읽습니다.", f"  Could not get the llama.cpp release information ({type(e).__name__}): questions are read by rules."))
         return None
     assets = rel.get("assets", [])
     pick = [a for a in assets if a["name"].startswith("llama-") and a["name"].endswith(key)]
     if rt:   # the CUDA runtime the build needs
         pick += [a for a in assets if a["name"].startswith("cudart-") and a["name"].endswith(rt)][:1]
     if not pick:
-        print("  이 시스템용 llama.cpp 빌드를 찾지 못했습니다: 질문은 규칙으로 읽습니다."); return None
+        print(L("  이 시스템용 llama.cpp 빌드를 찾지 못했습니다: 질문은 규칙으로 읽습니다.", "  No llama.cpp build found for this system: questions are read by rules.")); return None
     dst = paths.BIN / "llama"; dst.mkdir(parents=True, exist_ok=True)
     for a in pick[:2]:
         z = paths.BIN / a["name"]
-        print(f"  llama.cpp {tag} 받는 중: {a['name']}", flush=True)
+        print(L(f"  llama.cpp {tag} 받는 중: {a['name']}", f"  Downloading llama.cpp {tag}: {a['name']}"), flush=True)
         urllib.request.urlretrieve(a["browser_download_url"], z)
         if z.name.endswith(".zip"):
             with zipfile.ZipFile(z) as f:
