@@ -26,6 +26,7 @@ import urllib.parse
 import urllib.request
 
 from . import paths
+from .lang import L, lang
 
 ENGINE = f"http://127.0.0.1:{os.environ.get('FINDR_APP_PORT') or os.environ.get('FINDR_PORT') or 8096}"
 
@@ -62,7 +63,7 @@ def _engine_search(query, limit):
     op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     import base64
     k = _key()   # the page's password: as the app's cookie and as HTTP Basic (any user name), whichever the engine takes
-    req = urllib.request.Request(f"{ENGINE}/api?" + urllib.parse.urlencode({"q": query, "k": limit}),
+    req = urllib.request.Request(f"{ENGINE}/api?" + urllib.parse.urlencode({"q": query, "k": limit, **({"lang": "en"} if lang() == "en" else {})}),
                                  headers={"Cookie": f"findr_t={k}", "Authorization": "Basic " + base64.b64encode(f"findr:{k}".encode()).decode()})
     try:
         r = json.loads(op.open(req, timeout=60).read())
@@ -338,17 +339,17 @@ def _similar(con, fid, name, ext, folder, head, mt, seen):
         sim_n = _overlap(ng, _grams(_stem(n2), False))
         why, score = None, 0.0
         if sim_n >= 0.6:
-            why, score = f"비슷한 이름 {sim_n:.2f}", sim_n
+            why, score = L(f"비슷한 이름 {sim_n:.2f}", f"similar name {sim_n:.2f}"), sim_n
         elif where == "same" and day and _day(mt2) == day and grp and _GROUP.get((e2 or "").lower()) == grp:
-            why, score = "같은 날 같은 폴더", 0.55
+            why, score = L("같은 날 같은 폴더", "same day, same folder"), 0.55
         if why is None and hg and sim_n >= 0.2:   # some name in common: the opening text decides
             h2 = (con.execute("SELECT text FROM chunks WHERE file=? AND n=0", (f2,)).fetchone() or [""])[0] or ""
             sim_h = _overlap(hg, _grams(h2[:700]))
             if sim_h >= 0.5:
-                why, score = f"비슷한 앞부분 {sim_h:.2f}", sim_h
+                why, score = L(f"비슷한 앞부분 {sim_h:.2f}", f"similar opening text {sim_h:.2f}"), sim_h
         if why:
             out.append({"relation": "similar", "name": n2, "path": p2, "modified": _day(mt2), "why": why,
-                        "folder": "같은 폴더" if where == "same" else "이웃 폴더", "score": round(score, 2)})
+                        "folder": L("같은 폴더", "same folder") if where == "same" else L("이웃 폴더", "sibling folder"), "score": round(score, 2)})
     out.sort(key=lambda x: -x["score"])
     return out[:SIMILAR_MAX]
 
