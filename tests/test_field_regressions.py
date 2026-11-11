@@ -132,5 +132,28 @@ def test_mac_starts_small_and_measures_after_the_download(tmp_path, monkeypatch)
     pulled = []
     monkeypatch.setattr(models, "pull", lambda fs, **kw: pulled.extend(fs))
     a = type("A", (), {"db": str(db), "minutes": 1})()
+    monkeypatch.setenv("LANE2", "0")
     assert cli.cmd_upgrade(a) == 3 and pulled == ["embeddinggemma-2"] and asked   # downloaded, measured, slow: stays small
     assert (tmp_path / "upgrade_off").exists()
+    # the second meaning lane (on by itself with this much memory): the same slow Mac still reads each file's first piece
+    monkeypatch.delenv("LANE2")
+    monkeypatch.setattr(models, "have", lambda name: True)
+    ran = []
+    monkeypatch.setattr(cli.subprocess, "call", lambda args, **kw: ran.append(args) or 2)
+    assert cli.cmd_upgrade(a) == 2 and "--upgrade-first" in ran[0]
+    monkeypatch.setattr(cli, "_ram_gb", lambda: 7.9)   # an 8 GB PC: no second encoder beside the first
+    (tmp_path / "upgrade_off").write_text("이 기기에서 큰 모델이 느림", encoding="utf-8")
+    assert cli.cmd_upgrade(a) == 3 and len(ran) == 1
+
+
+def test_second_lane_is_on_by_memory_unless_said(monkeypatch):
+    """LANE2 not set: on from 12 GB of memory (a PC sold as 12 GB reports a little less), off when memory cannot be read"""
+    sys.path.insert(0, str(CORE.parent.parent))
+    from findr import cli
+    monkeypatch.delenv("LANE2", raising=False)
+    for gb, on in ((0.0, False), (7.9, False), (11.8, True), (64.0, True)):
+        monkeypatch.setattr(cli, "_ram_gb", lambda gb=gb: gb)
+        assert cli._lane2() is on, gb
+    monkeypatch.setenv("LANE2", "0"); assert not cli._lane2()
+    monkeypatch.setattr(cli, "_ram_gb", lambda: 4.0)
+    monkeypatch.setenv("LANE2", "1"); assert cli._lane2()

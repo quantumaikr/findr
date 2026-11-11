@@ -40,6 +40,7 @@ def _engine_env(photo_url=""):
            "QU_URL": f"http://127.0.0.1:{PORTS['qu']}/v1/chat/completions", "EXPLORE_URL": f"http://127.0.0.1:{PORTS['checker']}/v1/chat/completions"}
     for k, v in env.items():
         os.environ.setdefault(k, v)
+    os.environ.setdefault("LANE2", "1" if _lane2() else "0")   # decided here once: the engine itself only reads the switch
 
 
 def _encoder():
@@ -210,9 +211,15 @@ def _index_encoder(db=None):
         return ""
 
 
+LANE2_RAM_GB = 11.5   # a PC sold as 12 GB reports a little less
+
+
 def _lane2():
-    """LANE2=1 (default 0, as in the engine): first pieces by the larger model are kept and filled on slow PCs too"""
-    return os.environ.get("LANE2", "0") == "1"
+    """the second meaning lane (first pieces by the larger model are kept, filled on slow PCs too, and read by the engine).
+    LANE2=1 on, LANE2=0 off; not set: on where the PC has the memory for a second encoder. The engine holds 1.2 GB more
+    on a CPU, and an 8 GB laptop had 1.5 GB free with the engine running, so: 12 GB or more"""
+    v = os.environ.get("LANE2", "")
+    return v == "1" or (v != "0" and _ram_gb() >= LANE2_RAM_GB)
 
 
 def _too_slow(why):
@@ -277,7 +284,7 @@ def cmd_upgrade(a):
     why = _upgrade_why_not(a.db)
     if why and _too_slow(why) and (first or _lane2()):
         # the whole upgrade is off on this PC because it would take too long: the first pieces alone still fit (--first-only,
-        # or LANE2=1 where the engine reads them as a second meaning lane)
+        # or the second meaning lane is on and the engine reads them)
         first = True; why = _upgrade_why_not(a.db, first_only=True)
     if why:
         print(L(f"큰 모델로 바꾸기: 하지 않음 ({why})", f"Switch to the larger model: skipped ({_why_say(why)})"))
@@ -292,7 +299,7 @@ def cmd_upgrade(a):
         print(L(f"큰 모델로 바꾸기: 하지 않음 ({why})", f"Switch to the larger model: skipped ({_why_say(why)})"))
         if not _lane2():
             return 3
-        first = True   # LANE2=1: this same run goes on with the first pieces
+        first = True   # second lane on: this same run goes on with the first pieces
     env = {**os.environ}
     if first:   # 6: every first piece is there; 2: more runs needed. Nothing is switched and upgrade.json is not touched
         print(L("파일 첫 부분만 큰 모델로 읽기 (작은 모델은 그대로)", "Reading only the first part of each file with the larger model (the small model stays)"), flush=True)
@@ -306,7 +313,7 @@ def cmd_upgrade(a):
         if h > UPGRADE_MAX_HOURS:
             (paths.HOME / "upgrade_off").write_text(f"이 PC에서 {h:.0f}시간 걸림: 작은 모델 유지", encoding="utf-8")
             import sqlite3
-            # LANE2=1: the first pieces' vectors stay (1.5 KB a file) for the engine's second meaning lane
+            # second lane on: the first pieces' vectors stay (1.5 KB a file) for the engine
             c = sqlite3.connect(str(a.db), timeout=60); c.execute("UPDATE chunks SET emb2=NULL" + (" WHERE n!=0" if _lane2() else "")); c.commit(); c.execute("VACUUM")
             print(L(f"큰 모델로 바꾸기: 그만둠 (남은 시간 {h:.0f}시간 > {UPGRADE_MAX_HOURS}시간)", f"Switch to the larger model: given up ({h:.0f} hours left > {UPGRADE_MAX_HOURS} hours)"))
     return r
