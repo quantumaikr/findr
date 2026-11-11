@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "findr-ai"
-version = "0.2.20"
+version = "0.2.21"
 description = "기억나는 대로 물으면, 내 PC가 찾아 줍니다 - 내 PC 안에서만 동작하는 자연어 파일·사진 검색"
 readme = "README.md"
 license = { text = "Apache-2.0" }
