@@ -65,3 +65,21 @@ jobs:
             처음 실행할 때 이 PC에 맞는 구성 요소와 모델을 받습니다(5~20분).
           releaseDraft: true
           prerelease: true
+
+  # SHA256SUMS.txt beside the installers: get-app.sh and get-app.ps1 refuse a download that does not match it
+  checksums:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checksums of the release's files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir files && cd files
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" --skip-existing
+          rm -f SHA256SUMS.txt
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "$TAG" SHA256SUMS.txt -R "$GITHUB_REPOSITORY" --clobber

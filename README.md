@@ -100,7 +100,21 @@ Three parts work together on the PC. The indexer reads files and writes the inde
 
 ### Desktop app (recommended)
 
-Download the file for your system from the [releases page](https://github.com/quantumaikr/findr/releases/latest).
+Install in one line (recommended). It downloads the latest release, checks it against the released file (SHA-256), and installs it.
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/quantumaikr/findr/main/get-app.ps1 | iex
+```
+
+```bash
+# macOS (Apple silicon), Linux
+curl -fsSL https://raw.githubusercontent.com/quantumaikr/findr/main/get-app.sh | sh
+```
+
+A file fetched this way carries no "downloaded from the internet" mark, so even before code signing the Windows "protected your PC" screen and the macOS "unidentified developer" prompt usually do not appear. No security setting is changed: where Windows Smart App Control or a company policy blocks unsigned programs, the installer stays blocked.
+
+To download by hand, take the file for your system from the [releases page](https://github.com/quantumaikr/findr/releases/latest); `SHA256SUMS.txt` there lets you check it.
 
 | System | File |
 |---|---|
@@ -112,7 +126,7 @@ Download the file for your system from the [releases page](https://github.com/qu
 
 On the first run the app sets up what suits the PC: 5–20 minutes and 2–18 GB depending on the hardware (a 16 GB NVIDIA GPU PC with photo search: 5 minutes and 17.6 GB, measured on Windows 11). It then asks which folders to index, and moves to the search screen as soon as file names are in.
 
-The installers are not code-signed yet, so the first launch may show a warning:
+The installers are not code-signed yet, so a file downloaded with a browser may show a warning on the first launch:
 
 - Windows: on "Windows protected your PC", choose "More info", then "Run anyway".
 - macOS: right-click the app and choose "Open". If macOS says the app "is damaged", move it to Applications and run `xattr -cr /Applications/findr.app` once in Terminal.
