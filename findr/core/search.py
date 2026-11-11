@@ -1742,6 +1742,34 @@ CE_BIAS = {}
 CE_RATE = {}   # seconds per candidate on the CPU, per reranker
 
 
+_QPASS = [0.0, 0]   # (the question's start time, reranker passes so far in it)
+_CPU_N = {}
+
+
+def cpu_candidates(d):
+    """candidates the reranker scores on this CPU in a question's first pass: NCAND (5) when they fit CE_BUDGET_CPU (1.1 s of
+    the 1.5 s a question may take) at the speed measured once at warm-up, else 3. Kept in the data folder with the speed it
+    was decided at, and changed only when the PC measures a third faster or slower: a restart alone does not move it"""
+    if d in _CPU_N:
+        return _CPU_N[d]
+    rate = CE_RATE[d]
+    n = NCAND if rate * NCAND <= float(os.environ.get("CE_BUDGET_CPU") or 1.1) else min(NCAND, 3)
+    f = Path(os.environ.get("FINDR_DATA") or (Path.home() / ".findr")) / "rerank_cpu.json"
+    try:
+        old = json.loads(f.read_text(encoding="utf-8"))
+        if old.get("ncand") == NCAND and 0.75 <= rate / float(old["rate"]) <= 1.33:
+            n = int(old["n"])   # the same PC at about the same speed: the same count as last time
+        else:
+            raise ValueError
+    except (OSError, ValueError, KeyError, TypeError, ZeroDivisionError):
+        try:
+            f.write_text(json.dumps({"n": n, "rate": round(rate, 4), "ncand": NCAND}), encoding="utf-8")
+        except OSError:
+            pass
+    _CPU_N[d] = n
+    return n
+
+
 def ce_scores(q, res, d=None, nosumm=None, top=None):
     """cross-encoder (bge-reranker-v2-m3, 568M): one batched pass over the candidates. d: model dir (cached per dir).
     top: score only the first `top`; the rest keep their first-stage order below them"""
@@ -1808,13 +1836,16 @@ def _ce_score(q, res, d, tok, m, nosumm, top=None):
     # the rest keep their first-stage order below the scored ones
     n = len(docs) if top is None else min(len(docs), top)
     if m.device.type == "cpu" and CE_RATE.get(d):
-        # one budget for the whole question (CE_TOTAL s): the first pass gets up to CE_BUDGET, and later passes (repair,
-        # memory cues) only what is left, at least 3 candidates. Per-call budgets used to add up to 15-20 s on a laptop.
-        left = float(os.environ.get("CE_TOTAL") or 1.5) - (time.time() - _QT[0])   # 1.5 s per question (was 4: 3.8 s slowest tenth)
-        cap = min(float(os.environ.get("CE_BUDGET") or 3), max(left, 0.0))
-        # at least 3 candidates, else what fits the time left: a 4-core 2019 laptop scores about 0.66 s a candidate, and a floor
-        # of 5 made every question 3.3 s against the 1.5 s budget (#66 rerun); a recent CPU still scores 5 within it
-        n = min(n, max(3, int(cap / CE_RATE[d])))
+        # How many candidates a CPU scores is set by this PC's measured speed, not by the clock of this question: the time
+        # left in the question's budget used to decide it, so a first stage that ran a little slower scored 3 instead of
+        # 5 and the same question got another answer (11/11: 29 of 120 questions in another order between two runs, 11 with
+        # another #1). The first pass of a question scores cpu_candidates() (5, or 3 on a slow CPU: a 4-core 2019 laptop
+        # takes about 0.66 s a candidate, #66); later passes (repair, memory cues) score 3, as they did once the budget was
+        # spent. Per-call budgets used to add up to 15-20 s on a laptop; these counts keep a question near 1.5 s.
+        if _QPASS[0] != _QT[0]:
+            _QPASS[0], _QPASS[1] = _QT[0], 0
+        _QPASS[1] += 1
+        n = min(n, cpu_candidates(d) if _QPASS[1] == 1 else 3)
     t_ = time.time()
 
     def run(part):
