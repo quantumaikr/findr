@@ -331,6 +331,7 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="read content of at most N pending files in this run (0 = no limit)")
     ap.add_argument("--upgrade", default="", help="move the meaning vectors to this encoder in idle time (no scan), then switch")
     ap.add_argument("--minutes", type=float, default=50, help="--upgrade: stop after N minutes (the next idle run continues)")
+    ap.add_argument("--upgrade-first", action="store_true", help="--upgrade: only each file's first piece, and no switch (exit 6 when all are there)")
     ap.add_argument("--names-only", action="store_true", help="register new and changed files by name only (on battery); content waits for the next full run")
     a = ap.parse_args()
     roots = [Path(r) for r in a.root]; Path(a.db).expanduser().parent.mkdir(parents=True, exist_ok=True)
@@ -414,7 +415,7 @@ def main():
             print(f"FINDR_OUTSIDE kept {len(out)} files outside the current folders (too many to be a scope change)", flush=True)
     con.commit()
     if a.upgrade:
-        return upgrade(con, a.upgrade, a.minutes)
+        return upgrade(con, a.upgrade, a.minutes, first_only=a.upgrade_first)
     progress("names", 0, len(roots))
     scanned = 0   # files looked at in the folders before this one
     for k, root in enumerate(roots):   # stage 1: names and folders of every chosen folder first (seconds)
@@ -1511,9 +1512,20 @@ def person_is_back(within):
     return idle is not None and idle < within
 
 
-def upgrade(con, target, minutes=50, bs=None):
+# office documents: their first pieces get the larger model's vector before code, logs and data files
+UPGRADE_DOCS = ("pdf", "hwp", "hwpx", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "key", "pages", "numbers", "md", "txt")
+FIRST_DONE = 6   # upgrade(first_only=True): every first piece has its side vector (0-2 are the full upgrade's, 3-5 the CLI's)
+
+
+def upgrade(con, target, minutes=50, bs=None, first_only=False):
     """compute `target` vectors next to the current ones (column emb2), at most `minutes` per run; when all are there,
-    switch in one transaction (emb <- emb2, meta encoder <- target). Returns 0 switched / 2 more runs needed / 1 nothing to do."""
+    switch in one transaction (emb <- emb2, meta encoder <- target). Returns 0 switched / 2 more runs needed / 1 nothing to do.
+    Each file's first piece (n=0) comes first, office documents before the rest, newest first: the search engine can use
+    those alone as a second meaning lane (LANE2 in search.py) long before the switch. On 4,771 real files the answer was
+    among the first 10 candidates for 33 of 45 questions with that lane, 22 without (2,000 virtual questions: 1,850, 1,530).
+    first_only: stop there, without switching, for a PC where the whole upgrade is too slow; returns FIRST_DONE (6) when
+    every first piece is there, 2 when more runs are needed. Its progress goes to lane2.json: the hours left of a
+    first-pieces run must not be read as the whole upgrade's (the CLI turns the upgrade off on that number)."""
     from enc_eg2 import encoder_of, make_encoder
     import torch
     cur = encoder_of(con)
@@ -1533,7 +1545,10 @@ def upgrade(con, target, minutes=50, bs=None):
     elif getattr(enc, "dev", "cpu") == "cpu":
         enc.bs = int(os.environ.get("FINDR_BATCH") or 8)   # small batches on the CPU: memory stays low, each run stops on time
     t0 = time.time(); stop = t0 + minutes * 60; did = 0
-    total = con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL").fetchone()[0]
+    scope = " AND n=0" if first_only else ""   # what this run counts and fills
+    pfile = "lane2.json" if first_only else "upgrade.json"
+    docs = ",".join(f"'.{e}'" for e in UPGRADE_DOCS)
+    total = con.execute(f"SELECT count(*) FROM chunks WHERE emb IS NOT NULL{scope}").fetchone()[0]
     # the app's idle-time run stops when the person comes back (FINDR_STOP_ON_INPUT = seconds of recent input that count):
     # on an 8 GB laptop a 10-minute run kept 2.7 GB and half the cores while the person searched. Smaller steps so it notices soon.
     back = float(os.environ.get("FINDR_STOP_ON_INPUT") or 0)
@@ -1541,28 +1556,36 @@ def upgrade(con, target, minutes=50, bs=None):
     last = {k: v for k, v in _last_upgrade().items() if k in ("rate", "hours_left")}   # read now: progress below rewrites the file
     looked = 0.0
     while True:
-        rows = con.execute("""SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
-                              WHERE c.emb IS NOT NULL AND c.emb2 IS NULL ORDER BY (c.n > 1), f.mtime DESC, c.n LIMIT ?""", (step,)).fetchall()
+        # first pieces first (documents, then the rest, newest first); after them the order used before (cards and second
+        # pieces, then the deeper ones, newest file first)
+        rows = con.execute(f"""SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
+                               WHERE c.emb IS NOT NULL AND c.emb2 IS NULL{' AND c.n=0' if first_only else ''}
+                               ORDER BY (c.n != 0), (c.n = 0 AND lower(coalesce(f.ext, '')) NOT IN ({docs})), (c.n > 1), f.mtime DESC, c.n
+                               LIMIT ?""", (step,)).fetchall()
         if not rows:
             break
         returned = False
         if back and time.time() - looked >= LOOK_EVERY:   # not every step: on a fast GPU 16 pieces take a fraction of a second
             looked = time.time(); returned = person_is_back(back)
         if time.time() > stop or returned:
-            left = con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL AND emb2 IS NULL").fetchone()[0]
+            left = con.execute(f"SELECT count(*) FROM chunks WHERE emb IS NOT NULL AND emb2 IS NULL{scope}").fetchone()[0]
             rate = did / max(time.time() - t0, 1e-6)
             if returned:   # a run cut short (often while the model was still loading) says nothing about the speed: keep the
                 # last run's estimate. Measured here, 0 pieces would read as 'thousands of hours' and turn the upgrade off for good
                 print(f"FINDR_UPGRADE paused {total - left}/{total} | the person is back after {did} pieces", flush=True)
-                progress_upgrade(target, total - left, total, back=True, **last); return 2
+                progress_upgrade(target, total - left, total, file=pfile, back=True, **last); return 2
             print(f"FINDR_UPGRADE paused {total - left}/{total} | {rate:.1f} pieces/s | about {left / max(rate, 1e-6) / 3600:.1f} h of idle time left", flush=True)
-            progress_upgrade(target, total - left, total, rate=round(rate, 2), hours_left=round(left / max(rate, 1e-6) / 3600, 1)); return 2
+            progress_upgrade(target, total - left, total, file=pfile, rate=round(rate, 2), hours_left=round(left / max(rate, 1e-6) / 3600, 1)); return 2
         with torch.no_grad():
             v = emb512(enc, [f"{label(Path(p))}\n{t}"[:1200] for _, t, p in rows]).cpu().numpy().astype(np.float16)
         con.executemany("UPDATE chunks SET emb2=? WHERE id=?", [(x.tobytes(), cid) for x, (cid, _, _) in zip(v, rows)])
         con.commit(); did += len(rows)
         if did % 640 < step:
-            progress_upgrade(target, total - con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL AND emb2 IS NULL").fetchone()[0], total, **last)
+            progress_upgrade(target, total - con.execute(f"SELECT count(*) FROM chunks WHERE emb IS NOT NULL AND emb2 IS NULL{scope}").fetchone()[0], total, file=pfile, **last)
+    if first_only:   # the first pieces are there: the small model keeps answering, the second lane reads these
+        progress_upgrade(target, total, total, file=pfile, first_only=True)
+        print(f"FINDR_UPGRADE first pieces ready ({target}): {total} files, {did} this run in {time.time() - t0:.0f}s", flush=True)
+        return FIRST_DONE
     with con:   # every vector has its counterpart: switch at once (search reloads when the recorded encoder changes)
         con.execute("UPDATE chunks SET emb=emb2 WHERE emb IS NOT NULL")
         con.execute("UPDATE chunks SET emb2=NULL")
@@ -1581,12 +1604,12 @@ def _last_upgrade():
         return {}
 
 
-def progress_upgrade(target, done, total, **kw):
-    """the upgrade's own progress file (the indexing banner stays for indexing)"""
+def progress_upgrade(target, done, total, file="upgrade.json", **kw):
+    """the upgrade's own progress file (the indexing banner stays for indexing); a first-pieces run writes lane2.json"""
     d = os.environ.get("FINDR_DATA")
     if d:
         try:
-            Path(d, "upgrade.json").write_text(json.dumps({"target": target, "done": done, "total": total, "t": time.time(), **kw}), encoding="utf-8")
+            Path(d, file).write_text(json.dumps({"target": target, "done": done, "total": total, "t": time.time(), **kw}), encoding="utf-8")
         except OSError:
             pass
 

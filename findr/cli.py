@@ -195,12 +195,23 @@ def _index_encoder(db=None):
         return ""
 
 
-def _upgrade_why_not(db):
-    """'' when this index should move to the larger meaning model in idle time, else why not"""
+def _lane2():
+    """LANE2=1 (default 0, as in the engine): first pieces by the larger model are kept and filled on slow PCs too"""
+    return os.environ.get("LANE2", "0") == "1"
+
+
+def _too_slow(why):
+    """the upgrade is off because the larger model is slow here (not the person's choice, memory or disk)"""
+    return why.startswith("이 PC에서") or why.startswith("이 기기에서")
+
+
+def _upgrade_why_not(db, first_only=False):
+    """'' when this index should move to the larger meaning model in idle time, else why not.
+    first_only: only each file's first piece is read by the larger model (minutes, not days), so 'too slow' does not count"""
     import shutil
     import sqlite3
     off = paths.HOME / "upgrade_off"
-    if off.exists():
+    if off.exists() and not (first_only and _too_slow(off.read_text(encoding="utf-8").strip())):
         return off.read_text(encoding="utf-8").strip() or "꺼짐"
     if (paths.HOME / "lite").exists():
         return "작은 모델을 직접 고름 (setup --lite)"
@@ -216,7 +227,7 @@ def _upgrade_why_not(db):
         return "디스크 여유 3GB 미만"
     measured = (paths.HOME / "device_check.json").exists() or models.have(UPGRADE_TO)
     # an Apple GPU is measured after the download (cmd_upgrade): asking before it judged a missing model as slow for good
-    if models.gpu()[0] == "mps" and measured and not models.big_ok():   # the self-check chose the small model here (#27)
+    if models.gpu()[0] == "mps" and measured and not models.big_ok() and not first_only:   # the self-check chose the small model here (#27)
         try:
             rate = json.loads((paths.HOME / "device_check.json").read_text()).get("pieces_per_s")
         except (OSError, ValueError):
@@ -228,7 +239,12 @@ def _upgrade_why_not(db):
 def cmd_upgrade(a):
     """idle time on a PC that started on the small meaning model: compute the larger model's vectors bit by bit
     (at most --minutes per run), then switch at once. Search keeps working with the small model until the switch."""
+    first = bool(getattr(a, "first_only", False))
     why = _upgrade_why_not(a.db)
+    if why and _too_slow(why) and (first or _lane2()):
+        # the whole upgrade is off on this PC because it would take too long: the first pieces alone still fit (--first-only,
+        # or LANE2=1 where the engine reads them as a second meaning lane)
+        first = True; why = _upgrade_why_not(a.db, first_only=True)
     if why:
         print(f"큰 모델로 바꾸기: 하지 않음 ({why})")
         # 3: not for this PC (the app stops asking); 4: not now (no index yet, disk full: asked again later)
@@ -236,11 +252,18 @@ def cmd_upgrade(a):
     if not models.have(UPGRADE_TO):
         print("  더 정확한 의미 모델 받는 중 (한 번, 약 1.2GB) ...", flush=True)
         models.pull([UPGRADE_TO])
-    if models.gpu()[0] == "mps" and not models.big_ok():   # measured now, with the model here: slow on this Mac, small stays
+    if not first and models.gpu()[0] == "mps" and not models.big_ok():   # measured now, with the model here: slow on this Mac, small stays
         why = _upgrade_why_not(a.db) or "이 기기에서 큰 모델이 느림"
         (paths.HOME / "upgrade_off").write_text(why, encoding="utf-8")
-        print(f"큰 모델로 바꾸기: 하지 않음 ({why})"); return 3
+        print(f"큰 모델로 바꾸기: 하지 않음 ({why})")
+        if not _lane2():
+            return 3
+        first = True   # LANE2=1: this same run goes on with the first pieces
     env = {**os.environ}
+    if first:   # 6: every first piece is there; 2: more runs needed. Nothing is switched and upgrade.json is not touched
+        print("파일 첫 부분만 큰 모델로 읽기 (작은 모델은 그대로)", flush=True)
+        return subprocess.call([sys.executable, str(paths.CORE / "index.py"), "--root", str(paths.HOME), "--db", str(a.db),
+                                "--upgrade", UPGRADE_TO, "--upgrade-first", "--minutes", str(a.minutes)], env=env, cwd=str(paths.CORE))
     r = subprocess.call([sys.executable, str(paths.CORE / "index.py"), "--root", str(paths.HOME), "--db", str(a.db),
                          "--upgrade", UPGRADE_TO, "--minutes", str(a.minutes)], env=env, cwd=str(paths.CORE))
     st = paths.HOME / "upgrade.json"
@@ -249,7 +272,8 @@ def cmd_upgrade(a):
         if h > UPGRADE_MAX_HOURS:
             (paths.HOME / "upgrade_off").write_text(f"이 PC에서 {h:.0f}시간 걸림: 작은 모델 유지", encoding="utf-8")
             import sqlite3
-            c = sqlite3.connect(str(a.db), timeout=60); c.execute("UPDATE chunks SET emb2=NULL"); c.commit(); c.execute("VACUUM")
+            # LANE2=1: the first pieces' vectors stay (1.5 KB a file) for the engine's second meaning lane
+            c = sqlite3.connect(str(a.db), timeout=60); c.execute("UPDATE chunks SET emb2=NULL" + (" WHERE n!=0" if _lane2() else "")); c.commit(); c.execute("VACUUM")
             print(f"큰 모델로 바꾸기: 그만둠 (남은 시간 {h:.0f}시간 > {UPGRADE_MAX_HOURS}시간)")
     return r
 
@@ -593,6 +617,7 @@ def main(argv=None):
     s.add_argument("--yes", action="store_true", help="묻지 않고 지우기"); s.set_defaults(fn=cmd_uninstall)
     s = sub.add_parser("upgrade", help="쉬는 시간에 더 정확한 의미 모델로 조금씩 바꾸기 (GPU 없는 PC)")
     s.add_argument("--minutes", type=float, default=50, help="이번에 쓸 최대 시간 (다음 번에 이어서)"); s.set_defaults(fn=cmd_upgrade)
+    s.add_argument("--first-only", action="store_true", help="파일마다 첫 부분만 큰 모델로 읽기 (전체 바꾸기가 너무 느린 PC에서도, 바꾸지는 않음)")
     a = ap.parse_args(argv)
     a.db = Path(a.db).expanduser()
     return a.fn(a)
