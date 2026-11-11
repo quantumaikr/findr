@@ -91,6 +91,9 @@ def test_scores_are_cached_by_question_and_text(monkeypatch, tmp_path):
     monkeypatch.setenv("CE_DIR", d)
     monkeypatch.setitem(search.CE, d, (_Tok(), _Count()))
     monkeypatch.setattr(search, "CE_RATE", {})
+    # every candidate scored on every call: the CPU's count (cpu_candidates, 5 at most) is set by the speed measured in the
+    # first call, and a slow test machine (CI) then left the sixth to the unscored tail on the second call
+    monkeypatch.setattr(search, "cpu_candidates", lambda d: 100)
     search.CE_CACHE.clear()
     docs = [{"name": f"{i}.txt", "path": f"/x/{i}.txt", "head": "본문", "summary": ""} for i in range(6)]
     import time
