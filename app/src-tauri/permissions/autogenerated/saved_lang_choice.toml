@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-saved-lang-choice"
+description = "Enables the saved_lang_choice command without any pre-configured scope."
+commands.allow = ["saved_lang_choice"]
+
+[[permission]]
+identifier = "deny-saved-lang-choice"
+description = "Denies the saved_lang_choice command without any pre-configured scope."
+commands.deny = ["saved_lang_choice"]

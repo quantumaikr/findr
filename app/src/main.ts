@@ -16,7 +16,16 @@ const pickLang = (): Lang => { try { const v = localStorage.getItem('findr.lang'
 let LANG = pickLang()
 document.documentElement.lang = LANG
 const tellLang = () => { invoke('set_lang', { lang: LANG }).catch(() => {}) }   // the app's own messages and menu follow the same language
-tellLang()
+// a choice made on the search page (another origin, its own storage) is kept by the app in the data folder: it wins here,
+// else this screen's own choice is told to the app. (Before, opening this screen turned an English menu back to Korean.)
+invoke<string>('saved_lang_choice').then(v => {
+  let kept = false
+  if ((v === 'ko' || v === 'en') && v !== LANG) {
+    try { localStorage.setItem('findr.lang', v); kept = localStorage.getItem('findr.lang') === v } catch { /* private storage off */ }
+  }
+  if (kept) location.reload()   // only when kept: with storage off a reload would come back to the same place, again and again
+  else if (v !== LANG) tellLang()
+}).catch(() => tellLang())
 const L = (ko: string, en: string) => LANG === 'ko' ? ko : en   // tables below are functions so that a language change redraws them
 const GPU = (): Record<string, string> => ({ nvidia: 'NVIDIA GPU', apple: L('Apple 칩', 'Apple silicon'), cpu: L('GPU 없음 (CPU)', 'No GPU (CPU)') })
 let unlisten: UnlistenFn[] = []
