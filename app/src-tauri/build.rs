@@ -21,6 +21,7 @@ fn main() {
         "set_upgrade",
         "read_progress",
         "set_pause",
+        "set_lang",
     ])))
     .expect("failed to run tauri-build");
 }

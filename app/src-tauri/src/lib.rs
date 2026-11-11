@@ -28,6 +28,45 @@ static REFRESHER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 static PERSON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static BG_RUN: Mutex<Option<u32>> = Mutex::new(None);   // the background refresh or deep run now going
 
+// the language of the messages and the menu made here: the system's at the start, then what the screens say (`set_lang`)
+static KOREAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Korean for a Korean system, English for everyone else (LC_ALL, LC_MESSAGES, LANG; a PC that sets none is told by the screens)
+fn system_korean() -> bool {
+    ["LC_ALL", "LC_MESSAGES", "LANG"].iter().filter_map(|k| std::env::var(k).ok()).find(|v| !v.is_empty())
+        .map(|v| v.to_lowercase().starts_with("ko")).unwrap_or(false)
+}
+
+/// the message in the app's language
+fn l(ko: &str, en: &str) -> String {
+    if KOREAN.load(std::sync::atomic::Ordering::Relaxed) { ko.to_string() } else { en.to_string() }
+}
+
+/// the screens tell the language the person chose ('ko' or 'en'); the menu is made again in it
+#[tauri::command]
+fn set_lang(app: AppHandle, lang: String) {
+    let ko = lang == "ko";
+    if KOREAN.swap(ko, std::sync::atomic::Ordering::Relaxed) != ko {
+        let _ = set_app_menu(&app);
+    }
+}
+
+fn set_app_menu(h: &AppHandle) -> tauri::Result<()> {
+    let search = MenuItem::with_id(h, "search", l("검색", "Search"), true, Some("CmdOrCtrl+F"))?;
+    let settings = MenuItem::with_id(h, "settings", l("폴더와 설정", "Folders and Settings"), true, Some("CmdOrCtrl+,"))?;
+    let data = MenuItem::with_id(h, "data", l("데이터 폴더 열기", "Open Data Folder"), true, None::<&str>)?;
+    let quit = MenuItem::with_id(h, "quit", l("끝내기", "Quit"), true, Some("CmdOrCtrl+Q"))?;
+    let sep = PredefinedMenuItem::separator(h)?;
+    let file = Submenu::with_items(h, "findr", true, &[&search, &settings, &data, &sep, &quit])?;
+    let edit = Submenu::with_items(h, l("편집", "Edit"), true, &[
+        &PredefinedMenuItem::undo(h, None)?, &PredefinedMenuItem::redo(h, None)?, &PredefinedMenuItem::separator(h)?,
+        &PredefinedMenuItem::cut(h, None)?, &PredefinedMenuItem::copy(h, None)?, &PredefinedMenuItem::paste(h, None)?,
+        &PredefinedMenuItem::select_all(h, None)?,
+    ])?;
+    h.set_menu(Menu::with_items(h, &[&file, &edit])?)?;
+    Ok(())
+}
+
 fn person_waiting() -> bool {
     PERSON.load(std::sync::atomic::Ordering::SeqCst)
 }
@@ -520,7 +559,7 @@ fn stream(app: &AppHandle, event: &str, step: &str, mut cmd: Command) -> bool {
     let mut child = match child {
         Ok(c) => c,
         Err(e) => {
-            let _ = app.emit(event, Line { step: step.into(), line: format!("실행하지 못했습니다: {e}") });
+            let _ = app.emit(event, Line { step: step.into(), line: l(&format!("실행하지 못했습니다: {e}"), &format!("Could not run: {e}")) });
             return false;
         }
     };
@@ -631,10 +670,10 @@ fn setup_runtime(app: AppHandle) {
         let mut c = command(uv());
         c.args(["venv", "--python", "3.12", "--allow-existing"]).arg(runtime());
         if !stream(&app, "setup", "env", c) {
-            return done(false, "파이썬 환경을 만들지 못했습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.");
+            return done(false, &l("파이썬 환경을 만들지 못했습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.", "Could not create the Python environment. Check the internet connection and try again."));
         }
         // 2. PyTorch for this PC
-        let _ = app.emit("setup", Line { step: "torch".into(), line: "이 PC에 맞는 연산 라이브러리를 고르는 중".into() });
+        let _ = app.emit("setup", Line { step: "torch".into(), line: l("이 PC에 맞는 연산 라이브러리를 고르는 중", "Choosing the compute library for this PC") });
         let mut c = command(uv());
         c.args(["pip", "install", "--python"]).arg(python()).args(["torch", "torchvision"]);
         match gpu() {
@@ -643,18 +682,18 @@ fn setup_runtime(app: AppHandle) {
             _ => {}
         }
         if !stream(&app, "setup", "torch", c) {
-            return done(false, "PyTorch를 설치하지 못했습니다. 인터넷 연결과 디스크 여유 공간을 확인해 주세요.");
+            return done(false, &l("PyTorch를 설치하지 못했습니다. 인터넷 연결과 디스크 여유 공간을 확인해 주세요.", "Could not install PyTorch. Check the internet connection and the free disk space."));
         }
         // 3. the engine (copied out of the app first: the app folder can be read-only)
-        let _ = app.emit("setup", Line { step: "engine".into(), line: "검색 엔진 파일을 준비하는 중".into() });
+        let _ = app.emit("setup", Line { step: "engine".into(), line: l("검색 엔진 파일을 준비하는 중", "Preparing the search engine files") });
         let src = match engine_source(&app) {
             Some(p) => p,
-            None => return done(false, "앱 안에서 검색 엔진 파일을 찾지 못했습니다. 앱을 다시 설치해 주세요."),
+            None => return done(false, &l("앱 안에서 검색 엔진 파일을 찾지 못했습니다. 앱을 다시 설치해 주세요.", "The search engine files are missing from the app. Please install the app again.")),
         };
         let dst = home().join("engine-src");
         let _ = std::fs::remove_dir_all(&dst);
         if let Err(e) = copy_dir(&src, &dst) {
-            return done(false, &format!("엔진 파일을 준비하지 못했습니다: {e}"));
+            return done(false, &l(&format!("엔진 파일을 준비하지 못했습니다: {e}"), &format!("Could not prepare the engine files: {e}")));
         }
         // an update needs nothing new most of the time: from uv's cache first, so an outage of the download servers does not
         // stop it (2026-11-08: GitHub answered 504 for a dependency wheel and the engine stayed on the old version)
@@ -671,17 +710,17 @@ fn setup_runtime(app: AppHandle) {
             .args(["pip", "install", "--reinstall-package", "findr-ai", "--python"]).arg(python()).arg(&dst);
         if !stream(&app, "setup", "engine", off) && !stream(&app, "setup", "engine", c)
             && !stream(&app, "setup", "engine", c2) {
-            return done(false, "검색 엔진을 설치하지 못했습니다.");
+            return done(false, &l("검색 엔진을 설치하지 못했습니다.", "Could not install the search engine."));
         }
         // 4. models for this PC
-        let _ = app.emit("setup", Line { step: "models".into(), line: "이 PC에 맞는 모델을 고르는 중".into() });
+        let _ = app.emit("setup", Line { step: "models".into(), line: l("이 PC에 맞는 모델을 고르는 중", "Choosing the models for this PC") });
         let mut c = command(python());
         c.args(["-m", "findr", "setup"]);
         if !stream(&app, "setup", "models", c) {
-            return done(false, "구성 요소를 받거나 불러오지 못했습니다. 아래 '자세한 기록'의 마지막 줄을 확인하고 다시 시도해 주세요.");
+            return done(false, &l("구성 요소를 받거나 불러오지 못했습니다. 아래 '자세한 기록'의 마지막 줄을 확인하고 다시 시도해 주세요.", "Could not download or load the components. Check the last line of 'Details' below and try again."));
         }
         let _ = std::fs::write(ready_mark(), engine_stamp(&app));
-        done(true, "준비가 끝났습니다.");
+        done(true, &l("준비가 끝났습니다.", "Setup is complete."));
     });
 }
 
@@ -703,7 +742,7 @@ fn engine_source(app: &AppHandle) -> Option<PathBuf> {
 fn ensure_vc_runtime(app: &AppHandle) -> Result<(), String> {
     let say = |line: &str| { let _ = app.emit("setup", Line { step: "vcrt".into(), line: line.into() }); };
     if !cfg!(windows) {
-        say("필요 없음");
+        say(&l("필요 없음", "Not needed"));
         return Ok(());
     }
     let version = || -> (u32, u32) {
@@ -715,10 +754,14 @@ fn ensure_vc_runtime(app: &AppHandle) -> Result<(), String> {
     };
     let (ma, mi) = version();
     if ma > 14 || (ma == 14 && mi >= 40) {
-        say(&format!("Visual C++ 런타임 {ma}.{mi}: 준비됨"));
+        say(&l(&format!("Visual C++ 런타임 {ma}.{mi}: 준비됨"), &format!("Visual C++ runtime {ma}.{mi}: ready")));
         return Ok(());
     }
-    say(if ma == 0 { "Visual C++ 런타임이 없어 설치합니다 (권한 확인 창이 뜨면 '예')" } else { "Visual C++ 런타임이 오래되어 업데이트합니다 (권한 확인 창이 뜨면 '예')" });
+    say(&if ma == 0 {
+        l("Visual C++ 런타임이 없어 설치합니다 (권한 확인 창이 뜨면 '예')", "Installing the Visual C++ runtime, which is missing (choose 'Yes' if Windows asks for permission)")
+    } else {
+        l("Visual C++ 런타임이 오래되어 업데이트합니다 (권한 확인 창이 뜨면 '예')", "Updating the Visual C++ runtime, which is too old (choose 'Yes' if Windows asks for permission)")
+    });
     let exe = std::env::temp_dir().join("vc_redist.x64.exe");
     let script = format!(
         "Invoke-WebRequest -UseBasicParsing -Uri https://aka.ms/vs/17/release/vc_redist.x64.exe -OutFile '{0}';          Start-Process -FilePath '{0}' -ArgumentList '/install','/quiet','/norestart' -Verb RunAs -Wait",
@@ -726,10 +769,10 @@ fn ensure_vc_runtime(app: &AppHandle) -> Result<(), String> {
     let _ = command("powershell").args(["-NoProfile", "-Command", &script]).status();
     let (ma, mi) = version();
     if ma > 14 || (ma == 14 && mi >= 40) {
-        say(&format!("Visual C++ 런타임 {ma}.{mi}: 설치됨"));
+        say(&l(&format!("Visual C++ 런타임 {ma}.{mi}: 설치됨"), &format!("Visual C++ runtime {ma}.{mi}: installed")));
         Ok(())
     } else {
-        Err("Windows 구성 요소(Visual C++ 런타임)를 설치하지 못했습니다. https://aka.ms/vs/17/release/vc_redist.x64.exe 를 받아 설치한 뒤 다시 시도해 주세요.".into())
+        Err(l("Windows 구성 요소(Visual C++ 런타임)를 설치하지 못했습니다. https://aka.ms/vs/17/release/vc_redist.x64.exe 를 받아 설치한 뒤 다시 시도해 주세요.", "Could not install a Windows component (the Visual C++ runtime). Download and install https://aka.ms/vs/17/release/vc_redist.x64.exe , then try again."))
     }
 }
 
@@ -797,7 +840,7 @@ fn set_pause(on: bool) -> Result<(), String> {
 #[tauri::command]
 fn start_index(app: AppHandle, folders: Vec<String>, deep: Option<bool>) {
     thread::spawn(move || {
-        let _ = app.emit("index", Line { step: "index".into(), line: "앞선 색인 작업이 끝나기를 기다리는 중".into() });
+        let _ = app.emit("index", Line { step: "index".into(), line: l("앞선 색인 작업이 끝나기를 기다리는 중", "Waiting for the earlier indexing run to finish") });
         PERSON.store(true, std::sync::atomic::Ordering::SeqCst);
         stop_upgrade(); // the person's own run comes first (the upgrade keeps what it computed)
         if let Some(pid) = *BG_RUN.lock().unwrap() {
@@ -820,7 +863,7 @@ fn start_index(app: AppHandle, folders: Vec<String>, deep: Option<bool>) {
         if deep.unwrap_or(false) && ok {
             let _ = std::fs::write(home().join(".deep-done"), VERSION);
         }
-        let _ = app.emit("index-done", Done { ok, message: if ok { "색인을 마쳤습니다.".into() } else { "색인 중 오류가 있었습니다.".into() } });
+        let _ = app.emit("index-done", Done { ok, message: if ok { l("색인을 마쳤습니다.", "Indexing is complete.") } else { l("색인 중 오류가 있었습니다.", "There was an error during indexing.") } });
     });
 }
 
@@ -863,7 +906,7 @@ fn start_engine(engine: State<'_, Engine>, photo: bool) -> Result<String, String
     *engine.0.lock().unwrap() = Some(child);
     if !ready {
         stop(&engine);
-        return Err("검색 엔진이 시작되지 않았습니다. 데이터 폴더의 logs/engine.log를 확인해 주세요.".into());
+        return Err(l("검색 엔진이 시작되지 않았습니다. 데이터 폴더의 logs/engine.log를 확인해 주세요.", "The search engine did not start. Check logs/engine.log in the data folder."));
     }
     start_refresher();
     let key = std::fs::read_to_string(home().join(".password")).map_err(|e| e.to_string())?;
@@ -903,7 +946,7 @@ fn stop(engine: &Engine) {
 fn open_path(app: AppHandle, path: String, reveal: bool) -> Result<(), String> {
     let p = PathBuf::from(&path);
     if !p.exists() {
-        return Err("파일이 없습니다. 옮겨졌거나 지워졌을 수 있습니다.".into());
+        return Err(l("파일이 없습니다. 옮겨졌거나 지워졌을 수 있습니다.", "The file is not there. It may have been moved or deleted."));
     }
     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     const RUNS: [&str; 18] = ["exe", "bat", "cmd", "com", "msi", "ps1", "vbs", "vbe", "js", "jse", "wsf", "scr", "lnk", "sh", "app", "command", "jar", "reg"];
@@ -934,7 +977,7 @@ fn uninstall_data(engine: State<'_, Engine>) -> Result<String, String> {
     let models = std::fs::read_dir(h.join("models")).map(|mut d| d.next().is_some()).unwrap_or(false);
     let marks = models || ["index.db", "runtime", "progress.json", "folders.json"].iter().any(|m| h.join(m).exists());
     if !((name == "findr" || name == ".findr" || std::env::var("FINDR_HOME").is_ok()) && marks) {
-        return Err(format!("findr의 데이터 폴더가 아니라서 지우지 않았습니다: {}", h.display()));
+        return Err(l(&format!("findr의 데이터 폴더가 아니라서 지우지 않았습니다: {}", h.display()), &format!("Nothing was deleted: this is not findr's data folder: {}", h.display())));
     }
     // on Windows the app is installed into this same folder (%LOCALAPPDATA%\findr): its own files stay for the system's
     // uninstaller, which removes them; removing the running app and its uninstaller here left a broken install (11/11)
@@ -980,7 +1023,7 @@ fn uninstall_data(engine: State<'_, Engine>) -> Result<String, String> {
         }
         thread::sleep(std::time::Duration::from_millis(500));
     }
-    Err(format!("일부 파일을 지우지 못했습니다 ({last}). 앱을 닫은 뒤 이 폴더를 지워 주세요: {}", h.display()))
+    Err(l(&format!("일부 파일을 지우지 못했습니다 ({last}). 앱을 닫은 뒤 이 폴더를 지워 주세요: {}", h.display()), &format!("Some files could not be deleted ({last}). Close the app, then delete this folder: {}", h.display())))
 }
 
 #[tauri::command]
@@ -1010,19 +1053,8 @@ pub fn run() {
             if let Some(w) = app.get_webview_window("main") {
                 *app.state::<AppUrl>().0.lock().unwrap() = w.url().ok();
             }
-            let h = app.handle();
-            let search = MenuItem::with_id(h, "search", "검색", true, Some("CmdOrCtrl+F"))?;
-            let settings = MenuItem::with_id(h, "settings", "폴더와 설정", true, Some("CmdOrCtrl+,"))?;
-            let data = MenuItem::with_id(h, "data", "데이터 폴더 열기", true, None::<&str>)?;
-            let quit = MenuItem::with_id(h, "quit", "끝내기", true, Some("CmdOrCtrl+Q"))?;
-            let sep = PredefinedMenuItem::separator(h)?;
-            let file = Submenu::with_items(h, "findr", true, &[&search, &settings, &data, &sep, &quit])?;
-            let edit = Submenu::with_items(h, "편집", true, &[
-                &PredefinedMenuItem::undo(h, None)?, &PredefinedMenuItem::redo(h, None)?, &PredefinedMenuItem::separator(h)?,
-                &PredefinedMenuItem::cut(h, None)?, &PredefinedMenuItem::copy(h, None)?, &PredefinedMenuItem::paste(h, None)?,
-                &PredefinedMenuItem::select_all(h, None)?,
-            ])?;
-            app.set_menu(Menu::with_items(h, &[&file, &edit])?)?;
+            KOREAN.store(system_korean(), std::sync::atomic::Ordering::Relaxed);
+            set_app_menu(app.handle())?;
             Ok(())
         })
         .on_menu_event(|app, e| match e.id().as_ref() {
@@ -1034,7 +1066,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_state, setup_runtime, list_roots, start_index, start_engine, stop_engine, open_path, open_data_dir, save_folders, load_folders,
-            upgrade_state, set_upgrade, read_progress, set_pause, uninstall_data, quit_app
+            upgrade_state, set_upgrade, read_progress, set_pause, uninstall_data, quit_app, set_lang
         ])
         .build(tauri::generate_context!())
         .expect("findr 창을 여는 중 오류가 났습니다")

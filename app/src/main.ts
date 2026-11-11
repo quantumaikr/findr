@@ -15,6 +15,8 @@ type Lang = 'ko' | 'en'
 const pickLang = (): Lang => { try { const v = localStorage.getItem('findr.lang'); if (v === 'ko' || v === 'en') return v } catch { /* no storage */ } return navigator.language.startsWith('ko') ? 'ko' : 'en' }
 let LANG = pickLang()
 document.documentElement.lang = LANG
+const tellLang = () => { invoke('set_lang', { lang: LANG }).catch(() => {}) }   // the app's own messages and menu follow the same language
+tellLang()
 const L = (ko: string, en: string) => LANG === 'ko' ? ko : en   // tables below are functions so that a language change redraws them
 const GPU = (): Record<string, string> => ({ nvidia: 'NVIDIA GPU', apple: L('Apple 칩', 'Apple silicon'), cpu: L('GPU 없음 (CPU)', 'No GPU (CPU)') })
 let unlisten: UnlistenFn[] = []
@@ -344,6 +346,7 @@ async function settings(s: AppState) {
   document.getElementById('lang')!.onchange = ev => {   // saved, then the screen is drawn again in the chosen language
     LANG = (ev.target as HTMLSelectElement).value === 'ko' ? 'ko' : 'en'; document.documentElement.lang = LANG
     try { localStorage.setItem('findr.lang', LANG) } catch { /* private storage off */ }
+    tellLang()
     route()
   }
   upgradeCard()

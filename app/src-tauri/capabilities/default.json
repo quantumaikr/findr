@@ -23,6 +23,7 @@
     "allow-upgrade-state",
     "allow-set-upgrade",
     "allow-read-progress",
-    "allow-set-pause"
+    "allow-set-pause",
+    "allow-set-lang"
   ]
 }
