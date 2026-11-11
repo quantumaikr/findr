@@ -3,6 +3,8 @@
 ## 0.2.21 (2026-11-11)
 - Windows: 메뉴의 '검색'과 '폴더와 설정'이 빈 흰 화면만 띄우던 문제 수정(#164)
 - 언어: 검색 화면에서 English로 바꾸면 앱 메뉴와 알림도 따라 바뀜. 앱 화면을 열어도 검색 화면에서 고른 언어가 유지됨(#164)
+- 한 줄 설치: Windows는 `irm https://raw.githubusercontent.com/quantumaikr/findr/main/get-app.ps1 | iex`, macOS·Linux는 `curl -fsSL https://raw.githubusercontent.com/quantumaikr/findr/main/get-app.sh | sh`. 받은 파일이 배포된 파일과 같은지(SHA-256) 확인한 뒤 설치하고, 브라우저로 받을 때 뜨는 서명 경고가 대개 나오지 않음. 보안 설정은 바꾸지 않음(#166)
+- 배포마다 검증 파일(SHA256SUMS.txt)을 함께 올림. macOS 앱 전체에 임시 서명을 붙여 '손상됨' 오류를 막음(#166)
 
 ## 0.2.20 (2026-11-11)
 한국어와 영어를 모두 쓰고, 처음 색인할 때 진행 막대가 실제로 움직이며, 같은 질문에는 늘 같은 답을 줍니다.
