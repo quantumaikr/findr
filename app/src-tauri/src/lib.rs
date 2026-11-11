@@ -178,9 +178,23 @@ fn stop_upgrade() {
 
 /// a PC that started on the small meaning model moves to the larger one while nobody uses it (plugged in, 5 minutes
 /// without input), 10 minutes at a time; search keeps working with the small model until the switch
+/// the upgrade is off because the larger model is slow on this PC (cli.py _too_slow): not the person's choice. The run
+/// is still asked in idle time, since it may read each file's first piece alone (the second meaning lane)
+fn slow_off(h: &std::path::Path) -> bool {
+    std::fs::read_to_string(h.join("upgrade_off")).map(|s| s.starts_with("이 PC에서") || s.starts_with("이 기기에서")).unwrap_or(false)
+}
+
 fn start_upgrader() {
     thread::spawn(|| {
         let mut last_run = std::time::Instant::now();
+        let mut filled: Option<std::time::Instant> = None; // every first piece was there: looked at again a day later (new files)
+        {
+            // judged too slow by an earlier version, which then stopped asking: asked once more by this one
+            let h = home();
+            if slow_off(&h) && std::fs::read_to_string(h.join(".upgrade-done")).map(|v| v != VERSION).unwrap_or(false) {
+                let _ = std::fs::remove_file(h.join(".upgrade-done"));
+            }
+        }
         thread::sleep(std::time::Duration::from_secs(900));
         loop {
             let h = home();
@@ -188,7 +202,8 @@ fn start_upgrader() {
                 Some(s) => s >= 300,
                 None => last_run.elapsed().as_secs() >= 3000, // cannot tell: at most one short run an hour
             };
-            if h.join(".deep-done").exists() && !h.join(".upgrade-done").exists() && !h.join("upgrade_off").exists() && idle && !on_battery() {
+            let rested = filled.map(|t| t.elapsed().as_secs() >= 86400).unwrap_or(true);
+            if h.join(".deep-done").exists() && !h.join(".upgrade-done").exists() && (!h.join("upgrade_off").exists() || slow_off(&h)) && rested && idle && !on_battery() {
                 take_index_turn();
                 if person_waiting() || on_battery() {
                     give_index_turn(); // waited for the turn: the person's run first, and still on mains power
@@ -234,6 +249,9 @@ fn start_upgrader() {
                 // tried again later: exit code 1 used to end the upgrade for good and hide its switch in the settings
                 if code == Some(0) || code == Some(3) {
                     let _ = std::fs::write(h.join(".upgrade-done"), VERSION);
+                }
+                if code == Some(6) {
+                    filled = Some(std::time::Instant::now());
                 }
             }
             thread::sleep(std::time::Duration::from_secs(600));

@@ -452,13 +452,16 @@ XFAIR_DOCS = {".pdf", ".hwp", ".hwpx", ".doc", ".docx", ".ppt", ".pptx", ".xls",
 XFAIR_CUE = re.compile(r"영어|영문|english|원문|외국어", re.I)
 
 
-# LANE2 (default 0: off, answers exactly as before): a second meaning lane on a PC indexed with the small encoder. The
+# LANE2 (1 on, 0 off; run by findr it is on where the PC has 12 GB of memory or more, cli._lane2; run alone it is off): a
+# second meaning lane on a PC indexed with the small encoder. The
 # idle-time upgrade (index.py upgrade) fills each file's first piece with the larger encoder's vector first (chunks.emb2);
 # long before the whole index can switch, those first pieces alone are read as one more candidate list. Measured on a
 # small-encoder index of 4,771 real files (45 questions): answer among the first 10 candidates 22 -> 33; on virtual PCs
 # (2,000 questions) 1,530 -> 1,850. Taking turns with the fused list did better than adding one more 1/(60+rank) vote.
 # Costs: the larger encoder is loaded beside the small one at the first question (memory, seconds once) and reads every
 # question (one short text).
+# On a real Mac (Apple GPU, 57,209 files, first pieces filled for 21%): #1 11 -> 12 and in the first 3 14 -> 16 of 20,
+# nothing worse, the same time per question (1.81 s), warm-up 5.2 -> 8.8 s.
 LANE2_DIM = 256    # the first 256 of the larger encoder's dimensions (it is trained to be cut there): 1 KB a file in memory
 LANE2_TOP = 100    # how many first pieces the lane offers; the measured gain is within the first 100
 LANE2_EPS = 1e-7   # 'right after': below the fused score it follows by less than any rank step (1/160 - 1/161 = 4e-5)
