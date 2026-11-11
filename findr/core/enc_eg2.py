@@ -66,10 +66,19 @@ class EG2:
         # Apple GPU: float32 (M1 has no bfloat16 hardware, and float16 overflows in this model). CPU: float32 as well. The
         # config's bfloat16 runs at 0.1 pieces/s on a 4-core laptop CPU without bf16 support (#66); on a recent CPU the two
         # are within 10% (6.5 vs 5.9 pieces/s on 4 threads)
-        kw = {"model_kwargs": {"torch_dtype": torch.float32}} if device in ("mps", "cpu") else {}
-        self.st = SentenceTransformer(PATH, device=device, **kw); self.st.max_seq_length = max_len; self.dev = device
+        # The towers go first, then the text part alone is widened to float32: widening the whole model and dropping after
+        # made a CPU engine peak at 3 GB more and keep 2.4 GB (11/11); this order peaks at the stored 16-bit size
+        if device in ("mps", "cpu"):
+            self.st = SentenceTransformer(PATH, device="cpu")
+            drop_unused_towers(self.st)
+            self.st.float()
+            if device == "mps":
+                self.st.to(device)
+        else:
+            self.st = SentenceTransformer(PATH, device=device)
+            drop_unused_towers(self.st)
+        self.st.max_seq_length = max_len; self.dev = device
         self.bs = int(os.environ.get("FINDR_BATCH") or (16 if device == "mps" else 64))
-        drop_unused_towers(self.st)
 
     @torch.no_grad()
     def emb(self, texts, bs=None, query=True):
