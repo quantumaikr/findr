@@ -1369,13 +1369,14 @@ def gone_check(con, roots, now=None):
     that hold indexed files are looked at, and only those whose time changed since the last check are listed (a folder's
     time moves when a file in it is added, removed or renamed). A folder that is not there while the root is: deleted with
     its files. Kept, as in a full run: a root that is not there (a drive unplugged), a folder that cannot be read, and a
-    root that would lose more than half of its files at once (a bad mount, not a deletion). Returns the counts it prints"""
+    root that would lose more than half of its files at once (a bad mount, not a deletion), and a file that looks like one
+    that arrived in a listed folder (same size, time and format: a move the next full run pairs). Returns the counts it prints"""
     import posixpath
     t_run = time.time()
     t0 = t_run if now is None else now   # the stamp kept for the next check (tests pin it)
     con.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
     last = float((con.execute("SELECT value FROM meta WHERE key='gone_at'").fetchone() or ["0"])[0])
-    st_ = {"folders": 0, "listed": 0, "removed": 0, "kept": 0}
+    st_ = {"folders": 0, "listed": 0, "removed": 0, "kept": 0, "waiting": 0}
     for root in roots:
         if not os.path.isdir(_long(str(root))):
             print(f"FINDR_ROOT_MISSING {root} (kept as indexed)", flush=True)
@@ -1385,7 +1386,7 @@ def gone_check(con, roots, now=None):
         by_dir = {}
         for fid, p in rows:
             by_dir.setdefault(posixpath.dirname(p), []).append((fid, posixpath.basename(p)))
-        gone = []
+        gone, arrived = [], set()   # arrived: (size, whole seconds, format) of files new to listed folders
         for d, files in by_dir.items():
             st_["folders"] += 1
             try:
@@ -1399,6 +1400,22 @@ def gone_check(con, roots, now=None):
                 continue   # cannot be read now (permission, a share that dropped): kept
             st_["listed"] += 1
             gone += [fid for fid, n in files if n not in names]
+            for n in names - {n for _, n in files}:   # new here: maybe a file of the index that was moved or renamed
+                try:
+                    s_ = os.stat(_long(str(Path(d) / n)))
+                except OSError:
+                    continue
+                if _stat.S_ISREG(s_.st_mode) and s_.st_size:
+                    arrived.add((s_.st_size, int(round(s_.st_mtime)), real_ext(Path(n))))
+        if arrived and gone:
+            # a gone file that looks like one that arrived is likely moved: the next full run pairs the two and keeps what
+            # was read from it (reuse_moved); until then search leaves it out of answers when it is not on disk (#170)
+            qm = ",".join("?" * len(gone))
+            look = {fid: (size, int(round(mt or 0)), ext) for fid, size, mt, ext in
+                    con.execute(f"SELECT id, size, mtime, ext FROM files WHERE id IN ({qm})", gone)}
+            wait = [fid for fid in gone if look.get(fid) in arrived]
+            st_["waiting"] += len(wait)
+            gone = [fid for fid in gone if fid not in set(wait)]
         if gone and len(gone) > len(rows) // 2:
             print(f"FINDR_GONE kept {len(gone)} of {len(rows)} files under {root} (too many at once to be deletions)", flush=True)
             st_["kept"] += len(gone)

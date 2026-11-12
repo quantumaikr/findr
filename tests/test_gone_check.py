@@ -94,3 +94,35 @@ def test_files_outside_the_roots_are_not_touched(tmp_path):
     fb[0].unlink()
     index.gone_check(con, [a])   # only root one is checked
     assert "x.pdf" in _left(con) and _left(con).count("x.pdf") == 2
+
+
+def test_a_moved_file_waits_for_the_full_run(tmp_path):
+    """--gone-only does not see new files: a renamed file dropped there would lose what was read from it, which the next
+    full run keeps (reuse_moved). One that looks like a file that arrived is left for that run"""
+    import subprocess, sys
+    root = tmp_path / "docs"; root.mkdir()
+    (root / "보고.txt").write_text("3분기 매출 보고", encoding="utf-8"); (root / "기타.txt").write_text("다른 내용입니다", encoding="utf-8")
+    db = tmp_path / "i.db"
+    env = {**os.environ, "FINDR_OCR": "0", "FINDR_HOME": str(tmp_path), "FINDR_DATA": str(tmp_path), "PYTHONIOENCODING": "utf-8"}
+    run = lambda *x: subprocess.run([sys.executable, str(Path(index.__file__)), "--root", str(root), "--db", str(db), "--no-embed", *x],
+                                    env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+    assert run().returncode == 0
+    con = sqlite3.connect(db); fid = con.execute("SELECT id FROM files WHERE name='보고.txt'").fetchone()[0]; con.close()
+    (root / "보고.txt").rename(root / "보고_최종.txt")
+    later = time.time() + 120; os.utime(root, (later, later))   # the folder's time moves past the last check
+    con = sqlite3.connect(db); st = index.gone_check(con, [root]); con.close()
+    assert st["waiting"] == 1 and st["removed"] == 0
+    r = run()
+    assert "FINDR_MOVED 1" in r.stdout
+    con = sqlite3.connect(db)
+    assert con.execute("SELECT id FROM files WHERE name='보고_최종.txt'").fetchone()[0] == fid
+
+
+def test_a_deleted_file_still_leaves_when_another_arrives(tmp_path):
+    fs = _tree(tmp_path)
+    con = _db(fs)
+    for fid, p in con.execute("SELECT id, path FROM files").fetchall():
+        st_ = os.stat(p); con.execute("UPDATE files SET size=?, mtime=?, ext=? WHERE id=?", (st_.st_size, st_.st_mtime, Path(p).suffix, fid))
+    fs[0].unlink(); (tmp_path / "a" / "new.pdf").write_text("a different, longer file")
+    st = index.gone_check(con, [tmp_path])
+    assert st["removed"] == 1 and st["waiting"] == 0
