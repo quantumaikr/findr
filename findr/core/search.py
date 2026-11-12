@@ -1199,10 +1199,14 @@ class Finder:
                             r["agree2"] = round(a2_, 3)
                             if a2_ >= float(os.environ.get("EPI_AGREE2", "0.3")):   # a second look needs a higher bar than the first
                                 agree = max(agree, a2_ if a2_ >= EPI_AGREE else agree)
-                        if all(c_.get("_lift") for c_, _ in pairs) and agree < EPI_LIFT:
-                            # the PC marks only some received files: a marked file must be close to the best by content to go first,
-                            # and an unmarked one is never 'not what you remember'
-                            r["results"] = before_; r["episodic_lift"] = False
+                        if all(c_.get("_lift") for c_, _ in pairs):
+                            # the PC marks only some received files: each marked file goes first only when it is close to the best
+                            # by content, the rest keep the content order, and an unmarked file is never 'not what you remember'
+                            top_ = max(sc_.values())
+                            up_ = [f_ for f_ in order if sc_[f_] >= EPI_LIFT * top_][:k]
+                            r["results"] = (self.files_out(up_) + [x for x in before_ if x["fid"] not in set(up_)])[:k]
+                            r["episodic_lift"] = len(up_)
+                            r["episodic_ok"] = bool(up_)
                         elif agree >= EPI_AGREE or max(sc_.values()) < EPI_G or (K_ and r["epi_rank"] <= K_):   # weak content evidence cannot overrule the history
                             r["episodic_ok"] = True   # history and content point to the same file
                         else:
