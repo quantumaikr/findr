@@ -512,6 +512,13 @@ def main():
     if reused:
         print(f"FINDR_MOVED {len(reused)} files moved or renamed: their text was kept, only their vectors are made again", flush=True)
     _P["files"] = con.execute("SELECT count(*) FROM files WHERE tier>0").fetchone()[0]
+    if os.environ.get("FINDR_ORIGIN", "1") != "0":   # where files came from (mail, messenger, a site), as the PC recorded it
+        try:
+            import origin
+            t1 = time.time(); got = origin.collect(con)
+            print(f"FINDR_ORIGIN {json.dumps(got)} {time.time() - t1:.1f}s", flush=True)
+        except Exception as e:   # a record the PC keeps is a bonus: never a reason for the index run to fail
+            print(f"FINDR_ORIGIN skipped ({type(e).__name__})", flush=True)
     if not a.no_embed:   # stage 1b: a meaning vector from each file's name and folders (natural-language search on names)
         print("FINDR_STAGE namevec", flush=True); embed(con, a.model, names_only=True)
     if a.names_only:   # 2026-11-08 (#106): on battery the app still shows new files by name; their content stays pending

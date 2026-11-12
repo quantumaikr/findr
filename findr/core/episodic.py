@@ -278,8 +278,14 @@ def _traces(con):
     if key not in _CACHE or _CACHE[key][0] != sig:
         ev = con.execute("SELECT file, type, time, person, source FROM events ORDER BY time").fetchall()
         dm = con.execute("SELECT file, author, last_by, revision FROM docmeta").fetchall() if _has(con, "docmeta") else []
-        by_type, by_who, mods, last_mod = {}, {}, {}, {}
+        by_type, by_who, mods, last_mod, by_pc = {}, {}, {}, {}, {}
         for f, t, tm, p, src in ev:   # grouped once: by type (time-sorted), by person/source string, modification counts
+            if (src or "").startswith("pc:"):   # where the PC says a file came from (origin.py): partial, kept apart
+                g = by_pc.setdefault(t, {"files": set(), "times": [], "tf": [], "when": {}})
+                g["files"].add(f)
+                if tm:   # time-sorted (the query orders by time) for date ranges; files without a time are only in 'files'
+                    g["times"].append(tm); g["tf"].append(f); g["when"][f] = max(tm, g["when"].get(f, ""))
+                continue
             by_type.setdefault(t, ([], []))
             by_type[t][0].append(tm); by_type[t][1].append(f)
             for w in {p, src} - {None, ""}:
@@ -287,7 +293,7 @@ def _traces(con):
             if t == "modified":
                 mods[f] = mods.get(f, 0) + 1; last_mod[f] = p
         names = set(by_who) | {x for r in dm for x in r[1:3] if x}
-        _CACHE[key] = (sig, by_type, by_who, mods, last_mod, dm, names)
+        _CACHE[key] = (sig, by_type, by_who, mods, last_mod, dm, names, by_pc)
     return _CACHE[key][1:]
 
 
@@ -316,6 +322,18 @@ def _fs_in_range(con, a, b):
 
 
 EVENT_KINDS = {"source", "action", "when", "activity"}
+RECV_TYPES = {"saved_from_mail", "saved_from_messenger", "downloaded"}
+
+
+def pc_recent(con, files, n):
+    """of these files, the n the PC marked as received most recently (origin.py), then the rest by id: which ones to score
+    when there are more than can be read"""
+    _, _, _, _, _, _, by_pc = _traces(con)
+    when = {}
+    for g in by_pc.values():
+        for f, t in g["when"].items():
+            when[f] = max(t, when.get(f, ""))
+    return sorted(files, key=lambda f: (when.get(f, ""), f), reverse=True)[:n]
 
 
 def files_for(con, c):
@@ -323,8 +341,18 @@ def files_for(con, c):
     a missing record is not evidence that it did not happen"""
     if not _has(con, "events"):
         return None
-    by_type, by_who, mods, last_mod, dm, names = _traces(con)
-    n_events = sum(len(v[1]) for v in by_type.values())
+    by_type, by_who, mods, last_mod, dm, names, by_pc = _traces(con)
+    n_events = sum(len(v[1]) for v in by_type.values())   # full activity records only: the PC's own source marks are apart
+    if by_pc and os.environ.get("EPI_PC_ORIGIN", "1") == "1":
+        # the PC's own marks (origin.py), for kinds the full records do not hold: they lift the files that have them, and a
+        # file without one may still have come that way, so they never say 'not here'
+        if c["kind"] == "source" and c["type"] not in by_type and c["type"] in by_pc:   # '메일로 받은'
+            c["_soft"] = c["_lift"] = True
+            return set(by_pc[c["type"]]["files"])
+        ts = set(c.get("types") or ())
+        if c["kind"] == "when" and ts and ts <= RECV_TYPES and not ts & set(by_type) and ts & set(by_pc):   # '지난주에 받은'
+            c["_soft"] = c["_lift"] = True
+            return _in_range({t: (g["times"], g["tf"]) for t, g in by_pc.items()}, ts, c["range"][0], c["range"][1])
     fs_types = {"modified"} | ({"created"} if n_events == 0 else set())   # no activity record: last-saved time stands in for 'made'
     if c["kind"] == "when" and os.environ.get("EPI_FS", "1") == "1" and set(c["types"]) & fs_types:
         # the file system keeps every file's last-saved time even when no activity record exists: '지난주에 고친/만든' can use it
