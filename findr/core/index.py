@@ -333,6 +333,7 @@ def main():
     ap.add_argument("--minutes", type=float, default=50, help="--upgrade: stop after N minutes (the next idle run continues)")
     ap.add_argument("--upgrade-first", action="store_true", help="--upgrade: only each file's first piece, and no switch (exit 6 when all are there)")
     ap.add_argument("--names-only", action="store_true", help="register new and changed files by name only (on battery); content waits for the next full run")
+    ap.add_argument("--gone-only", action="store_true", help="only forget files deleted since the last check: the indexed folders whose time changed are listed, nothing is read")
     a = ap.parse_args()
     roots = [Path(r) for r in a.root]; Path(a.db).expanduser().parent.mkdir(parents=True, exist_ok=True)
     if not one_indexer(a.db):
@@ -414,6 +415,9 @@ def main():
         elif out:
             print(f"FINDR_OUTSIDE kept {len(out)} files outside the current folders (too many to be a scope change)", flush=True)
     con.commit()
+    if a.gone_only:
+        gone_check(con, roots)
+        return 0
     if a.upgrade:
         return upgrade(con, a.upgrade, a.minutes, first_only=a.upgrade_first)
     progress("names", 0, len(roots))
@@ -1353,6 +1357,54 @@ def pdf_text(p, limit):
         return ""
 
 
+def gone_check(con, roots, now=None):
+    """files deleted (or moved away) since the last check leave the index without a walk of every folder: only the folders
+    that hold indexed files are looked at, and only those whose time changed since the last check are listed (a folder's
+    time moves when a file in it is added, removed or renamed). A folder that is not there while the root is: deleted with
+    its files. Kept, as in a full run: a root that is not there (a drive unplugged), a folder that cannot be read, and a
+    root that would lose more than half of its files at once (a bad mount, not a deletion). Returns the counts it prints"""
+    import posixpath
+    t_run = time.time()
+    t0 = t_run if now is None else now   # the stamp kept for the next check (tests pin it)
+    con.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
+    last = float((con.execute("SELECT value FROM meta WHERE key='gone_at'").fetchone() or ["0"])[0])
+    st_ = {"folders": 0, "listed": 0, "removed": 0, "kept": 0}
+    for root in roots:
+        if not os.path.isdir(_long(str(root))):
+            print(f"FINDR_ROOT_MISSING {root} (kept as indexed)", flush=True)
+            continue
+        pre = root.as_posix().rstrip("/") + "/"
+        rows = con.execute("SELECT id, path FROM files WHERE path LIKE ? ESCAPE '\\'", (like_pre(pre),)).fetchall()
+        by_dir = {}
+        for fid, p in rows:
+            by_dir.setdefault(posixpath.dirname(p), []).append((fid, posixpath.basename(p)))
+        gone = []
+        for d, files in by_dir.items():
+            st_["folders"] += 1
+            try:
+                if os.stat(_long(str(Path(d)))).st_mtime < last - 1:
+                    continue   # nothing added, removed or renamed in it since the last check
+                names = set(os.listdir(_long(str(Path(d)))))
+            except FileNotFoundError:
+                gone += [fid for fid, _ in files]   # the folder is gone and its root is here: deleted with it
+                continue
+            except OSError:
+                continue   # cannot be read now (permission, a share that dropped): kept
+            st_["listed"] += 1
+            gone += [fid for fid, n in files if n not in names]
+        if gone and len(gone) > len(rows) // 2:
+            print(f"FINDR_GONE kept {len(gone)} of {len(rows)} files under {root} (too many at once to be deletions)", flush=True)
+            st_["kept"] += len(gone)
+            continue
+        for fid in gone:
+            drop(con, fid)
+        st_["removed"] += len(gone)
+    con.execute("INSERT OR REPLACE INTO meta VALUES('gone_at', ?)", (str(t0),))   # changes during this check are seen next time
+    con.commit()
+    print("FINDR_GONE " + json.dumps({**st_, "ms": int((time.time() - t_run) * 1000)}), flush=True)
+    return st_
+
+
 def reuse_moved(con, fresh, lost):
     """a file that left one place and turned up in another in the same run (moved, renamed, Downloads -> Documents) keeps
     what was read from it: its row takes the new path and name, so its text (extraction, OCR and conversion are the slow
@@ -1390,13 +1442,19 @@ def reuse_moved(con, fresh, lost):
     return kept
 
 
+# every other table that keeps rows by file id. A file id is an INTEGER PRIMARY KEY, which SQLite hands out again after the
+# highest one is deleted: a row left here would then describe the next new file (its summary, author, history)
+FILE_TABLES = ("photo_emb", "cards", "docmeta", "events")
+
+
 def drop(con, fid):
     con.execute("DELETE FROM fts WHERE rowid IN (SELECT id FROM chunks WHERE file=?)", (fid,))
     con.execute("DELETE FROM chunks WHERE file=?", (fid,)); con.execute("DELETE FROM files WHERE id=?", (fid,))
-    try:
-        con.execute("DELETE FROM photo_emb WHERE file=?", (fid,))
-    except sqlite3.OperationalError:
-        pass
+    for t in FILE_TABLES:
+        try:
+            con.execute(f"DELETE FROM {t} WHERE file=?", (fid,))
+        except sqlite3.OperationalError:   # a table this index does not have (photos off, no traces collected)
+            pass
 
 
 class EngineEncoder:

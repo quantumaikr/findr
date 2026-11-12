@@ -1621,6 +1621,90 @@ def _mark(r, stage):
         r.setdefault("trace", []).append([stage, [x.get("path") for x in (r.get("results") or [])[:10]], int(1000 * (time.time() - _QT[0]))])
 
 
+GONE_TOP = 20   # the lines a person reads; a stat each is well under a millisecond
+
+
+def _local(p):
+    """a path as shown (winpath: 'C:\\...' for a Windows drive seen from WSL) back to the form the index and this
+    process use ('/mnt/c/...')"""
+    s = str(p or "")
+    if os.name != "nt":
+        m = re.match(r"^([A-Za-z]):\\(.*)$", s)
+        if m:
+            return f"/mnt/{m.group(1).lower()}/" + m.group(2).replace("\\", "/")
+    return s
+
+
+def _gone(p):
+    """the file is not there any more, and its folder is: deleted or moved since it was indexed. A file whose folder is
+    missing too (a drive unplugged, a share offline) is kept, as the indexer keeps it; an error other than 'not found'
+    (no permission, a slow share) keeps it as well"""
+    if not p:
+        return False
+    s = _local(p)
+    if os.name == "nt" and len(s) >= 240 and not s.startswith("\\\\?\\"):
+        s = "\\\\?\\" + os.path.abspath(s)   # a long Windows path reads as missing without the prefix
+    try:
+        os.stat(s)
+        return False
+    except FileNotFoundError:
+        return os.path.isdir(os.path.dirname(s))
+    except OSError:
+        return False
+
+
+def _as_line(con, x, path):
+    """line x under another file's path (a copy or a version of it): that file's own id, name and opening text, so
+    nothing on the line still points at the gone file. None when the index does not know the path"""
+    r = con.execute("SELECT f.id, f.name, f.size, f.mtime, c.text FROM files f LEFT JOIN chunks c ON c.file=f.id AND c.n=0 "
+                    "WHERE f.path=?", (_local(path),)).fetchone()
+    if not r:
+        return None
+    return {**x, "path": path, "fid": r[0], "name": r[1], "size": r[2], "snippet": (r[4] or "")[:160],
+            "date": dt.datetime.fromtimestamp(r[3]).strftime("%Y-%m-%d %H:%M") if r[3] else x.get("date")}
+
+
+def drop_gone(con, res, top=GONE_TOP):
+    """files deleted or moved since they were indexed leave the answer at once (11/12: they were listed until the next
+    index run, and opening one said 'moved or deleted'). A line whose file is gone gives its place to a copy or a version
+    still there; the copies and versions under a line lose the gone ones too. The index forgets them at its next run"""
+    rs = res.get("results") or []
+    out, n = [], 0
+    for i, x in enumerate(rs):
+        if i >= top:
+            out.append(x); continue
+        x = dict(x)
+        for key in ("copies", "versions"):
+            if x.get(key):
+                keep = [c for c in x[key] if not _gone(c.get("path") if isinstance(c, dict) else c)]
+                n += len(x[key]) - len(keep)
+                if keep:
+                    x[key] = keep
+                else:
+                    x.pop(key)
+        if not _gone(x.get("path")):
+            out.append(x); continue
+        n += 1
+        for key in ("copies", "versions"):   # the same file elsewhere first, then another version of the document
+            others = x.get(key) or []
+            for j, c in enumerate(others):
+                p = c.get("path") if isinstance(c, dict) else c
+                y = _as_line(con, {k: v for k, v in x.items() if k not in ("copies", "versions")}, p)
+                if y is None:
+                    continue
+                rest = {k: x[k] for k in ("copies", "versions") if x.get(k)}
+                rest[key] = others[:j] + others[j + 1:]
+                y.update({k: v for k, v in rest.items() if v})
+                out.append(y)
+                break
+            else:
+                continue
+            break
+    if n:
+        res = dict(res); res["results"] = out; res["gone"] = n
+    return res
+
+
 def collapse_copies(con, res):
     """the same file saved twice (a download kept twice, 'name (1)', a copy in another folder) is one thing to a person:
     one line, the best-ranked copy, the others under it as 'copies'. Seen on all three real PCs (11/9): a copy took #1
@@ -2912,7 +2996,10 @@ def serve(f, port):
                     if hit is not None:
                         RESULTS.move_to_end(rkey)
                 if hit is not None:   # the same question again, nothing changed since: the same answer at once
-                    res = json.loads(hit); res["cached"] = True; res["ms"] = int((time.time() - t_req) * 1000)
+                    res = json.loads(hit); res["cached"] = True
+                    with SEARCH_LOCK:   # a file deleted since the answer was kept leaves it here too
+                        res = drop_gone(f.con, res)
+                    res["ms"] = int((time.time() - t_req) * 1000)
                     return self.reply(200, json.dumps(res, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
                 _ST.d = {}
                 with SEARCH_LOCK:
@@ -2983,6 +3070,9 @@ def serve(f, port):
                 if res.get("results") and os.environ.get("KIND_GATE", "1") == "1":
                     res["results"] = format_first(q_, res["results"])
                     _mark(res, "format")
+                with SEARCH_LOCK:
+                    res = drop_gone(f.con, res)
+                _mark(res, "gone")
                 # the page's '서버' time: the whole request, not the search alone (a Mac page showed 서버 3.4 s · 화면 7.1 s and
                 # the rest had no name: the index refresh check before the search and the steps after it were left out)
                 res["search_ms"] = int(res.get("ms") or 0); res["ms"] = max(res["search_ms"], int((time.time() - t_req) * 1000))

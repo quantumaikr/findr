@@ -179,13 +179,14 @@ def cmd_index(a):
         env.setdefault("FINDR_FIRST_PIECES", str(FIRST_PIECES))
     core = paths.CORE
     if not a.paths:   # the whole PC, the person's own files only, in the order people look for them
-        cmd = [sys.executable, str(core / "index_pc.py"), "--db", str(a.db), "--model", enc]
+        cmd = [sys.executable, str(core / "index_pc.py"), "--db", str(a.db), "--model", enc, *(["--gone-only"] if getattr(a, "gone_only", False) else [])]
         print(L(f"PC 전체의 내 파일을 색인합니다 (의미 모델: {enc}). 바탕화면·다운로드부터 — 진행 중에도 검색할 수 있습니다.", f"Indexing your files on the whole PC (meaning model: {enc}). Desktop and Downloads first — you can search while it runs."))
         return subprocess.call(cmd, env=env, cwd=str(core))
     print(L(f"색인: 폴더 {len(a.paths)}개 (이름 → 내용 → 의미 순서, 모든 폴더 함께)", f"Index: {len(a.paths)} folder{'' if len(a.paths) == 1 else 's'} (names → content → meaning, all folders together)"), flush=True)
     # absolute: the indexer runs in findr/core, so `findr index .` indexed findr itself and the next run crashed on its paths
     return subprocess.call([sys.executable, str(core / "index.py"), "--root", *[os.path.abspath(Path(p).expanduser()) for p in a.paths],
-                            "--db", str(a.db), "--model", enc, *(["--names-only"] if a.names_only else [])], env=env, cwd=str(core))
+                            "--db", str(a.db), "--model", enc, *(["--names-only"] if a.names_only else []),
+                            *(["--gone-only"] if getattr(a, "gone_only", False) else [])], env=env, cwd=str(core))
 
 
 UPGRADE_TO = "embeddinggemma-2"
@@ -664,6 +665,7 @@ def main(argv=None):
     s = sub.add_parser("index", help=L("색인 (폴더를 주지 않으면 PC 전체의 내 파일)", "index (without folders: your files on the whole PC)")); s.add_argument("paths", nargs="*")
     s.add_argument("--deep", action="store_true", help=L("긴 문서의 뒷부분까지 의미 계산 (오래 걸림, 쉬는 시간에 권장)", "meaning vectors for the whole of long documents (slow: best run while the PC is idle)"))
     s.add_argument("--names-only", action="store_true", help=L("새 파일을 이름으로만 반영 (내용은 다음 색인 때, 배터리일 때 앱이 씀)", "add new files by name only (content at the next index; the app uses this on battery)"))
+    s.add_argument("--gone-only", action="store_true", help=L("지운 파일만 빠르게 정리 (바뀐 폴더만 확인, 내용은 읽지 않음)", "only forget deleted files, quickly (looks at changed folders only, reads nothing)"))
     s.set_defaults(fn=cmd_index)
     s = sub.add_parser("serve", help=L("검색 화면 열기", "open the search page")); s.add_argument("--port", type=int, default=8096)
     s.add_argument("--no-browser", action="store_true"); s.add_argument("--no-photo", action="store_true"); s.add_argument("--no-llm", action="store_true")
