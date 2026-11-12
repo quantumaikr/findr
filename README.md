@@ -222,6 +222,7 @@ File contents, questions and search history never leave the PC. Everything findr
 - Scanned images whose names do not look like documents are read only in idle time on CPU-only PCs, so right after the first index they are found by name.
 - Broad photo requests ("donut photo") over thousands of photos match many pictures; adding a time ("last spring") narrows them a lot.
 - The installers are not code-signed yet.
+- On Windows, piped output follows the console's code page (UTF-8 with no console window). Two older setups read it differently: `chcp 65001` typed in Windows PowerShell 5.1 (it keeps the code page its window opened with) and `findstr` after `chcp 65001` in cmd. There, set `FINDR_PIPE_ENCODING=cp949` (or your code page), or switch PowerShell with `[Console]::OutputEncoding = [Text.Encoding]::UTF8` instead of `chcp`.
 
 ## Lessons from the field
 

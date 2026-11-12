@@ -233,6 +233,7 @@ claude mcp add findr -- <python> -m findr mcp
 - GPU 없는 PC에서는 이름이 서류처럼 보이지 않는 스캔 이미지를 쉬는 시간에만 읽습니다. 그래서 첫 색인 직후에는 이름으로만 찾습니다.
 - 사진이 수천 장이면 "도넛 사진"처럼 범위가 넓은 질문에 여러 장이 맞습니다. "작년 봄"처럼 때를 함께 적으면 훨씬 좁혀집니다.
 - 설치 파일은 아직 코드 서명 전입니다.
+- Windows에서 파이프로 넘긴 출력은 콘솔의 코드 페이지를 따릅니다(콘솔 창이 없으면 UTF-8). 예전 방식 두 가지는 다르게 읽습니다: Windows PowerShell 5.1에서 `chcp 65001`을 친 경우(창을 열 때의 코드 페이지로 계속 읽음)와 cmd에서 `chcp 65001` 뒤 `findstr`로 거르는 경우입니다. 이때는 `FINDR_PIPE_ENCODING=cp949`로 정하거나, PowerShell에서는 `chcp` 대신 `[Console]::OutputEncoding = [Text.Encoding]::UTF8`를 쓰세요.
 
 ## 현장에서 배운 것
 
