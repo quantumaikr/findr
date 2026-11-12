@@ -9,7 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def run(env_home, *args):
     env = dict(os.environ, FINDR_HOME=str(env_home), PYTHONUTF8="1")
-    return subprocess.run([sys.executable, "-m", "findr", "uninstall", *args], cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
+    return subprocess.run([sys.executable, "-m", "findr", "uninstall", *args], cwd=ROOT, env=env, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=120)
 
 
 def test_removes_the_data_folder_and_nothing_else(tmp_path):
