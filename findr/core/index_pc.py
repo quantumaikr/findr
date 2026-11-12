@@ -24,6 +24,7 @@ def under(p, folders):
 
 
 ap = argparse.ArgumentParser(); ap.add_argument("--db", required=True); ap.add_argument("--dry-run", action="store_true")
+ap.add_argument("--gone-only", action="store_true", help="only forget deleted files (index.py --gone-only)")
 ap.add_argument("--model", default="auto", help="auto: embeddinggemma-2 with a GPU, e5-small on CPU-only PCs")
 a = ap.parse_args()
 if a.model == "auto":
@@ -43,6 +44,6 @@ env = {**os.environ, "FINDR_SCOPE": "user", "FINDR_EXCLUDE": os.pathsep.join(ex)
 # one run for every folder: names of the whole PC first, then content, then meaning (models are loaded once)
 t = time.time()
 rc = subprocess.call([sys.executable, str(Path(__file__).with_name("index.py")), "--root", *[str(p) for _, _, p in roots],
-                      "--db", a.db, "--model", a.model], env=env)
+                      "--db", a.db, "--model", a.model, *(["--gone-only"] if a.gone_only else [])], env=env)
 print(f"PC_DONE {len(roots)} folders in {time.time() - t:.0f}s (exit {rc})", flush=True)
 sys.exit(rc)   # FINDR_BUSY (3) and crashes reach `findr index` (whole PC) and the scripts that run it, as with chosen folders
