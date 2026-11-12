@@ -1396,13 +1396,19 @@ def gone_check(con, roots, now=None):
     return st_
 
 
+# every other table that keeps rows by file id. A file id is an INTEGER PRIMARY KEY, which SQLite hands out again after the
+# highest one is deleted: a row left here would then describe the next new file (its summary, author, history)
+FILE_TABLES = ("photo_emb", "cards", "docmeta", "events")
+
+
 def drop(con, fid):
     con.execute("DELETE FROM fts WHERE rowid IN (SELECT id FROM chunks WHERE file=?)", (fid,))
     con.execute("DELETE FROM chunks WHERE file=?", (fid,)); con.execute("DELETE FROM files WHERE id=?", (fid,))
-    try:
-        con.execute("DELETE FROM photo_emb WHERE file=?", (fid,))
-    except sqlite3.OperationalError:
-        pass
+    for t in FILE_TABLES:
+        try:
+            con.execute(f"DELETE FROM {t} WHERE file=?", (fid,))
+        except sqlite3.OperationalError:   # a table this index does not have (photos off, no traces collected)
+            pass
 
 
 class EngineEncoder:

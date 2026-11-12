@@ -6,6 +6,7 @@ import os
 import platform
 import shutil
 import sys
+import tempfile
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -288,16 +289,29 @@ def pull_llama_server(dev):
         print(L("  이 시스템용 llama.cpp 빌드를 찾지 못했습니다: 질문은 규칙으로 읽습니다.", "  No llama.cpp build found for this system: questions are read by rules.")); return None
     dst = paths.BIN / "llama"; dst.mkdir(parents=True, exist_ok=True)
     for a in pick[:2]:
-        z = paths.BIN / a["name"]
+        # a folder of this run's own for the archive and its files: two setups at once (the app started twice) both
+        # downloaded to one fixed name, and the first to finish deleted the archive the other was about to open
+        # (FileNotFoundError, a Mac on 0.2.21); unpacking both into one folder at once also collided (FileExistsError)
+        tmp = Path(tempfile.mkdtemp(prefix=".llama-", dir=paths.BIN))
+        z = tmp / a["name"]
         print(L(f"  llama.cpp {tag} 받는 중: {a['name']}", f"  Downloading llama.cpp {tag}: {a['name']}"), flush=True)
-        urllib.request.urlretrieve(a["browser_download_url"], z)
-        if z.name.endswith(".zip"):
-            with zipfile.ZipFile(z) as f:
-                f.extractall(dst)
-        else:
-            with tarfile.open(z) as f:
-                f.extractall(dst, filter="data")
-        z.unlink()
+        try:
+            urllib.request.urlretrieve(a["browser_download_url"], z)
+            out = tmp / "x"
+            if a["name"].endswith(".zip"):
+                with zipfile.ZipFile(z) as f:
+                    f.extractall(out)
+            else:
+                with tarfile.open(z) as f:
+                    f.extractall(out, filter="data")
+            for p in out.iterdir():   # moved into place whole; what another setup already put there stays
+                if not (dst / p.name).exists():
+                    try:
+                        os.replace(p, dst / p.name)
+                    except OSError:
+                        pass
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
     for p in dst.rglob("llama-server*"):
         try:
             p.chmod(0o755)
