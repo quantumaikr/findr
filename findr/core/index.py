@@ -422,6 +422,7 @@ def main():
         return upgrade(con, a.upgrade, a.minutes, first_only=a.upgrade_first)
     progress("names", 0, len(roots))
     scanned = 0   # files looked at in the folders before this one
+    fresh, lost = [], []   # files new to the index and files no longer found, over every root: a pair of them is a move
     for k, root in enumerate(roots):   # stage 1: names and folders of every chosen folder first (seconds)
         print("FINDR_ROOT " + json.dumps({"i": k, "n": len(roots), "path": str(root)}, ensure_ascii=False), flush=True)
         if not os.path.isdir(_long(str(root))):   # unplugged disk, network drive offline: its files stay as they were
@@ -486,6 +487,8 @@ def main():
                 fid = cur.lastrowid   # name and folder searchable at once; content comes in its wave
                 cid = con.execute("INSERT INTO chunks(file,n,text) VALUES(?,?,?)", (fid, 0, "")).lastrowid
                 con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(p.name), nfc(s[len(root.as_posix()):]), ""))
+                if s not in known:
+                    fresh.append((fid, s, st.st_size, st.st_mtime, real_ext(p), tr, root))
                 new += 1
                 if new % 500 == 0:
                     pause_wait()
@@ -494,14 +497,20 @@ def main():
         # folders the walk could not open keep their files (a share that dropped mid-walk is not a deletion)
         cut = [Path(_short(getattr(e, "filename", "") or "")).as_posix().rstrip("/") + "/" for e in unread if getattr(e, "filename", None)]
         gone = [k for k in known if k not in seen and not any(k.startswith(c) for c in cut)]
-        for s in gone:
-            drop(con, known[s][2])
+        lost += [(s, known[s]) for s in gone]   # dropped after every root is walked, unless the file turns up elsewhere
         con.commit()
         print(f"FINDR_SCAN new/changed {new} removed {len(gone)} in {time.time() - t0:.0f}s")
         if unread:
             print(f"FINDR_SKIPPED {len(unread)} folders could not be read ({type(unread[0]).__name__})", flush=True)
         scanned += len(seen)
         progress("names", k + 1, len(roots), scanned=scanned)
+    reused = reuse_moved(con, fresh, lost)
+    for s, kn in lost:
+        if kn[2] not in reused:
+            drop(con, kn[2])
+    con.commit()
+    if reused:
+        print(f"FINDR_MOVED {len(reused)} files moved or renamed: their text was kept, only their vectors are made again", flush=True)
     _P["files"] = con.execute("SELECT count(*) FROM files WHERE tier>0").fetchone()[0]
     if not a.no_embed:   # stage 1b: a meaning vector from each file's name and folders (natural-language search on names)
         print("FINDR_STAGE namevec", flush=True); embed(con, a.model, names_only=True)
@@ -1394,6 +1403,43 @@ def gone_check(con, roots, now=None):
     con.commit()
     print("FINDR_GONE " + json.dumps({**st_, "ms": int((time.time() - t_run) * 1000)}), flush=True)
     return st_
+
+
+def reuse_moved(con, fresh, lost):
+    """a file that left one place and turned up in another in the same run (moved, renamed, Downloads -> Documents) keeps
+    what was read from it: its row takes the new path and name, so its text (extraction, OCR and conversion are the slow
+    part), summary, photo vector and history stay. Same size, same modified time and same format on both sides, and only
+    one file on each side with them (two would be copies: which is which is not known). Its meaning vectors are made
+    again, since they carry the name and folders. Returns the ids kept"""
+    k_ = lambda size, mtime, ext: (size, int(round(mtime or 0)), ext)
+    olds, news = {}, {}
+    for s, (size, mtime, fid, tr) in lost:
+        if size:
+            e = (con.execute("SELECT ext FROM files WHERE id=?", (fid,)).fetchone() or [None])[0]
+            olds.setdefault(k_(size, mtime, e), []).append((fid, tr))
+    for f in fresh:
+        news.setdefault(k_(f[2], f[3], f[4]), []).append(f)
+    kept = set()
+    for key_, o in olds.items():
+        n = news.get(key_) or []
+        if len(o) != 1 or len(n) != 1:
+            continue
+        (ofid, otr), (nfid, s, _, _, _, ntr, root) = o[0], n[0]
+        if otr != ntr:
+            continue   # a different tier now (a library folder, online-only): read as the new file it is
+        drop(con, nfid)   # the row the walk just added for it
+        name, rel = nfc(Path(s).name), nfc(s[len(root.as_posix()):])
+        con.execute("UPDATE files SET path=?, name=? WHERE id=?", (s, name, ofid))
+        for cid, text in con.execute("SELECT id, text FROM chunks WHERE file=? AND n>=0", (ofid,)).fetchall():
+            con.execute("DELETE FROM fts WHERE rowid=?", (cid,))
+            con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, name, rel, nfc(text or "")))
+        con.execute("UPDATE chunks SET emb=NULL WHERE file=? AND n>=0", (ofid,))
+        try:
+            con.execute("UPDATE chunks SET emb2=NULL WHERE file=? AND n>=0", (ofid,))
+        except sqlite3.OperationalError:
+            pass   # an index without the second lane's column
+        kept.add(ofid)
+    return kept
 
 
 # every other table that keeps rows by file id. A file id is an INTEGER PRIMARY KEY, which SQLite hands out again after the
