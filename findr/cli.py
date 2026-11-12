@@ -344,7 +344,8 @@ def cmd_roots(a):
 
 
 def _start(name, cmd, log, env=None):
-    f = open(paths.LOGS / log, "w")
+    f = open(paths.LOGS / log, "w", encoding="utf-8")
+    env = {**(os.environ if env is None else env), "PYTHONIOENCODING": "utf-8:replace"}   # a log is read as UTF-8
     p = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env)
     atexit.register(lambda: p.poll() is None and p.terminate())
     return p
@@ -644,6 +645,9 @@ def cmd_uninstall(a):
 
 
 def main(argv=None):
+    if (argv if argv is not None else sys.argv[1:])[:1] != ["mcp"]:   # MCP's channel is UTF-8 by its own library
+        from . import textout
+        textout.fit()   # Windows: piped output in the encoding its reader expects (#66-10)
     if (argv if argv is not None else sys.argv[1:])[:1] == ["uninstall"]:   # creates nothing in the folder it is about to judge
         ap = argparse.ArgumentParser(prog="findr uninstall"); ap.add_argument("cmd"); ap.add_argument("--yes", action="store_true")
         return cmd_uninstall(ap.parse_args(argv))
