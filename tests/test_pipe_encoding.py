@@ -42,6 +42,15 @@ def test_an_explicit_choice_and_other_systems_are_left_alone():
     assert s.encoding == "cp1252"
 
 
+def test_the_person_can_name_the_encoding():
+    b, s = _pipe()
+    assert textout.fit([s], console_cp=65001, environ={"FINDR_PIPE_ENCODING": "cp949"}, windows=True) == "cp949"
+    s.write("분기"); s.flush()
+    assert b.getvalue() == "분기".encode("cp949")
+    _, s = _pipe()   # a name Python does not know: the rule decides
+    assert textout.fit([s], console_cp=0, environ={"FINDR_PIPE_ENCODING": "nonsense"}, windows=True) == "utf-8"
+
+
 def test_a_console_itself_is_left_alone():
     class Tty(io.StringIO):
         def isatty(self):

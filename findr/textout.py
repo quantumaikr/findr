@@ -36,6 +36,18 @@ def pipe_encoding(console_cp=None):
     return name
 
 
+def _named(name):
+    """FINDR_PIPE_ENCODING (e.g. cp949, utf-8): a setup the rule cannot see, such as 'chcp 65001' typed in Windows
+    PowerShell 5.1, which keeps decoding with the code page its window opened with"""
+    if not name:
+        return None
+    try:
+        "".encode(name.strip())
+    except LookupError:
+        return None
+    return name.strip()
+
+
 def fit(streams=None, console_cp=None, environ=None, windows=None):
     """set the encoding of piped standard output and error; returns the encoding chosen, or None when nothing changed"""
     env = os.environ if environ is None else environ
@@ -45,7 +57,7 @@ def fit(streams=None, console_cp=None, environ=None, windows=None):
     piped = [s for s in streams if s is not None and hasattr(s, "reconfigure") and not _tty(s)]
     if not piped:
         return None
-    enc = pipe_encoding(console_cp)
+    enc = _named(env.get("FINDR_PIPE_ENCODING")) or pipe_encoding(console_cp)
     for s in piped:
         try:
             s.reconfigure(encoding=enc, errors="replace")
