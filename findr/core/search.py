@@ -12,6 +12,7 @@ import episodic as EPI   # memory-trace cues (who, from where, what was done, wh
 EPI_G = 0.05   # min content score for overruling remembered history; two-author tuning sets (11-07)
 EPI_AGREE = 0.15   # episodic-path best / content-path best; set on the episodic tuning set (11-07)
 import os, re   # needed here: this block sits above the main imports
+EPI_LIFT = float(os.environ.get("EPI_LIFT", "0.5"))   # the same ratio when the only history is the PC's own source marks (origin.py): not tuned yet
 HISTORY_HINT = re.compile(r"메일|이메일|카톡|카카오톡|메신저|단톡|슬랙|다운받|다운로드|보낸|보냈|받은|받았|보내온|보내준|제출|회신|인쇄|출력|뽑은|"
                           r"회의|미팅|면접|발표|세미나|마지막으로|여러\s*번|에게|한테|께서|님이|님께|님한테|"
                           r"몇\s*번|고친|고쳐|수정한|손본|만든|만들었|작성한|열어\s*본|열어봤|이름\s*바|복사|저장한|저장해|나간|돌린|올린|올려|")   # clear history wording only (latency)
@@ -1184,6 +1185,7 @@ class Finder:
                         r["agree"] = round(agree, 3)
                         r["content_best"] = round(max(sc_.values()), 4); r["epi_best"] = round(epi_best, 4)
                         order = sorted([f_ for f_ in allok if f_ in sc_], key=lambda f_: -sc_[f_])
+                        before_ = r["results"]
                         rest_ = [x for x in r["results"] if x["fid"] not in allok]
                         r["results"] = (self.files_out(order[:k]) + rest_)[:k]
                         rank_ = sorted(sc_.values(), reverse=True)
@@ -1197,7 +1199,11 @@ class Finder:
                             r["agree2"] = round(a2_, 3)
                             if a2_ >= float(os.environ.get("EPI_AGREE2", "0.3")):   # a second look needs a higher bar than the first
                                 agree = max(agree, a2_ if a2_ >= EPI_AGREE else agree)
-                        if agree >= EPI_AGREE or max(sc_.values()) < EPI_G or (K_ and r["epi_rank"] <= K_):   # weak content evidence cannot overrule the history
+                        if all(c_.get("_lift") for c_, _ in pairs) and agree < EPI_LIFT:
+                            # the PC marks only some received files: a marked file must be close to the best by content to go first,
+                            # and an unmarked one is never 'not what you remember'
+                            r["results"] = before_; r["episodic_lift"] = False
+                        elif agree >= EPI_AGREE or max(sc_.values()) < EPI_G or (K_ and r["epi_rank"] <= K_):   # weak content evidence cannot overrule the history
                             r["episodic_ok"] = True   # history and content point to the same file
                         else:
                             r["hard_none"] = M("기억하신 이력(", "the history you remember (") + ", ".join(c_["text"] for c_ in ecs) + ")"

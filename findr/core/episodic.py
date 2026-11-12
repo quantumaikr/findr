@@ -278,8 +278,11 @@ def _traces(con):
     if key not in _CACHE or _CACHE[key][0] != sig:
         ev = con.execute("SELECT file, type, time, person, source FROM events ORDER BY time").fetchall()
         dm = con.execute("SELECT file, author, last_by, revision FROM docmeta").fetchall() if _has(con, "docmeta") else []
-        by_type, by_who, mods, last_mod = {}, {}, {}, {}
+        by_type, by_who, mods, last_mod, by_pc = {}, {}, {}, {}, {}
         for f, t, tm, p, src in ev:   # grouped once: by type (time-sorted), by person/source string, modification counts
+            if (src or "").startswith("pc:"):   # where the PC says a file came from (origin.py): partial, kept apart
+                by_pc.setdefault(t, set()).add(f)
+                continue
             by_type.setdefault(t, ([], []))
             by_type[t][0].append(tm); by_type[t][1].append(f)
             for w in {p, src} - {None, ""}:
@@ -287,7 +290,7 @@ def _traces(con):
             if t == "modified":
                 mods[f] = mods.get(f, 0) + 1; last_mod[f] = p
         names = set(by_who) | {x for r in dm for x in r[1:3] if x}
-        _CACHE[key] = (sig, by_type, by_who, mods, last_mod, dm, names)
+        _CACHE[key] = (sig, by_type, by_who, mods, last_mod, dm, names, by_pc)
     return _CACHE[key][1:]
 
 
@@ -323,8 +326,12 @@ def files_for(con, c):
     a missing record is not evidence that it did not happen"""
     if not _has(con, "events"):
         return None
-    by_type, by_who, mods, last_mod, dm, names = _traces(con)
-    n_events = sum(len(v[1]) for v in by_type.values())
+    by_type, by_who, mods, last_mod, dm, names, by_pc = _traces(con)
+    n_events = sum(len(v[1]) for v in by_type.values())   # full activity records only: the PC's own source marks are apart
+    if c["kind"] == "source" and n_events == 0 and c["type"] in by_pc and os.environ.get("EPI_PC_ORIGIN", "1") == "1":
+        # '메일로 받은' with only the PC's marks: those files can be lifted; a file with no mark may still have come by mail
+        c["_soft"] = c["_lift"] = True
+        return set(by_pc[c["type"]])
     fs_types = {"modified"} | ({"created"} if n_events == 0 else set())   # no activity record: last-saved time stands in for 'made'
     if c["kind"] == "when" and os.environ.get("EPI_FS", "1") == "1" and set(c["types"]) & fs_types:
         # the file system keeps every file's last-saved time even when no activity record exists: '지난주에 고친/만든' can use it
