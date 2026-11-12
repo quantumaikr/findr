@@ -12,9 +12,9 @@ IDX = Path(index.__file__)
 
 
 def run(root, db, home, *extra):
-    env = {**os.environ, "FINDR_OCR": "0", "FINDR_HOME": str(home), "FINDR_DATA": str(home)}
+    env = {**os.environ, "FINDR_OCR": "0", "FINDR_HOME": str(home), "FINDR_DATA": str(home), "PYTHONIOENCODING": "utf-8"}
     return subprocess.run([sys.executable, str(IDX), "--root", str(root), "--db", str(db), "--no-embed", *extra],
-                          env=env, capture_output=True, text=True, timeout=180)
+                          env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
 
 
 def test_names_only_then_full_run_reads_content(tmp_path):

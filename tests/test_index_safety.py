@@ -58,10 +58,11 @@ def test_whole_pc_run_passes_on_the_indexer_exit_code(tmp_path):
     home = tmp_path / "home"; (home / "Desktop").mkdir(parents=True); (home / "Desktop" / "a.txt").write_text("x")
     db = tmp_path / "i.db"
     assert index.one_indexer(db)   # another run holds this index
-    env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home), "FINDR_OCR": "0", "FINDR_HOME": str(tmp_path), "FINDR_DATA": str(tmp_path)}
+    env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home), "FINDR_OCR": "0", "FINDR_HOME": str(tmp_path), "FINDR_DATA": str(tmp_path),
+           "PYTHONIOENCODING": "utf-8"}
     try:
         r = subprocess.run([sys.executable, str(IDX.with_name("index_pc.py")), "--db", str(db), "--model", "none"],
-                           env=env, capture_output=True, text=True, timeout=180)
+                           env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
     finally:
         index._LOCK.close(); index._LOCK = None
     assert "FINDR_BUSY" in r.stdout and "(exit 3)" in r.stdout
