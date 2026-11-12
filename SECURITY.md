@@ -6,6 +6,7 @@ findr reads a person's own files. This page says what it does with them, what it
 - **Everything runs on the PC.** File contents, questions and search history are not sent anywhere. The internet is used to download models and the engine during setup and updates, and for nothing else.
 - **Files are only read.** findr never changes, moves or deletes the files it searches.
 - **Secret files are not read.** Files such as `.env`, `.netrc`, SSH keys, certificates and key stores (`*.pem`, `*.pfx`, `*.p12`, `*.kdbx` and similar) are skipped by name. Folders such as `.ssh`, `.aws`, `.kube` and `.docker` and shell history are never indexed.
+- **Where a file came from.** findr reads the download record the operating system keeps for each file (macOS download attributes, the Windows `Zone.Identifier` stream, Linux `user.xdg.*` attributes). Only the site's host name or the app's name goes into the index; the full address and a mail's sender and subject are not kept. Online-only cloud files are not opened. `FINDR_ORIGIN=0` turns this off.
 - **Key-like strings are masked.** Text that looks like an API key or token is replaced before it is stored in the index.
 - **The search page is local and needs a password.** It listens on `127.0.0.1` only. Repeated wrong passwords are refused for a while. Responses carry a content security policy, forbid framing and are not cached.
 - **One data folder.** The index, models, settings, logs and what findr learned from use are in `%LOCALAPPDATA%\findr` (Windows) or `~/.findr` (macOS, Linux). Uninstalling removes it; see the README.
@@ -24,6 +25,7 @@ Please do not open a public issue. Use GitHub's **Security → Report a vulnerab
 ## 한국어 요약
 - 모든 처리는 PC 안에서 합니다. 인터넷은 설치·업데이트 때 모델과 엔진을 받는 데만 씁니다.
 - 검색 대상 파일은 읽기만 합니다. 비밀 파일(`.env`, SSH 키, 인증서 등)은 읽지 않고, 키처럼 보이는 문자열은 가려서 저장합니다.
+- 파일을 어디서 받았는지(운영체제가 남긴 다운로드 기록)를 읽어, 사이트 이름이나 앱 이름만 색인에 둡니다. 전체 주소나 메일의 보낸 사람·제목은 저장하지 않습니다. `FINDR_ORIGIN=0`으로 끌 수 있습니다.
 - 검색 화면은 이 PC(127.0.0.1)에서만 열리고 비밀번호가 필요합니다.
 - **색인은 암호화되어 있지 않습니다.** PC 분실에 대비하려면 운영체제의 디스크 암호화(BitLocker, FileVault)를 쓰세요.
 - AI 도구(MCP)에 연결하면 찾은 파일의 이름과 내용 일부가 그 AI 도구로 전달됩니다. 클라우드 AI라면 PC 밖으로 나갑니다.

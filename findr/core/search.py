@@ -13,6 +13,14 @@ EPI_G = 0.05   # min content score for overruling remembered history; two-author
 EPI_AGREE = 0.15   # episodic-path best / content-path best; set on the episodic tuning set (11-07)
 import os, re   # needed here: this block sits above the main imports
 EPI_LIFT = float(os.environ.get("EPI_LIFT", "0.5"))   # the same ratio when the only history is the PC's own source marks (origin.py): not tuned yet
+
+
+def lift_marked(marked, scores, k, ratio=None):
+    """the marked files (best first) that may go above the content order: those whose own content score is at least
+    ratio x the best score of any file; a partial record never lifts a file the content says is far off"""
+    ratio = EPI_LIFT if ratio is None else ratio
+    top = max(scores.values(), default=0.0)
+    return [f for f in marked if f in scores and scores[f] >= ratio * top][:k]
 HISTORY_HINT = re.compile(r"메일|이메일|카톡|카카오톡|메신저|단톡|슬랙|다운받|다운로드|보낸|보냈|받은|받았|보내온|보내준|제출|회신|인쇄|출력|뽑은|"
                           r"회의|미팅|면접|발표|세미나|마지막으로|여러\s*번|에게|한테|께서|님이|님께|님한테|"
                           r"몇\s*번|고친|고쳐|수정한|손본|만든|만들었|작성한|열어\s*본|열어봤|이름\s*바|복사|저장한|저장해|나간|돌린|올린|올려|")   # clear history wording only (latency)
@@ -1174,7 +1182,9 @@ class Finder:
                     r["episodic"] = [c_["text"] for c_ in ecs]
                     if allok:
                         cq = cq_model or EPI.content_part(q, ecs) or q
-                        ids_ = list({x["fid"] for x in r["results"]} | set(list(allok)[:60]))
+                        lift_ = all(c_.get("_lift") for c_, _ in pairs)   # only the PC's own source marks: partial
+                        extra_ = EPI.pc_recent(self.con, allok, 60) if lift_ else list(allok)[:60]   # marked: the latest first
+                        ids_ = list({x["fid"] for x in r["results"]} | set(extra_))
                         qm_ = ",".join("?" * len(ids_))
                         meta_ = {i: (n, pth, h or "") for i, n, pth, h in self.con.execute(
                             f"SELECT f.id, f.name, f.path, (SELECT text FROM chunks c WHERE c.file=f.id AND c.n=0) FROM files f WHERE f.id IN ({qm_})", ids_)}
@@ -1192,18 +1202,17 @@ class Finder:
                         K_ = int(os.environ.get("EPI_RANK", "0"))   # scale-free agreement: a history-consistent file among the content top K
                         r["epi_rank"] = 1 + sum(1 for v_ in rank_ if v_ > epi_best)
                         mc_ = MODEL_CONTENT.get(q)
-                        if agree < EPI_AGREE and max(sc_.values()) >= EPI_G and mc_ and mc_ != cq and os.environ.get("EPI_SECOND", "1") == "1":
+                        if not lift_ and agree < EPI_AGREE and max(sc_.values()) >= EPI_G and mc_ and mc_ != cq and os.environ.get("EPI_SECOND", "1") == "1":
                             # second opinion: the model's own reading of the topic; the history still has to be among its best
                             sc2_ = dict(zip([x["fid"] for x in pool_], ce_scores(mc_, pool_)))
                             a2_ = max((sc2_[f_] for f_ in allok if f_ in sc2_), default=0.0) / max(max(sc2_.values()), 1e-6)
                             r["agree2"] = round(a2_, 3)
                             if a2_ >= float(os.environ.get("EPI_AGREE2", "0.3")):   # a second look needs a higher bar than the first
                                 agree = max(agree, a2_ if a2_ >= EPI_AGREE else agree)
-                        if all(c_.get("_lift") for c_, _ in pairs):
+                        if lift_:
                             # the PC marks only some received files: each marked file goes first only when it is close to the best
                             # by content, the rest keep the content order, and an unmarked file is never 'not what you remember'
-                            top_ = max(sc_.values())
-                            up_ = [f_ for f_ in order if sc_[f_] >= EPI_LIFT * top_][:k]
+                            up_ = lift_marked(order, sc_, k)
                             r["results"] = (self.files_out(up_) + [x for x in before_ if x["fid"] not in set(up_)])[:k]
                             r["episodic_lift"] = len(up_)
                             r["episodic_ok"] = bool(up_)
