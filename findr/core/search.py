@@ -2903,13 +2903,14 @@ def _fail_note(h, now=None):
 
 
 FEEDBACK_MAX = 5_000_000   # bytes in feedback.jsonl before it is set aside
-FEEDBACK_KEEP = int(os.environ.get("FEEDBACK_KEEP") or 20)   # files set aside that are kept (20 x 5 MB); the oldest go
+FEEDBACK_KEEP = int(os.environ.get("FEEDBACK_KEEP") or 0)   # files set aside that are kept; 0 (the default): all of them.
+# The verdicts are the person's own record of right answers; removing old ones is their choice, not the engine's
 FEEDBACK_LOCK = threading.Lock()   # two clicks at once both renamed the full file: the second raised (500)
 
 
 def feedback_write(fbp, rec):
     """one verdict line; a full file is set aside under a name of its own (feedback.<time>.jsonl) and only the newest
-    FEEDBACK_KEEP of those stay"""
+    FEEDBACK_KEEP of those stay when it is set (by default every one is kept)"""
     fbp = Path(fbp)
     with FEEDBACK_LOCK:
         try:
@@ -2926,7 +2927,7 @@ def feedback_write(fbp, rec):
                     except OSError:   # another process moved it first, or took the name meanwhile: write on
                         pass
                     break
-            old = sorted(fbp.parent.glob("feedback.2*.jsonl"))
+            old = sorted(fbp.parent.glob("feedback.2*.jsonl")) if FEEDBACK_KEEP > 0 else []
             for x in old[:max(0, len(old) - FEEDBACK_KEEP)]:
                 try:
                     x.unlink()

@@ -264,3 +264,15 @@ def test_feedback_is_set_aside_once_and_old_files_go(tmp_path, monkeypatch):
     assert len(kept) == 3 and not (tmp_path / "feedback.20250100000000.jsonl").exists()
     lines = [json.loads(x) for p in [fbp, *kept] for x in p.read_text(encoding="utf-8").splitlines()]
     assert all(isinstance(x, dict) for x in lines)
+
+
+def test_feedback_files_are_all_kept_by_default(tmp_path, monkeypatch):
+    """the verdicts are the person's record of right answers: none is removed unless FEEDBACK_KEEP is set"""
+    monkeypatch.setattr(search, "FEEDBACK_MAX", 50)
+    assert search.FEEDBACK_KEEP == 0
+    fbp = tmp_path / "feedback.jsonl"
+    for i in range(30):
+        (tmp_path / f"feedback.2025{i:02d}01000000.jsonl").write_text("{}\n", encoding="utf-8")
+    for i in range(20):
+        search.feedback_write(fbp, {"q": f"q{i}", "verdict": "hit"})
+    assert len(list(tmp_path.glob("feedback.2*.jsonl"))) > 30
