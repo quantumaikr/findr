@@ -243,4 +243,6 @@ def test_two_letter_scan_is_bounded(tmp_path):
     assert f.literal_files("사진") == []   # a common word, as before
     assert f.literal_files("대산") == [350]   # a rare word, still found in the text
     assert f.scan_text("%대산%", seconds=-1, every=1) == set()   # past the time limit: no text matches, no error
+    assert f.scan_text("%대산%", pieces=350) == set() and f.scan_text("%대산%", pieces=351) == {350}   # a count of pieces, in index order
+    assert all(f.scan_text("%대산%", pieces=351) == {350} for _ in range(5))   # the same answer every time, whatever the PC's speed
     assert con.execute("SELECT count(*) FROM chunks").fetchone()[0] == 400   # the connection still works
