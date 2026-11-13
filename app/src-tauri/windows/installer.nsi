@@ -2,7 +2,7 @@
 ; each marked "findr:". When @tauri-apps/cli moves, take the new template and apply them again
 ; (tests/test_nsis_template.py checks the version and the two changes).
 ;   1. Upgrading over an older findr: "do not uninstall" is the default choice. Uninstalling first opened the old
-;      uninstaller, where "delete the application data" removes %LOCALAPPDATA%indr: the index, the models and the app.
+;      uninstaller, where "delete the application data" removes the findr folder in %LOCALAPPDATA%: the index, the models and the app.
 ;   2. The desktop shortcut on the finish page starts unticked (the Start menu entry is always made).
 Unicode true
 ManifestDPIAware true

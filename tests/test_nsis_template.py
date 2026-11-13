@@ -38,3 +38,11 @@ def test_desktop_shortcut_starts_unticked():
     t = TEMPLATE.read_text(encoding="utf-8")
     assert "!define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED" in t
     assert t.index("!define MUI_FINISHPAGE_SHOWREADME\n") < t.index("!define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED")
+
+
+def test_no_control_characters():
+    # a form feed in a comment (a \f that became one) ends the comment for makensis: the rest of the line was read as a
+    # label outside any function and the Windows build stopped (0.2.22)
+    for f in (TEMPLATE, TEMPLATE.with_name("hooks.nsh")):
+        bad = [i for i, c in enumerate(f.read_bytes()) if c < 32 and c not in (9, 10, 13)]
+        assert not bad, f"{f.name}: control character at byte {bad[0]}"
