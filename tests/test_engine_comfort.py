@@ -3,6 +3,7 @@ a browser open): vectors read again only where they changed and not while memory
 the person's questions and on the indexer's share of the cores, background runs that stop when the person is back, on
 battery or on a nearly full disk and keep what they stored, the waiting pieces' texts not all held at once, the write-ahead
 file cut back, the upgrade's order taken once, LibreOffice profiles of their own, the reranker in 16 bits on small Macs"""
+import os
 import json
 import sqlite3
 import sys
@@ -365,8 +366,12 @@ def test_libreoffice_profile_of_its_own(tmp_path, monkeypatch):
     monkeypatch.setenv("FINDR_DATA", str(tmp_path))
     monkeypatch.setattr(index, "_LO", [])
     held = open(tmp_path / "lo" / "slot0.lock", "a+") if (tmp_path / "lo").mkdir() is None else None
-    import fcntl
-    fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)   # another reader process holds the first profile
+    if os.name == "nt":   # another reader process holds the first profile
+        import msvcrt
+        msvcrt.locking(held.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     arg = index.lo_profile()
     assert arg and arg[0].startswith("-env:UserInstallation=file://") and arg[0].endswith("/lo/slot1")
     assert index.lo_profile() == arg                             # the same one for the rest of this process

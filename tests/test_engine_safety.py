@@ -3,6 +3,7 @@ a half-written memory line, a file time Windows cannot say, a key file left empt
 views built at once, a network share that does not answer, the index locked by another writer, and files that only grow"""
 import datetime as _dt
 import json
+import os
 import sqlite3
 import sys
 import threading
@@ -177,31 +178,33 @@ def test_the_view_is_built_once_for_requests_at_once(monkeypatch):
 # --- files on a share that does not answer (#10) -----------------------------------------------------------------------
 
 def test_a_share_that_does_not_answer_holds_the_answer_briefly(monkeypatch):
+    # a mapped network drive on Windows, a mounted share elsewhere; the system disk beside it
+    nas, home, nas_root, home_root = (("Z:/nas/", "C:/u/", "z:", "c:") if os.name == "nt" else ("/mnt/nas/", "/home/u/", "/mnt/nas", "/"))
     looked = []
     def gone(p):
         looked.append(p)
-        if p.startswith("/mnt/nas/"):
+        if p.startswith(nas):
             time.sleep(1.0)   # an offline share: the system waits for its timeout
         return p.endswith("deleted.txt")
     monkeypatch.setattr(search, "_gone", gone)
     monkeypatch.setattr(search, "_SLOW_ROOTS", {})
-    res = {"results": [{"path": "/mnt/nas/a.docx"}, {"path": "/home/u/deleted.txt"}, {"path": "/home/u/kept.txt",
-                                                                                        "copies": ["/mnt/nas/b.docx"]}]}
+    res = {"results": [{"path": nas + "a.docx"}, {"path": home + "deleted.txt"}, {"path": home + "kept.txt",
+                                                                                "copies": [nas + "b.docx"]}]}
     t = time.time()
     gm = search.gone_map(res, wait=0.2)
     assert time.time() - t < 0.6
-    assert gm == {"/mnt/nas/a.docx": False, "/home/u/deleted.txt": True, "/home/u/kept.txt": False, "/mnt/nas/b.docx": False}
-    assert "/mnt/nas" in search._SLOW_ROOTS and "/" not in search._SLOW_ROOTS
+    assert gm == {nas + "a.docx": False, home + "deleted.txt": True, home + "kept.txt": False, nas + "b.docx": False}
+    assert nas_root in search._SLOW_ROOTS and home_root not in search._SLOW_ROOTS
     looked.clear()
     t = time.time()
-    gm2 = search.gone_map({"results": [{"path": "/mnt/nas/c.pdf"}, {"path": "/home/u/deleted.txt"}]}, wait=0.2)
-    assert time.time() - t < 0.15 and looked == ["/home/u/deleted.txt"]   # the slow share is not looked at again
-    assert gm2 == {"/mnt/nas/c.pdf": False, "/home/u/deleted.txt": True}
+    gm2 = search.gone_map({"results": [{"path": nas + "c.pdf"}, {"path": home + "deleted.txt"}]}, wait=0.2)
+    assert time.time() - t < 0.15 and looked == [home + "deleted.txt"]   # the slow share is not looked at again
+    assert gm2 == {nas + "c.pdf": False, home + "deleted.txt": True}
     out = search.drop_gone(None, res, gone=gm)
-    assert [x["path"] for x in out["results"]] == ["/mnt/nas/a.docx", "/home/u/kept.txt"] and out["gone"] == 1
+    assert [x["path"] for x in out["results"]] == [nas + "a.docx", home + "kept.txt"] and out["gone"] == 1
     looked.clear()
-    later = search.gone_map({"results": [{"path": "/mnt/nas/c.pdf"}]}, wait=0.2, now=time.time() + search.GONE_SLOW_S + 1)
-    assert later == {"/mnt/nas/c.pdf": False} and looked == ["/mnt/nas/c.pdf"]   # looked at again after a while
+    later = search.gone_map({"results": [{"path": nas + "c.pdf"}]}, wait=0.2, now=time.time() + search.GONE_SLOW_S + 1)
+    assert later == {nas + "c.pdf": False} and looked == [nas + "c.pdf"]   # looked at again after a while
 
 
 def test_roots(monkeypatch):
