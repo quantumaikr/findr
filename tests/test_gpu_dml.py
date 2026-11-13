@@ -134,3 +134,19 @@ def test_engine_and_install_use_it():
     rs = (ROOT / "app/src-tauri/src/lib.rs").read_text(encoding="utf-8")
     assert "swap_onnx_runtime();" in rs and "fn swap_onnx_runtime()" in rs
     assert "onnxruntime-directml" in (ROOT / "install.ps1").read_text(encoding="utf-8-sig")
+
+
+def test_describe_shows_the_probe_when_the_full_pass_was_not_timed(tmp_path, monkeypatch):
+    # field, UHD 620: the verdict came from the 64-token probe, so there is no gpu_s; doctor still shows the numbers
+    import json
+    monkeypatch.setattr(gpu_dml.os, "name", "nt")
+    monkeypatch.setattr(gpu_dml, "available", lambda: True)
+    monkeypatch.setattr(gpu_dml, "check_file", lambda: tmp_path / "dml_check.json")
+    (tmp_path / "dml_check.json").write_text(json.dumps(
+        {"use": "cpu", "why": "too slow on a short pass", "cpu_s": 6.47, "probe_s": 0.36}), encoding="utf-8")
+    ko, en = gpu_dml.describe()
+    assert "GPU 64 tokens 0.36s" in ko and "CPU 6.47s" in ko and "CPU 6.47s" in en
+    (tmp_path / "dml_check.json").write_text(json.dumps(
+        {"use": "dml", "why": "faster", "cpu_s": 0.71, "gpu_s": 0.12, "probe_s": 0.01}), encoding="utf-8")
+    ko, en = gpu_dml.describe()
+    assert "(GPU 0.12s, CPU 0.71s)" in ko and "tokens" not in ko

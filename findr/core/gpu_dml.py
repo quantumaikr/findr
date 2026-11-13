@@ -238,7 +238,10 @@ def describe():
                 else ("DirectML 없음: CPU", "no DirectML: the CPU"))
     try:
         r = json.loads(check_file().read_text(encoding="utf-8"))
-        nums = f" (GPU {r['gpu_s']}s, CPU {r['cpu_s']}s)" if "gpu_s" in r and "cpu_s" in r else ""
+        # a measurement stopped at the short probe has no gpu_s, only probe_s (field, UHD 620): show what was timed
+        gpu = f"GPU {r['gpu_s']}s" if "gpu_s" in r else (f"GPU {PROBE_TOKENS} tokens {r['probe_s']}s" if "probe_s" in r else "")
+        parts = [x for x in (gpu, f"CPU {r['cpu_s']}s" if "cpu_s" in r else "") if x]
+        nums = f" ({', '.join(parts)})" if parts else ""
         if r.get("use") == "dml":
             return f"GPU (DirectML){nums}", f"the GPU (DirectML){nums}"
         return f"CPU: {r.get('why', '')}{nums}", f"the CPU: {r.get('why', '')}{nums}"
