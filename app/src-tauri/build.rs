@@ -1,5 +1,5 @@
 // The app's own commands get permissions, so each window can be given only what it needs:
-// the app's screens get all of them, the local search page only `open_path`.
+// the app's screens get all of them, the local search page only `open_path` and `restart_search`.
 // Every command of `generate_handler!` must be listed here and allowed in capabilities/default.json: one that is
 // not is refused at run time, and the screen that called it fails silently (read_progress was: the first index
 // showed a bar that never moved, 0.2.x up to 0.2.19). tests/test_app_commands.py checks the three lists.
@@ -24,6 +24,7 @@ fn main() {
         "set_lang",
         "saved_lang_choice",
         "setup_status",
+        "restart_search",
     ])))
     .expect("failed to run tauri-build");
 }
