@@ -832,6 +832,7 @@ fn setup_runtime(app: AppHandle) {
             && !stream(&app, "setup", "engine", c2) {
             return done(false, &l("검색 엔진을 설치하지 못했습니다.", "Could not install the search engine."));
         }
+        swap_onnx_runtime();
         // 4. models for this PC
         send(&app, "setup", Line { step: "models".into(), line: l("이 PC에 맞는 모델을 고르는 중", "Choosing the models for this PC") });
         let mut c = command(python());
@@ -842,6 +843,34 @@ fn setup_runtime(app: AppHandle) {
         let _ = std::fs::write(ready_mark(), engine_stamp(&app));
         done(true, &l("준비가 끝났습니다.", "Setup is complete."));
     });
+}
+
+/// Windows: the engine now uses onnxruntime's DirectML build (the reranker can run on an AMD or Intel GPU, gpu_dml.py). Both
+/// builds install the same `onnxruntime` module folder, so an update from an older engine leaves the plain one beside it, and
+/// removing it later would take shared files with it. Once the new build is in uv's cache (the install above just fetched
+/// it): remove the plain one, then put the DirectML one back from the cache. Nothing happens on a fresh install.
+fn swap_onnx_runtime() {
+    #[cfg(windows)]
+    {
+        let mut chk = command(python());
+        chk.args(["-c", "import importlib.metadata as m; m.version('onnxruntime')"]);
+        let plain = chk.stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
+        if !plain {
+            return;
+        }
+        let mut u = command(uv());
+        let _ = u.args(["pip", "uninstall", "--python"]).arg(python()).arg("onnxruntime").stdout(Stdio::null()).stderr(Stdio::null()).status();
+        for offline in [true, false] {
+            let mut r = command(uv());
+            r.args(["pip", "install", "--reinstall-package", "onnxruntime-directml", "--python"]).arg(python()).arg("onnxruntime-directml");
+            if offline {
+                r.arg("--offline");
+            }
+            if r.stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false) {
+                return;
+            }
+        }
+    }
 }
 
 /// where the bundled engine source is: the resource folder of an installed app, or next to the executable in a development build

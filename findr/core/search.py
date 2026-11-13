@@ -252,15 +252,19 @@ def _auto_device():
 _QT = [0.0]   # when the current question started (the whole-question reranker budget on a CPU)
 
 
+import threading as _thr  # noqa: E402
+
+
 class _OrtRanker:
-    """the reranker as int8 ONNX on the CPU (about 2.7x faster than PyTorch fp32, 543 MB instead of 2.2 GB);
-    called like the PyTorch model, so the scoring code is the same"""
-    def __init__(self, path):
-        import onnxruntime as ort
+    """the reranker as int8 ONNX on the CPU (about 2.7x faster than PyTorch fp32, 543 MB instead of 2.2 GB), or on a Windows
+    GPU that is not NVIDIA through DirectML (gpu_dml.py); called like the PyTorch model, so the scoring code is the same"""
+    def __init__(self, path, dml=False):
         import torch
-        so = ort.SessionOptions(); so.intra_op_num_threads = int(os.environ.get("OMP_NUM_THREADS") or max(1, (os.cpu_count() or 2) // 2))
-        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        self.s = ort.InferenceSession(str(path), so, providers=["CPUExecutionProvider"]); self.device = torch.device("cpu")
+        import gpu_dml
+        self.s = gpu_dml.session(path, dml); self.device = torch.device("cpu")
+        self.dml = dml and "DmlExecutionProvider" in self.s.get_providers()
+        self._path = path
+        self._lock = _thr.Lock()   # a DirectML session runs one pass at a time (the warm-up scores outside the search lock)
 
     def eval(self):
         return self
@@ -268,7 +272,18 @@ class _OrtRanker:
     def __call__(self, input_ids=None, attention_mask=None, **_):
         import torch
         from types import SimpleNamespace
-        out = self.s.run(None, {"input_ids": input_ids.cpu().numpy().astype("int64"), "attention_mask": attention_mask.cpu().numpy().astype("int64")})[0]
+        feed = {"input_ids": input_ids.cpu().numpy().astype("int64"), "attention_mask": attention_mask.cpu().numpy().astype("int64")}
+        if self.dml:
+            with self._lock:
+                try:
+                    out = self.s.run(None, feed)[0]
+                except Exception as e:   # noqa: BLE001  (a GPU driver reset or lost device): the CPU from here on
+                    print(f"FINDR_RERANKER DirectML failed ({type(e).__name__}): back to the CPU", flush=True)
+                    import gpu_dml
+                    self.s, self.dml = gpu_dml.session(self._path, False), False
+                    out = self.s.run(None, feed)[0]
+        else:
+            out = self.s.run(None, feed)[0]
         return SimpleNamespace(logits=torch.from_numpy(out))
 
 
@@ -277,6 +292,18 @@ def _cpu_ranker_for(d, load_fp32):
     ox = Path(d) / "model_int8.onnx"
     if ox.exists() and os.environ.get("CE_ONNX", "1") != "0":
         try:
+            import gpu_dml
+            use = gpu_dml.decided(ox)
+            if use is None:   # a Windows GPU not measured yet: measured in the background, used from the next start
+                gpu_dml.check(ox)
+            if use == "dml":
+                try:
+                    m = _OrtRanker(ox, dml=True)
+                    if m.dml:
+                        print(f"FINDR_RERANKER gpu int8-onnx DirectML ({ox.stat().st_size // 2**20} MB)", flush=True)
+                        return m
+                except Exception as e:   # noqa: BLE001
+                    print(f"FINDR_RERANKER DirectML could not load ({type(e).__name__}): the CPU", flush=True)
             m = _OrtRanker(ox)
             print(f"FINDR_RERANKER cpu int8-onnx ({ox.stat().st_size // 2**20} MB)", flush=True)
             return m
