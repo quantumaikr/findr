@@ -1,0 +1,57 @@
+# TEMPORARY (PR #178 only, removed before merge): Windows app builds for a manual test, as artifacts, no release.
+# A = main before the change, B = this branch. Each artifact is a folder that runs as is: findr.exe, uv.exe, engine\.
+name: app-test-build
+
+on:
+  push:
+    branches: [setup-single-run]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: A-main
+            ref: bfaacdf
+          - name: B-setup-single-run
+            ref: setup-single-run
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - name: uv for the bundle
+        shell: bash
+        run: |
+          bash .github/get-uv.sh x86_64-pc-windows-msvc app/src-tauri/binaries
+          mv app/src-tauri/binaries/uv.exe app/src-tauri/binaries/uv-x86_64-pc-windows-msvc.exe
+      - name: Build (no installer)
+        working-directory: app
+        run: |
+          npm ci --no-audit --no-fund
+          npx tauri build --no-bundle
+      - name: A folder that runs as is
+        shell: bash
+        run: |
+          d=out/findr-${{ matrix.name }}
+          mkdir -p "$d/engine"
+          cp app/src-tauri/target/release/findr.exe "$d/"
+          cp app/src-tauri/binaries/uv-x86_64-pc-windows-msvc.exe "$d/uv.exe"
+          cp -r findr "$d/engine/findr"
+          cp pyproject.toml README.md LICENSE "$d/engine/"
+          find "$d/engine" -name __pycache__ -prune -exec rm -rf {} +
+          git rev-parse --short HEAD > "$d/COMMIT.txt"
+          (cd out && sha256sum "findr-${{ matrix.name }}/findr.exe")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: findr-${{ matrix.name }}
+          path: out/findr-${{ matrix.name }}
+          retention-days: 7
