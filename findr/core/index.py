@@ -593,6 +593,7 @@ def tick(stage, done, total, every=0.7, **kw):
 
 
 PAUSE_MAX = 3600   # a pause the person forgot about lapses after an hour
+PAUSE_BEAT = 60    # a paused indexer says it is still here this often (the page drops a progress line after 15 minutes)
 
 
 def pause_wait():
@@ -602,6 +603,7 @@ def pause_wait():
         return
     f = Path(d, "pause")
     held = False
+    beat = time.time()
     while f.exists():
         try:
             if time.time() - f.stat().st_mtime > PAUSE_MAX:
@@ -611,6 +613,10 @@ def pause_wait():
         if not held:
             held = True; _P["paused"] = True
             print("FINDR_PAUSED", flush=True); _repeat_progress()
+        elif time.time() - beat > PAUSE_BEAT:
+            # still here while paused: the search page (and, on Windows, the engine) take a progress line older than
+            # 15 minutes for a stopped indexer, and showed '모두 준비됐어요' with no way to resume (field, Windows)
+            beat = time.time(); _repeat_progress()
         time.sleep(1)
     if held:
         _P["paused"] = False; print("FINDR_RESUMED", flush=True); _repeat_progress()
