@@ -36,6 +36,20 @@ def test_pause_holds_and_resumes(tmp_path, monkeypatch):
     assert not t.is_alive() and read(tmp_path)["paused"] is False and read(tmp_path)["stage"] == "content"
 
 
+def test_paused_indexer_keeps_its_line_fresh(tmp_path, monkeypatch):
+    """a paused indexer writes no progress of its own; the page took a line older than 15 minutes for a stopped indexer
+    and showed 'all set' with no way to resume (field, Windows). It now rewrites its line every PAUSE_BEAT seconds."""
+    monkeypatch.setenv("FINDR_DATA", str(tmp_path)); index._P.update(stages={}, paused=False)
+    monkeypatch.setattr(index, "PAUSE_BEAT", 1)
+    index.progress("content", 3, 9)
+    (tmp_path / "pause").write_text("1")
+    t = threading.Thread(target=index.pause_wait); t.start()
+    time.sleep(1.2); first = read(tmp_path)["t"]
+    time.sleep(2.5); later = read(tmp_path)
+    (tmp_path / "pause").unlink(); t.join(5)
+    assert later["t"] > first and later["paused"] is True and (later["stage"], later["done"], later["total"]) == ("content", 3, 9)
+
+
 def test_forgotten_pause_lapses(tmp_path, monkeypatch):
     monkeypatch.setenv("FINDR_DATA", str(tmp_path)); index._P.update(stages={}, paused=False)
     f = tmp_path / "pause"; f.write_text("1"); old = time.time() - index.PAUSE_MAX - 10; os.utime(f, (old, old))
