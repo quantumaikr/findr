@@ -136,6 +136,8 @@ def test_mac_starts_small_and_measures_after_the_download(tmp_path, monkeypatch)
     assert cli.cmd_upgrade(a) == 3 and pulled == ["embeddinggemma-2"] and asked   # downloaded, measured, slow: stays small
     assert (tmp_path / "upgrade_off").exists()
     # the second meaning lane (on by itself with this much memory): the same slow Mac still reads each file's first piece
+    import governor
+    monkeypatch.setattr(governor, "mem_available_gb", lambda: 8.0)   # free memory pinned (a CI runner has little)
     monkeypatch.delenv("LANE2")
     monkeypatch.setattr(models, "have", lambda name: True)
     ran = []
