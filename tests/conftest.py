@@ -9,3 +9,4 @@ if str(CORE) not in sys.path:
     sys.path.insert(0, str(CORE))
 
 os.environ["FINDR_LANG"] = "ko"   # also for the commands the tests start (they inherit it)
+os.environ["FINDR_DML"] = "0"   # no real GPU measurement from a test (a CI runner without a GPU crashed the measuring process)
