@@ -762,14 +762,20 @@ fn setup_runtime(app: AppHandle) {
     SETUP_LOG.lock().unwrap().clear();
     *SETUP_LAST.lock().unwrap() = None;
     thread::spawn(move || {
-        struct Running;   // also when the setup ends some other way (a panic): never left 'running' for good
-        impl Drop for Running {
+        // also when the setup ends some other way (a panic): never left 'running' for good. Only then, though: after
+        // done() a '다시 시도' can start the next run before this thread is gone, and this one must not end that one's flag
+        let finished = std::cell::Cell::new(false);
+        struct Running<'a>(&'a std::cell::Cell<bool>);
+        impl Drop for Running<'_> {
             fn drop(&mut self) {
-                SETUP_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+                if !self.0.get() {
+                    SETUP_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
             }
         }
-        let _running = Running;
+        let _running = Running(&finished);
         let done = |ok: bool, message: &str| {
+            finished.set(true);
             let d = Done { ok, message: message.into() };
             *SETUP_LAST.lock().unwrap() = Some(d.clone());   // kept before 'running' ends: a screen never sees neither
             SETUP_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
