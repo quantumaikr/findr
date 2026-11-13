@@ -330,9 +330,33 @@ def cmd_upgrade(a):
             (paths.HOME / "upgrade_off").write_text(f"이 PC에서 {h:.0f}시간 걸림: 작은 모델 유지", encoding="utf-8")
             import sqlite3
             # second lane on: the first pieces' vectors stay (1.5 KB a file) for the engine
-            c = sqlite3.connect(str(a.db), timeout=60); c.execute("UPDATE chunks SET emb2=NULL" + (" WHERE n!=0" if _lane2() else "")); c.commit(); c.execute("VACUUM")
+            c = sqlite3.connect(str(a.db), timeout=60); c.execute("UPDATE chunks SET emb2=NULL" + (" WHERE n!=0" if _lane2() else "")); c.commit()
+            _vacuum(c, a.db)
             print(L(f"큰 모델로 바꾸기: 그만둠 (남은 시간 {h:.0f}시간 > {UPGRADE_MAX_HOURS}시간)", f"Switch to the larger model: given up ({h:.0f} hours left > {UPGRADE_MAX_HOURS} hours)"))
     return r
+
+
+def _vacuum(c, db):
+    """give the space of dropped vectors back to the disk, when there is room for it: VACUUM writes a copy of the index and,
+    with the engine reading, as much again into the write-ahead file. On a nearly full drive it failed half way"""
+    import shutil
+    import sqlite3
+    try:
+        size = Path(db).stat().st_size
+        free = shutil.disk_usage(Path(db).parent).free
+    except OSError:
+        return False
+    if free < 2 * size + 2 ** 30:
+        print(L(f"  색인 정리(VACUUM)는 건너뜀: 디스크 여유 {free / 2 ** 30:.1f}GB", f"  Index compaction (VACUUM) skipped: {free / 2 ** 30:.1f} GB free"), flush=True)
+        return False
+    try:
+        c.execute("PRAGMA journal_size_limit=67108864")
+        c.execute("VACUUM")
+        c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        return True
+    except sqlite3.Error as e:
+        print(f"  VACUUM failed ({type(e).__name__}): the index is unchanged", flush=True)
+        return False
 
 
 _LABEL_EN = {"바탕화면": "Desktop", "다운로드": "Downloads", "문서": "Documents", "클라우드": "Cloud", "사진": "Pictures", "동영상": "Videos",

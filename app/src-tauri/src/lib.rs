@@ -261,7 +261,7 @@ fn start_upgrader() {
                 let mut c = low_priority(python());
                 c.env("FINDR_THREADS", half.to_string()).env("OMP_NUM_THREADS", half.to_string());
                 // the person came back (keyboard or mouse in the last minute): the run stops and keeps what it computed
-                c.env("FINDR_STOP_ON_INPUT", "60");
+                c.env("FINDR_STOP_ON_INPUT", "60").env("FINDR_STOP_ON_BATTERY", "1");   // and when the charger comes out
                 c.args(["-m", "findr", "upgrade", "--minutes", "10"]);
                 let log = std::fs::OpenOptions::new().create(true).append(true).open(h.join("logs").join("upgrade.log"));
                 own_group(&mut c);
@@ -400,6 +400,19 @@ fn start_refresher() {
                 if names_only {
                     c.arg("--names-only");
                 }
+                // a run nobody asked for gives the PC back: it stops (and keeps what it stored) when the keyboard or mouse
+                // was used in the last minute or the charger came out. A deep run started in idle time (a video lecture)
+                // went on for hours after the person came back. A refresh first does two minutes of work, so a few new
+                // files still come in while the person works; '지금 반영' runs to the end
+                if !now_asked || deep {
+                    c.env("FINDR_STOP_ON_INPUT", "60");
+                    if !names_only {
+                        c.env("FINDR_STOP_ON_BATTERY", "1");   // a names-only run is the one meant for the battery
+                    }
+                    if !deep {
+                        c.env("FINDR_STOP_GRACE", "120");
+                    }
+                }
                 own_group(&mut c);
                 let ok = match log.map(|f| c.stdout(f).stderr(Stdio::null()).stdin(Stdio::null()).spawn()) {
                     Ok(Ok(mut child)) => {
@@ -408,7 +421,9 @@ fn start_refresher() {
                         // a deep run takes hours: '지금 반영' pressed meanwhile stops it (it keeps what it read and runs again later)
                         let ok = loop {
                             match child.try_wait() {
-                                Ok(Some(s)) => break s.success(),
+                                // 7: a refresh gave the PC back after taking in the new names (their content comes next
+                                // time); a deep run that gave it back is not done
+                                Ok(Some(s)) => break s.success() || (!deep && s.code() == Some(7)),
                                 Ok(None) => {
                                     if deep && asked() {
                                         kill_tree(child.id());

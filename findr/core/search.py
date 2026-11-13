@@ -507,6 +507,89 @@ def lane2_interleave(score, lane, top=LANE2_TOP, eps=LANE2_EPS):
     return score
 
 
+VEC_BLOCK = 4096      # rows per step when the vectors are read in a scan
+VEC_STEP = 500        # ids per lookup when only some vectors are read again
+RELOAD_ROOM_GB = 1.0  # free memory kept besides the new set while a reload builds it next to the old one
+
+
+def read_vectors(con, old_ids=None, old_M=None):
+    """(ids, M, read): every piece's meaning vector in id order (the order of a plain scan of the table, as before, so
+    equal scores keep their order) as float32. With the set already loaded (old_ids ascending, old_M), a row whose id and
+    first stored values are unchanged is copied from it and only the other rows are read from the index. A reload during
+    indexing read every vector again, held each one three times (bytes, 16-bit, 32-bit) next to the old set, and ran about
+    once a minute (field, 16 GB laptop). M is None when there is no vector; `read` counts the vectors read from the index.
+    One snapshot of the index for the whole read."""
+    own = not con.in_transaction
+    if own:
+        con.execute("BEGIN")
+    try:
+        if old_M is not None and old_ids is not None and len(old_ids) and old_M.ndim == 2 and old_M.shape[1] >= 4 \
+                and len(old_ids) == len(old_M):
+            got = _read_changed(con, np.asarray(old_ids, np.int64), old_M)
+            if got is not None:
+                return got
+        n = con.execute("SELECT count(*) FROM chunks WHERE emb IS NOT NULL").fetchone()[0]
+        ids, M, k = np.empty(n, np.int64), None, 0
+        cur = con.execute("SELECT id, emb FROM chunks WHERE emb IS NOT NULL ORDER BY id")
+        while True:
+            part = cur.fetchmany(VEC_BLOCK)
+            if not part:
+                break
+            blobs = [b for _, b in part]
+            w = len(blobs[0])
+            if any(len(b) != w for b in blobs) or (M is not None and w != 2 * M.shape[1]):
+                raise ValueError("vectors of different widths")   # as np.stack refused them before
+            if M is None:
+                M = np.empty((n, w // 2), np.float32)
+            M[k:k + len(part)] = np.frombuffer(b"".join(blobs), np.float16).reshape(len(part), w // 2)
+            ids[k:k + len(part)] = [c for c, _ in part]
+            k += len(part)
+        return ids[:k], (M[:k] if M is not None else None), k
+    finally:
+        if own:
+            con.commit()
+
+
+def _head(M):
+    """the first four stored (16-bit) values of each row as one number: a vector written again shows another"""
+    return np.ascontiguousarray(M[:, :4].astype(np.float16)).view(np.uint64).ravel()
+
+
+def _read_changed(con, old_ids, old_M):
+    """read_vectors with a set already loaded; None when the stored width changed (then everything is read)"""
+    d = old_M.shape[1]
+    idl, heads = [], []
+    cur = con.execute("SELECT id, substr(emb, 1, 8), length(emb) FROM chunks WHERE emb IS NOT NULL ORDER BY id")
+    while True:
+        part = cur.fetchmany(VEC_BLOCK * 4)
+        if not part:
+            break
+        for cid, h, w in part:
+            if w != 2 * d:
+                return None
+            idl.append(cid); heads.append(h)
+    ids = np.array(idl, np.int64); del idl
+    new_head = np.frombuffer(b"".join(heads), np.uint64) if heads else np.zeros(0, np.uint64); del heads
+    if np.any(np.diff(old_ids) <= 0):   # not ascending (never so when loaded here): put in order first
+        order = np.argsort(old_ids, kind="stable"); old_ids = old_ids[order]
+    else:
+        order = None
+    pos = np.minimum(np.searchsorted(old_ids, ids), len(old_ids) - 1)
+    same = (old_ids[pos] == ids) & (_head(old_M)[order[pos] if order is not None else pos] == new_head)
+    M = np.empty((len(ids), d), np.float32)
+    keep = np.flatnonzero(same)
+    src = order[pos[keep]] if order is not None else pos[keep]
+    for a in range(0, len(keep), 8192):   # in blocks: no second full-size temporary
+        M[keep[a:a + 8192]] = old_M[src[a:a + 8192]]
+    miss = np.flatnonzero(~same)
+    for a in range(0, len(miss), VEC_STEP):
+        rows = miss[a:a + VEC_STEP]
+        got = dict(con.execute(f"SELECT id, emb FROM chunks WHERE id IN ({','.join(str(int(i)) for i in ids[rows])})"))
+        for r in rows:
+            M[r] = np.frombuffer(got[int(ids[r])], np.float16)
+    return ids, (M if len(ids) else None), len(miss)
+
+
 class Finder:
     def lane2_sig(self, con):
         """how many first pieces carry the larger encoder's vector, and the sum of their ids (cheap to ask; a change means
@@ -607,9 +690,8 @@ class Finder:
         self.con.create_function("nfc", 1, lambda s: _ud.normalize("NFC", s) if s else s, deterministic=True)
         self.con.execute("CREATE TABLE IF NOT EXISTS cards(file INTEGER PRIMARY KEY, outline TEXT, summary TEXT, done INT DEFAULT 0)")
         self._dv = self.con.execute("PRAGMA data_version").fetchone()[0]   # read before loading: a commit during the load is still seen (#21)
-        rows = self.con.execute("SELECT c.id, c.emb FROM chunks c WHERE c.emb IS NOT NULL").fetchall()
-        self.ids = np.array([r[0] for r in rows], dtype=np.int64)   # a fresh index may have no vectors yet (words only)
-        self.M = np.stack([np.frombuffer(r[1], np.float16) for r in rows]).astype(np.float32) if rows else np.zeros((0, 1024), np.float32)
+        self.ids, M, _ = read_vectors(self.con)   # a fresh index may have no vectors yet (words only)
+        self.M = M if M is not None else np.zeros((0, 1024), np.float32)
         Enc = None   # the app builds EmbeddingGemma-2 or e5-small indexes only
         from enc_eg2 import EG2, encoder_of
         self.encoder = encoder_of(self.con)   # the index says which meaning encoder built its vectors
@@ -629,8 +711,11 @@ class Finder:
     def refresh(self, every=60):
         """an index that grew while the page was open (background indexing): pick up new vectors without a restart.
         The question only looks whether the index changed; reading the vectors happens on a thread, and the question is
-        answered from the vectors already loaded (#67: questions during indexing stalled 8-11 s in the reload)"""
+        answered from the vectors already loaded (#67: questions during indexing stalled 8-11 s in the reload). A reload
+        that took long waits ten times its own time before the next (no reload after reload while a large index grows)"""
         now = time.time()
+        if every > 0:
+            every = max(every, 10 * getattr(self, "_reload_secs", 0.0))
         if now - getattr(self, "_seen_at", 0) < every:
             return
         self._seen_at = now
@@ -661,13 +746,24 @@ class Finder:
                             self.lane2_set(got)
                         print(f"FINDR_RELOAD lane2 {len(got[2])}", flush=True)
                     return
+                old = getattr(self, "M", None)
+                width = old.shape[1] if old is not None and old.ndim == 2 else 0
+                free = _mem_free_gb()
+                if free is not None and width and free < n * width * 4 / 2 ** 30 + RELOAD_ROOM_GB:
+                    # the new set is built next to the old one: with too little memory for both, the page keeps the vectors
+                    # it has and a later question looks again
+                    self._dv = None
+                    print(f"FINDR_RELOAD later ({free:.1f} GB free, {n} vectors)", flush=True)
+                    return
                 got = self.lane2_read(con, e_)
                 enc = make_encoder(e_, DEVICE, max_len=128) if e_ in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and e_ != self.encoder else None
-                rows = con.execute("SELECT c.id, c.emb FROM chunks c WHERE c.emb IS NOT NULL").fetchall()
+                same_enc = e_ == self.encoder
+                t_r = time.time()
+                ids, M, read = read_vectors(con, *((self.ids, old) if same_enc and width else (None, None)))
             finally:
                 con.close()
-            ids = np.array([r[0] for r in rows], dtype=np.int64)
-            M = np.stack([np.frombuffer(r[1], np.float16) for r in rows]).astype(np.float32) if rows else None
+            self._reload_secs = time.time() - t_r
+            old = None   # the old set goes as soon as the new one is in
             with SEARCH_LOCK:
                 if enc is not None:   # the index now records another encoder (#9)
                     self.encoder = e_; self.enc = enc
@@ -675,7 +771,7 @@ class Finder:
                 self.M = M if M is not None else np.zeros((0, len(self.qvec("준비"))), np.float32)
                 self.Mg = None; self.name_rows = None; self._top = top
                 self.lane2_set(got)
-            print(f"FINDR_RELOAD vectors {len(ids)}", flush=True)
+            print(f"FINDR_RELOAD vectors {len(ids)} (read {read}) {self._reload_secs:.1f}s", flush=True)
         except Exception as e:   # a failed reload keeps the vectors the page already has
             print(f"FINDR_RELOAD failed {type(e).__name__}", flush=True)
         finally:
@@ -2135,12 +2231,31 @@ def ce_scores(q, res, d=None, nosumm=None, top=None):
     return _ce_score(q, res, d, tok, m, nosumm, top)
 
 
+MPS_FP16_RAM_GB = 15.5   # an Apple GPU with less shared memory than this holds the reranker in 16 bits
+
+
+def mps_ranker_dtype():
+    """the reranker's precision on an Apple GPU: 32 bits held 2.2 GB of an 8 GB Mac's shared memory, 16 bits hold half
+    (as on an NVIDIA GPU, where it has always run in 16 bits). Macs with 16 GB or more keep 32 bits and their answers;
+    CE_MPS_FP16=1 or 0 says it outright"""
+    import torch
+    v = os.environ.get("CE_MPS_FP16", "")
+    if v in ("0", "1"):
+        return torch.float16 if v == "1" else torch.float32
+    try:
+        import psutil
+        ram = psutil.virtual_memory().total / 2 ** 30
+    except Exception:   # noqa: BLE001
+        return torch.float32
+    return torch.float16 if ram < MPS_FP16_RAM_GB else torch.float32
+
+
 def _ce_load(d):
     import torch
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
     tok = AutoTokenizer.from_pretrained(d)
     m = (AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float16).to(DEVICE) if DEVICE == "cuda"
-         else AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float32).to(DEVICE) if DEVICE == "mps"
+         else AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=mps_ranker_dtype()).to(DEVICE) if DEVICE == "mps"
          else _cpu_ranker_for(d, lambda: AutoModelForSequenceClassification.from_pretrained(d, torch_dtype=torch.float32))).eval()
     nb = Path(d) / "none_bias.txt"   # a none-aware reranker carries its learned 'no answer' score
     if nb.exists():
@@ -2360,7 +2475,82 @@ def _mem_free_gb():
 
 
 LANE2_FREE_GB = 3.0   # free memory needed before the second lane loads its model (1.2 GB) at the first question
-SEARCH_LOCK = threading.Lock()   # the finder shares one DB connection, GPU models and per-search state: one search at a time
+class PersonFirstLock:
+    """one search at a time (the finder shares one DB connection, its models and per-search state), and the person first:
+    background work for the indexer (POST /embed) takes the lock only when no question waits for it. A deep run sent batch
+    after batch and each question waited behind one (field, 16 GB laptop: the engine computed the indexer's vectors while
+    the person searched). Used as `with SEARCH_LOCK:`, like the plain lock it replaces"""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._count = threading.Lock()
+        self._waiting = 0
+
+    def acquire(self, blocking=True, timeout=-1):
+        with self._count:
+            self._waiting += 1
+        try:
+            return self._lock.acquire(blocking, timeout)
+        finally:
+            with self._count:
+                self._waiting -= 1
+
+    def release(self):
+        self._lock.release()
+
+    def locked(self):
+        return self._lock.locked()
+
+    def waiting(self):
+        """questions (or other foreground work) waiting for the lock right now"""
+        return self._waiting
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self.release()
+        return False
+
+    def acquire_background(self, patience=10.0):
+        """the lock for background work: while a question waits, the question goes first. After `patience` seconds the
+        background work takes its turn all the same (a steady stream of questions must not stop indexing for good)"""
+        end = time.time() + patience
+        while True:
+            while self._waiting and time.time() < end:
+                time.sleep(0.02)
+            self._lock.acquire()
+            if not self._waiting or time.time() >= end:
+                return True
+            self._lock.release()   # a question came in meanwhile: it has the turn
+
+
+SEARCH_LOCK = PersonFirstLock()   # one search at a time; the indexer's background batches after the person's questions
+ENGINE_THREADS = [None]   # the engine's torch threads, decided once (engine_threads)
+
+
+def _set_threads(n):
+    import torch
+    torch.set_num_threads(max(1, int(n)))
+
+
+def engine_threads():
+    """torch threads for the engine: FINDR_ENGINE_THREADS, else torch's own choice (one per physical core) with one logical
+    core always left for the rest of the PC (the window, a video): on a 4-core laptop without hyper-threading a question
+    took every core. On PCs with more logical than physical cores this is torch's own number, so answers are unchanged"""
+    if ENGINE_THREADS[0] is None:
+        import torch
+        v = os.environ.get("FINDR_ENGINE_THREADS")
+        ENGINE_THREADS[0] = max(1, int(v)) if v else max(1, min(torch.get_num_threads(), (os.cpu_count() or 2) - 1))
+    return ENGINE_THREADS[0]
+
+
+def embed_threads(asked):
+    """threads for one /embed batch: the indexer's share (FINDR_THREADS, sent as `threads`) when it is below the engine's
+    own; 0 = no change"""
+    full = engine_threads()
+    return asked if 0 < asked < full else 0
 _CE_LOCK = threading.Lock()   # loading a reranker (once per model folder)
 READY = threading.Event()   # set when the warm-up is done: /healthz answers at once, /ready says when a question gets full speed (#68)
 MODES = {"auto", "ng", "xce", "base"}   # what the web page may ask for; 4B modes stay CLI-only
@@ -3108,6 +3298,12 @@ def watch_parent(stop, every=5.0, alive=None, hard_exit=None):
 
 def serve(f, port):
     _stage_timers()
+    try:   # a cap on the engine's threads from the start (engine_threads): one logical core stays with the person
+        n = engine_threads()
+        _set_threads(n)
+        print(f"FINDR_THREADS engine {n}", flush=True)
+    except Exception:   # noqa: BLE001  (no torch: nothing to cap)
+        pass
     global GOV
     try:   # the resource manager: observes this PC (profile, memory, CPU, power, heat) and says what it would do (/status)
         from governor import Governor
@@ -3477,19 +3673,30 @@ def serve(f, port):
                 try:
                     r = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 4 << 20)) or b"{}")
                     texts, name = [str(t) for t in r["texts"]][:64], str(r.get("encoder") or "")
+                    asked = int(r.get("threads") or 0)   # the indexer's share of the cores (FINDR_THREADS): background work
                 except Exception:
                     return self.reply(400, b'{"ok": false}', "application/json")
                 enc = getattr(f, "enc", None)
                 if enc is None or name != getattr(f, "encoder", None) or not hasattr(enc, "st"):
                     return self.reply(409, json.dumps({"ok": False, "why": "encoder", "have": getattr(f, "encoder", None)}).encode(), "application/json")
                 import base64
-                with SEARCH_LOCK:   # the encoder is shared with the questions: one short batch at a time
-                    old = enc.st.max_seq_length
+                # the encoder is shared with the questions: one short batch at a time, after any question that waits, and
+                # with the indexer's share of the cores (the engine runs at normal priority: a low-priority run's vectors
+                # computed here on every core made its priority and thread limit count for nothing)
+                SEARCH_LOCK.acquire_background()
+                try:
+                    old, few = enc.st.max_seq_length, embed_threads(asked)
                     try:
                         enc.st.max_seq_length = 512
+                        if few:
+                            _set_threads(few)
                         v = enc.emb(texts, query=False).cpu().numpy().astype("float16")
                     finally:
                         enc.st.max_seq_length = old
+                        if few:
+                            _set_threads(ENGINE_THREADS[0])
+                finally:
+                    SEARCH_LOCK.release()
                 return self.reply(200, json.dumps({"ok": True, "dim": int(v.shape[1]) if len(v) else 0,
                                                    "vecs": base64.b64encode(v.tobytes()).decode()}).encode(), "application/json")
             if self.headers.get("X-Findr") == "1" and urlparse(self.path).path == "/pause":

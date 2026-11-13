@@ -254,6 +254,42 @@ def _decode_text(b: bytes) -> str:
     return b.decode("utf-8", "ignore")
 
 
+LO_SLOTS = 16   # LibreOffice profiles kept in the data folder, one per reader process at a time
+_LO = []        # this process's profile: [argument, open lock file]
+
+
+def lo_profile():
+    """a LibreOffice profile of this reader process's own (["-env:UserInstallation=..."]), or [] when none can be had.
+    Reader processes converting at the same time shared the person's one profile: the second LibreOffice handed its file to
+    the first or stopped on the profile lock. Slots are reused across runs (a lock file each, released when the process
+    ends), so the data folder holds at most LO_SLOTS profiles"""
+    if _LO:
+        return [_LO[0]]
+    d = os.environ.get("FINDR_DATA")
+    if not d:
+        return []
+    root = Path(d, "lo")
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return []
+    for k in range(LO_SLOTS):
+        f = open(root / f"slot{k}.lock", "a+")
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            f.close()
+            continue
+        _LO[:] = ["-env:UserInstallation=" + (root / f"slot{k}").resolve().as_uri(), f]
+        return [_LO[0]]
+    return []
+
+
 def convert_old(p: Path):
     """hwp/doc/ppt/xls -> text with a local LibreOffice; cached by path, size and mtime (re-runs cost nothing)"""
     import hashlib
@@ -282,7 +318,7 @@ def convert_old(p: Path):
         # character was dropped. Ask for UTF-8, and still read an older LibreOffice's output in the local code page
         target = "pdf" if ext in (".ppt", ".xls") else "txt:Text (encoded):UTF8"
         try:
-            subprocess.run(["soffice", "--headless", "--convert-to", target, "--outdir", td, str(src)], capture_output=True, timeout=120)
+            subprocess.run(["soffice", *lo_profile(), "--headless", "--convert-to", target, "--outdir", td, str(src)], capture_output=True, timeout=120)
             converted = (Path(td) / ("in.pdf" if target == "pdf" else "in.txt")).exists()
             if target == "pdf" and converted:
                 txt = subprocess.run(["pdftotext", "-enc", "UTF-8", "-layout", str(Path(td) / "in.pdf"), "-"],
@@ -320,7 +356,68 @@ def label(p: Path):   # what the encoder sees besides the text: names carry mean
     return nfc(f"{p.name} | {'/'.join(p.parts[-4:-1])}")
 
 
+WAL_LIMIT = 64 * 2 ** 20   # bytes the write-ahead file keeps after a checkpoint
+_RUN = {"con": None}
+
+
+def wal_trim(con):
+    """after a large write: move the write-ahead file into the index and cut it to nothing (best effort: a reader in the
+    middle of a question keeps its part until the next time)"""
+    try:
+        con.commit()
+        con.execute("PRAGMA busy_timeout=2000")   # not the minute a write waits: a question reading now is not waited out
+        try:
+            return con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        finally:
+            con.execute("PRAGMA busy_timeout=60000")
+    except sqlite3.Error:
+        return None
+
+
+def switch_room_gb(con):
+    """disk space a rewrite of every row takes in the write-ahead file: about the index itself (0 when it cannot tell)"""
+    try:
+        pages = con.execute("PRAGMA page_count").fetchone()[0]
+        size = con.execute("PRAGMA page_size").fetchone()[0]
+        return pages * size / 2 ** 30
+    except sqlite3.Error:
+        return 0.0
+
+
 def main():
+    """_main, stopping cleanly where the run gives the PC back or the disk runs out: what was stored stays (committed),
+    exit 7 (person back, on battery) or 8 (disk nearly full)"""
+    try:
+        return _main()
+    except GiveBack as e:
+        con = _RUN["con"]
+        try:
+            if con is not None:
+                con.commit()
+        except sqlite3.Error:
+            con.rollback()
+        if e.why == "disk":
+            print(f"FINDR_DISKFULL 색인 폴더의 디스크 여유가 {e.detail}뿐이라 색인을 멈췄습니다. 지금까지 읽은 것은 남아 있고, "
+                  f"공간이 생기면 이어서 합니다. (disk nearly full: indexing stopped, what was read is kept)", flush=True)
+        else:
+            print(f"FINDR_YIELD {e.why}: the run stops here and keeps what it stored; the app runs it again later", flush=True)
+        if con is not None:
+            wal_trim(con)
+        return GIVE_BACK_CODE.get(e.why, 7)
+    except sqlite3.OperationalError as e:
+        if "full" not in str(e).lower():
+            raise
+        con = _RUN["con"]   # the disk filled between two looks: the last batch is undone, the rest stays
+        try:
+            if con is not None:
+                con.rollback()
+        except sqlite3.Error:
+            pass
+        print(f"FINDR_DISKFULL 디스크가 가득 차서 색인을 멈췄습니다. 지금까지 저장한 것은 남아 있습니다. (database or disk is full)", flush=True)
+        return 8
+
+
+def _main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", required=True, nargs="+", help="one or more folders, in the order people look in them")
     ap.add_argument("--db", required=True)
@@ -343,7 +440,12 @@ def main():
     if miss:   # once per run, so a quiet gap has a reason and a fix
         print("FINDR_WARN missing: " + ", ".join(miss) + " -> findr doctor (설치 명령을 알려 줍니다)", flush=True)
     con = sqlite3.connect(Path(a.db).expanduser(), timeout=60)
+    _RUN["con"] = con
+    _GB.update(t0=time.time(), looked=0.0, disk=0.0, db=str(Path(a.db).expanduser().parent))   # this run's clock
     con.execute("PRAGMA journal_mode=WAL")   # the search server keeps reading while the index is updated
+    # the write-ahead file is cut back to this size after a checkpoint: after a large write (a whole deep run, the switch
+    # to another encoder) it otherwise kept its largest size on the disk for as long as the engine had the index open
+    con.execute(f"PRAGMA journal_size_limit={WAL_LIMIT}")
     con.executescript("""
       CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY, path TEXT UNIQUE, name TEXT, ext TEXT, size INT, mtime REAL, tier INT);
       CREATE TABLE IF NOT EXISTS chunks(id INTEGER PRIMARY KEY, file INT, n INT, text TEXT, emb BLOB);
@@ -491,7 +593,7 @@ def main():
                     fresh.append((fid, s, st.st_size, st.st_mtime, real_ext(p), tr, root))
                 new += 1
                 if new % 500 == 0:
-                    pause_wait()
+                    pause_wait(give_back=False)
                 if new % 5000 == 0:
                     con.commit(); print(f"  {new} files {time.time() - t0:.0f}s", flush=True)
         # folders the walk could not open keep their files (a share that dropped mid-walk is not a deletion)
@@ -540,6 +642,7 @@ def main():
         embed_photos(con, os.environ["PHOTO_URL"])
     print("FINDR_STATS", dict(con.execute("SELECT tier,count(*) FROM files GROUP BY tier").fetchall()),
           "chunks", con.execute("SELECT count(*) FROM chunks").fetchone()[0])
+    wal_trim(con)
 
 
 STAGES = ("nfc", "names", "namevec", "content", "meaning", "ocr")
@@ -635,10 +738,74 @@ PAUSE_MAX = 3600   # a pause the person forgot about lapses after an hour
 PAUSE_BEAT = 60    # a paused indexer says it is still here this often (the page drops a progress line after 15 minutes)
 
 
-def pause_wait():
+class GiveBack(Exception):
+    """this run stops here and keeps what it stored (committed by main): the person is back, the charger came out, or the
+    disk is nearly full. The app runs it again later; nothing read so far is read again"""
+
+    def __init__(self, why, detail=""):
+        super().__init__(why)
+        self.why, self.detail = why, detail
+
+
+GIVE_BACK_CODE = {"input": 7, "battery": 7, "disk": 8}   # exit codes: 7 gave the PC back, 8 the disk is nearly full
+DISK_MIN_GB = float(os.environ.get("FINDR_DISK_MIN_GB") or 1.0)   # free space the index never takes (the PC needs some)
+DISK_EVERY = 10   # seconds between looks at the free space
+_GB = {"t0": time.time(), "looked": 0.0, "disk": 0.0, "db": None}
+
+
+def disk_free_gb(path=None):
+    import shutil
+    try:
+        return shutil.disk_usage(path or _GB["db"] or ".").free / 2 ** 30
+    except OSError:
+        return None
+
+
+def disk_check(now=None):
+    """stop cleanly before the drive that holds the index is full: an index write on a full drive failed in the middle of
+    a run, and every later run read the same files again and failed the same way"""
+    now = time.time() if now is None else now
+    if now - _GB["disk"] < DISK_EVERY:
+        return
+    _GB["disk"] = now
+    free = disk_free_gb()
+    if free is not None and free < DISK_MIN_GB:
+        raise GiveBack("disk", f"{free:.2f} GB free")
+
+
+def give_back_check(now=None):
+    """the app's background runs (refresh, deep run) give the PC back: FINDR_STOP_ON_INPUT = seconds of recent keyboard or
+    mouse use that count as 'the person is back', FINDR_STOP_ON_BATTERY=1 stops when the charger comes out, and
+    FINDR_STOP_GRACE = seconds of work always done first (a refresh with a few new files finishes). The person's own runs
+    set none of them. A deep run started in idle time (a video lecture, no input for 5 minutes) went on for hours after
+    the person came back (field, 16 GB laptop)"""
+    within = float(os.environ.get("FINDR_STOP_ON_INPUT") or 0)
+    battery = os.environ.get("FINDR_STOP_ON_BATTERY") == "1"
+    if not within and not battery:
+        return
+    now = time.time() if now is None else now
+    if now - _GB["looked"] < LOOK_EVERY or now - _GB["t0"] < float(os.environ.get("FINDR_STOP_GRACE") or 0):
+        return
+    _GB["looked"] = now
+    if within and person_is_back(within):
+        raise GiveBack("input")
+    if battery:
+        try:
+            from governor import on_battery
+        except ImportError:
+            return
+        if on_battery():
+            raise GiveBack("battery")
+
+
+def pause_wait(give_back=True):
     """hold while the person paused indexing (the app or the search page writes 'pause' in the data folder), and while the
-    PC is nearly out of memory (memory_wait)"""
+    PC is nearly out of memory (memory_wait). Raises GiveBack where this run should stop (give_back_check, disk_check);
+    give_back=False where only the pause and memory count (the scan of names: cheap, and new files show by name)"""
     memory_wait()
+    disk_check()
+    if give_back:
+        give_back_check()
     d = os.environ.get("FINDR_DATA")
     if not d:
         return
@@ -777,13 +944,17 @@ def read_all(jobs):
                 ahead.append(ex.submit(_read_one, j))
                 if len(ahead) >= n * 3:
                     break
-            while ahead:
-                r = ahead.popleft().result()   # results come back in the given (priority) order
-                nxt = next(it, None)
-                if nxt is not None:
-                    ahead.append(ex.submit(_read_one, nxt))
-                done += 1
-                yield r
+            try:
+                while ahead:
+                    r = ahead.popleft().result()   # results come back in the given (priority) order
+                    nxt = next(it, None)
+                    if nxt is not None:
+                        ahead.append(ex.submit(_read_one, nxt))
+                    done += 1
+                    yield r
+            finally:   # the run stopped early (the person is back, the disk is full): files not started are not read
+                for fu in ahead:
+                    fu.cancel()
     except Exception:   # a worker died (out of memory, a reader crashed), or no worker processes on this platform
         # the chunk that was being read stays pending (None) for the next run: it may be what crashed the worker;
         # the rest is read here, each text still with its own file
@@ -1658,8 +1829,11 @@ class EngineEncoder:
         import base64
         import urllib.request
         out = []
+        # this run's share of the cores (FINDR_THREADS): the engine computes the batch with no more threads than that
+        threads = int(os.environ.get("FINDR_THREADS") or 0)
         for i in range(0, len(texts), self.STEP):
-            req = urllib.request.Request(self.url + "/embed", json.dumps({"encoder": self.name, "texts": texts[i:i + self.STEP]}).encode(),
+            req = urllib.request.Request(self.url + "/embed", json.dumps({"encoder": self.name, "texts": texts[i:i + self.STEP],
+                                                                         **({"threads": threads} if threads else {})}).encode(),
                                          self.hdr)
             r = json.loads(urllib.request.urlopen(req, timeout=300).read())
             out.append(np.frombuffer(base64.b64decode(r["vecs"]), np.float16).reshape(-1, r["dim"]))
@@ -1674,20 +1848,43 @@ def _meta_encoder(con):
 LOCAL_STEP = 32   # texts per forward pass of the indexer's own encoder
 
 
+def embed_input(text, path):
+    """what the encoder reads for one piece: the file's name and folders, then the piece"""
+    return f"{label(Path(path))}\n{text}"[:1200]
+
+
+def _input_key(text, path):
+    import hashlib
+    return hashlib.blake2b(embed_input(text, path).encode("utf-8", "surrogatepass"), digest_size=16).digest()
+
+
+def _inputs(con, cids):
+    """the encoder inputs of these pieces, in this order (read now, a batch at a time)"""
+    got = {cid: embed_input(t, p) for cid, t, p in con.execute(
+        f"SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file WHERE c.id IN ({','.join(str(int(c)) for c in cids)})")}
+    return [got[c] for c in cids]
+
+
 def embed(con, model, names_only=False):
     con.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
     if model in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and not con.execute("SELECT 1 FROM chunks WHERE emb IS NOT NULL LIMIT 1").fetchone():
         con.execute("INSERT OR REPLACE INTO meta VALUES('encoder', ?)", (model,)); con.commit()   # a new index records its encoder
     cap = int(os.environ.get("FINDR_FIRST_PIECES") or 0)   # first pass on a large PC: each file's opening pieces only
     if names_only:   # every file's name and folders, content or not (a file read later gets new pieces and vectors)
-        rows = con.execute("""SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
-                              WHERE c.emb IS NULL AND f.tier>0 AND c.n=0 AND COALESCE(c.text,'')='' ORDER BY f.mtime DESC""").fetchall()
+        sel = """SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
+                 WHERE c.emb IS NULL AND f.tier>0 AND c.n=0 AND COALESCE(c.text,'')='' ORDER BY f.mtime DESC"""
     else:
-        rows = con.execute(f"""SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
-                          WHERE c.emb IS NULL AND f.tier>0 AND COALESCE(f.pending,0) IN (0,2) {"AND c.n < %d" % cap if cap > 0 else ""}
-                          ORDER BY (c.n > 1), f.mtime DESC, c.n""").fetchall()   # every file's opening pieces first, newest first
+        sel = f"""SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
+                  WHERE c.emb IS NULL AND f.tier>0 AND COALESCE(f.pending,0) IN (0,2) {"AND c.n < %d" % cap if cap > 0 else ""}
+                  ORDER BY (c.n > 1), f.mtime DESC, c.n"""   # every file's opening pieces first, newest first
+    # identical inputs (a copied file, repeated boilerplate under the same name) are computed once. The pieces are looked at
+    # as they come and only a fingerprint of each input is kept; the texts are read again a batch at a time below. A deep run
+    # held every waiting piece's text twice (the rows, then the inputs built from them): gigabytes on a PC of long documents
+    groups, n_rows = {}, 0
+    for cid, t, p in con.execute(sel):
+        groups.setdefault(_input_key(t, p), []).append(cid); n_rows += 1
     later = deep_left(con, cap)[0] if cap > 0 and not names_only else 0   # with the unread rest of long files (#67-1)
-    if not rows:   # nothing to embed: no encoder load (three loads cost ~7 s per run with nothing new)
+    if not n_rows:   # nothing to embed: no encoder load (three loads cost ~7 s per run with nothing new)
         con.commit(); print(f"FINDR_EMBED 0 chunks 0s (computed 0, identical skipped 0" + (f", later pieces left for a deep run {later})" if later else ")"))
         return
     name = _meta_encoder(con)
@@ -1733,11 +1930,7 @@ def embed(con, model, names_only=False):
         enc = local()
     _RELEASE.append(let_go)
     print(f"FINDR_EMBED_VIA {'engine' if eng is not None else 'local'} ({name})", flush=True)
-    # identical inputs (a copied file, repeated boilerplate under the same name) are computed once
-    groups = {}
-    for cid, t, p in rows:
-        groups.setdefault(f"{label(Path(p))}\n{t}"[:1200], []).append(cid)
-    uniq = list(groups.items())
+    uniq = list(groups.values()); del groups   # [chunk ids with one input], in the order above
     t0 = last = time.time(); warned = False
     stage = "namevec" if names_only else "meaning"
     progress(stage, 0, len(uniq))   # the stage shows at once, not after its first batch
@@ -1746,10 +1939,10 @@ def embed(con, model, names_only=False):
         pause_wait()
         b = uniq[i:i + bs]
         tb = time.time()
-        v = vecs([k for k, _ in b])
+        v = vecs(_inputs(con, [cids[0] for cids in b]))
         if time.time() - tb > 8 and bs > 32:
             bs //= 2   # a slow PC (a large model on a CPU: 50 s per 256) reports more often
-        con.executemany("UPDATE chunks SET emb=?, emb2=NULL WHERE id=?", [(x.tobytes(), cid) for x, (_, cids) in zip(v, b) for cid in cids])   # changed text: its side vector is stale
+        con.executemany("UPDATE chunks SET emb=?, emb2=NULL WHERE id=?", [(x.tobytes(), cid) for x, cids in zip(v, b) for cid in cids])   # changed text: its side vector is stale
         done_ = i + len(b); i = done_
         rate = done_ / max(time.time() - t0, 1e-6); left = (len(uniq) - done_) / max(rate, 1e-6)
         tick(stage, done_, len(uniq), minutes_left=round(left / 60, 1))
@@ -1759,7 +1952,7 @@ def embed(con, model, names_only=False):
             if not warned and done_ >= 1024 and left > 6 * 3600 and name == "embeddinggemma-2":
                 warned = True
                 print("FINDR_SLOW 이 PC에서는 큰 모델이 느립니다. 작은 모델로 바꾸면 훨씬 빨라집니다:  findr setup --lite", flush=True)
-    con.commit(); print(f"FINDR_EMBED {len(rows)} chunks {time.time() - t0:.0f}s (computed {len(uniq)}, identical skipped {len(rows) - len(uniq)}"
+    con.commit(); print(f"FINDR_EMBED {n_rows} chunks {time.time() - t0:.0f}s (computed {len(uniq)}, identical skipped {n_rows - len(uniq)}"
                         + (f", later pieces left for a deep run {later})" if later else ")"))
     if let_go in _RELEASE:
         _RELEASE.remove(let_go)
@@ -1841,18 +2034,35 @@ def upgrade(con, target, minutes=50, bs=None, first_only=False):
     step = 16 if back else 64
     last = {k: v for k, v in _last_upgrade().items() if k in ("rate", "hours_left")}   # read now: progress below rewrites the file
     looked = 0.0
-    while True:
-        # first pieces first (documents, then the rest, newest first); after them the order used before (cards and second
-        # pieces, then the deeper ones, newest file first)
-        rows = con.execute(f"""SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
+    battery = os.environ.get("FINDR_STOP_ON_BATTERY") == "1"
+    # first pieces first (documents, then the rest, newest first); after them the order used before (cards and second
+    # pieces, then the deeper ones, newest file first). The order is taken once per run, ids only: asked again for each
+    # step of 16 pieces, the sort went over every piece of the index each time
+    work = [r[0] for r in con.execute(f"""SELECT c.id FROM chunks c JOIN files f ON f.id=c.file
                                WHERE c.emb IS NOT NULL AND c.emb2 IS NULL{' AND c.n=0' if first_only else ''}
-                               ORDER BY (c.n != 0), (c.n = 0 AND lower(coalesce(f.ext, '')) NOT IN ({docs})), (c.n > 1), f.mtime DESC, c.n
-                               LIMIT ?""", (step,)).fetchall()
+                               ORDER BY (c.n != 0), (c.n = 0 AND lower(coalesce(f.ext, '')) NOT IN ({docs})), (c.n > 1), f.mtime DESC, c.n""")]
+    pos = 0
+    while True:
+        rows = []
+        while not rows and pos < len(work):
+            ids_ = work[pos:pos + step]; pos += len(ids_)
+            got = {r[0]: r for r in con.execute(f"""SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
+                       WHERE c.id IN ({','.join(str(int(i)) for i in ids_)}) AND c.emb IS NOT NULL AND c.emb2 IS NULL""")}
+            rows = [got[i] for i in ids_ if i in got]
         if not rows:
             break
         returned = False
-        if back and time.time() - looked >= LOOK_EVERY:   # not every step: on a fast GPU 16 pieces take a fraction of a second
+        if (back or battery) and time.time() - looked >= LOOK_EVERY:   # not every step: on a fast GPU 16 pieces take a fraction of a second
             looked = time.time(); returned = person_is_back(back)
+            if not returned and battery:
+                try:
+                    from governor import on_battery
+                    returned = on_battery()   # the charger came out: the rest waits for it
+                except ImportError:
+                    pass
+        if not returned:
+            free = disk_free_gb(_GB["db"])
+            returned = free is not None and free < DISK_MIN_GB   # the disk is nearly full: stop, keep what is there
         if time.time() >= stop or returned:   # >=: minutes=0 stops at once on Windows' 15 ms clock too
             left = con.execute(f"SELECT count(*) FROM chunks WHERE emb IS NOT NULL AND emb2 IS NULL{scope}").fetchone()[0]
             rate = did / max(time.time() - t0, 1e-6)
@@ -1866,17 +2076,24 @@ def upgrade(con, target, minutes=50, bs=None, first_only=False):
             v = emb512(enc, [f"{label(Path(p))}\n{t}"[:1200] for _, t, p in rows]).cpu().numpy().astype(np.float16)
         con.executemany("UPDATE chunks SET emb2=? WHERE id=?", [(x.tobytes(), cid) for x, (cid, _, _) in zip(v, rows)])
         con.commit(); did += len(rows)
-        if did % 640 < step:
-            progress_upgrade(target, total - con.execute(f"SELECT count(*) FROM chunks WHERE emb IS NOT NULL AND emb2 IS NULL{scope}").fetchone()[0], total, file=pfile, **last)
+        if did % 640 < step:   # done: every piece but the ones still in this run's list (no count over the index each time)
+            progress_upgrade(target, total - (len(work) - pos), total, file=pfile, **last)
     if first_only:   # the first pieces are there: the small model keeps answering, the second lane reads these
         progress_upgrade(target, total, total, file=pfile, first_only=True)
         print(f"FINDR_UPGRADE first pieces ready ({target}): {total} files, {did} this run in {time.time() - t0:.0f}s", flush=True)
         return FIRST_DONE
+    # the switch rewrites every vector in one transaction: the write-ahead file grows to about the size of the index
+    need = switch_room_gb(con)
+    free = disk_free_gb(_GB["db"])
+    if need and free is not None and free < need + DISK_MIN_GB:
+        print(f"FINDR_UPGRADE waits for disk space: the switch needs about {need:.1f} GB, {free:.1f} GB free", flush=True)
+        return 2
     with con:   # every vector has its counterpart: switch at once (search reloads when the recorded encoder changes)
         con.execute("UPDATE chunks SET emb=emb2 WHERE emb IS NOT NULL")
         con.execute("UPDATE chunks SET emb2=NULL")
         con.execute("INSERT OR REPLACE INTO meta VALUES('encoder', ?)", (target,))
         con.execute("DELETE FROM meta WHERE key='upgrade'")
+    wal_trim(con)
     progress_upgrade(target, total, total, switched=True)
     print(f"FINDR_UPGRADE switched to {target}: {total} vectors in {time.time() - t0:.0f}s this run", flush=True)
     return 0
