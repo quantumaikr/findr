@@ -942,7 +942,11 @@ fn read_progress() -> String {
     // paused is the pause file itself: a paused indexer writes no progress, so the screen said '진행 중' after a restart
     match serde_json::from_str::<serde_json::Value>(&s) {
         Ok(serde_json::Value::Object(mut m)) => {
-            m.insert("paused".into(), serde_json::Value::Bool(home().join("pause").exists()));
+            // pausing: asked, and the indexer has not said it holds yet (it finishes the file it is reading: up to 14 s, #66-10)
+            let asked = home().join("pause").exists();
+            let held = m.get("paused").and_then(|v| v.as_bool()).unwrap_or(false);
+            m.insert("pausing".into(), serde_json::Value::Bool(asked && !held));
+            m.insert("paused".into(), serde_json::Value::Bool(asked));
             serde_json::Value::Object(m).to_string()
         }
         _ => s,

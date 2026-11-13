@@ -181,7 +181,7 @@ const CAN = (): [string, string, string][] => [   // stage, what the person can 
   ['meaning', L('기억나는 대로 물어보기', 'Ask the way you remember it'), L('내용의 뜻을 파악하는 중', 'Learning what the contents mean')],
   ['ocr', L('스캔·스크린샷 속 글자 찾기', 'Find text in scans and screenshots'), L('스캔 글자를 읽는 중', 'Reading text in scans')],
 ]
-type Progress = { stage?: string; done?: number; total?: number; minutes_left?: number | null; files?: number | null; paused?: boolean
+type Progress = { stage?: string; done?: number; total?: number; minutes_left?: number | null; files?: number | null; paused?: boolean; pausing?: boolean
   stages?: Record<string, string>; t?: number; started?: number; scanned?: number; rate?: number; folder?: string }
 // '약 3분', '1분 안에', '약 1시간 20분': the time left of a stage, said plainly
 const left = (m: number) => m < 1 ? L('1분 안에 끝나요', 'less than a minute left') : m < 60 ? L(`약 ${Math.round(m)}분 남았어요`, `about ${Math.round(m)} min left`) : L(`약 ${Math.floor(m / 60)}시간 ${Math.round(m % 60)}분 남았어요`, `about ${Math.floor(m / 60)} h ${Math.round(m % 60)} min left`)
@@ -241,8 +241,8 @@ async function indexing(list: string[], deep = false) {
     $('bar').parentElement!.classList.toggle('busy', P.stage === 'names' && sg.names === 'now' && !P.paused)
     if (P.stage === 'names' && P.folder) set('where', L(`둘러보는 중: ${P.folder}`, `Looking in: ${P.folder}`))
     if (P.started) set('elapsed', L(`시작한 지 ${clock(Date.now() / 1000 - P.started)}`, `${clock(Date.now() / 1000 - P.started)} elapsed`) + (P.t && Date.now() / 1000 - P.t > 20 && !P.paused ? L(' · 큰 파일을 처리하는 중이에요', ' · working on a large file') : ''))
-    set('pct', P.paused ? L(`${pct}% · 잠시 멈춤`, `${pct}% · paused`) : `${pct}%`)
-    set('eta', P.paused ? L('1시간 뒤에는 저절로 이어서 해요', 'Resumes on its own in an hour') : P.minutes_left != null ? L(`이 단계 ${left(P.minutes_left)}`, `This step: ${left(P.minutes_left)}`) : P.stage === 'names' ? L('파일 목록이 끝나면 남은 시간을 알려 드려요', 'Time left appears once the file list is done') : '')
+    set('pct', P.pausing ? L(`${pct}% · 멈추는 중…`, `${pct}% · pausing…`) : P.paused ? L(`${pct}% · 잠시 멈춤`, `${pct}% · paused`) : `${pct}%`)
+    set('eta', P.pausing ? L('읽고 있던 파일을 마치고 멈춰요', 'Stopping after the file it is reading') : P.paused ? L('1시간 뒤에는 저절로 이어서 해요', 'Resumes on its own in an hour') : P.minutes_left != null ? L(`이 단계 ${left(P.minutes_left)}`, `This step: ${left(P.minutes_left)}`) : P.stage === 'names' ? L('파일 목록이 끝나면 남은 시간을 알려 드려요', 'Time left appears once the file list is done') : '')
     if (P.files) found = Math.max(found, P.files)
     if (P.scanned) found = Math.max(found, P.scanned)
     set('nfiles', found.toLocaleString())
@@ -283,7 +283,7 @@ async function indexing(list: string[], deep = false) {
     set('where', L('모두 살펴봤어요', 'All done')); if (!stay) goSearch()
   }))
   $('go').onclick = goSearch
-  $('pause').onclick = async () => { const on = !P.paused; await invoke('set_pause', { on }); P.paused = on; render() }
+  $('pause').onclick = async () => { const on = !P.paused; await invoke('set_pause', { on }); P.paused = on; P.pausing = on; render() }
   invoke('start_index', { folders: list, deep })
 }
 

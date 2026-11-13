@@ -2912,7 +2912,10 @@ def serve(f, port):
                     else:
                         # paused is the pause file itself: a paused indexer waits without writing progress, and a page opened
                         # after a restart showed '진행 중' with a pause button that paused it again (field, Mac)
-                        p_["paused"] = (data_ / "pause").exists()
+                        asked = (data_ / "pause").exists()
+                        # pausing: asked, and the indexer has not said it holds yet (it finishes the file it reads: up to 14 s)
+                        p_["pausing"] = asked and not p_.get("paused")
+                        p_["paused"] = asked
                 except (OSError, ValueError):
                     p_ = {}
                 # #106: in the app, the page offers '지금 반영' and says when new files were last taken in, idle or not
