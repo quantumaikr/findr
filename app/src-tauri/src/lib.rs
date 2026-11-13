@@ -970,7 +970,12 @@ fn start_index(app: AppHandle, folders: Vec<String>, deep: Option<bool>) {
         take_index_turn();
         PERSON.store(false, std::sync::atomic::Ordering::SeqCst);
         let _ = std::fs::remove_file(home().join("progress.json")); // a fresh picture for this run, once the turn is ours
-        let mut c = command(python());
+        // below normal priority and half the cores, like the background runs: the first index runs right after setup, while
+        // the person goes on with a video or a browser. At normal priority with every core it froze a 16 GB laptop (field,
+        // 11-13). An otherwise idle PC still gives it the whole CPU
+        let mut c = low_priority(python());
+        let half = std::thread::available_parallelism().map(|n| (n.get() / 2).max(1)).unwrap_or(2);
+        c.env("FINDR_THREADS", half.to_string()).env("OMP_NUM_THREADS", half.to_string());
         c.env("FINDR_SCOPE", "user").args(["-m", "findr", "index"]).args(&folders);   // the person's files: removed folders leave the index
         if deep.unwrap_or(false) {
             c.arg("--deep"); // the later pieces of long documents too

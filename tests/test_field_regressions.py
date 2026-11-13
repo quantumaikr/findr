@@ -150,6 +150,8 @@ def test_second_lane_is_on_by_memory_unless_said(monkeypatch):
     """LANE2 not set: on from 12 GB of memory (a PC sold as 12 GB reports a little less), off when memory cannot be read"""
     sys.path.insert(0, str(CORE.parent.parent))
     from findr import cli
+    import governor
+    monkeypatch.setattr(governor, "mem_available_gb", lambda: 8.0)   # free memory is its own test (test_pc_comfort)
     monkeypatch.delenv("LANE2", raising=False)
     for gb, on in ((0.0, False), (7.9, False), (11.8, True), (64.0, True)):
         monkeypatch.setattr(cli, "_ram_gb", lambda gb=gb: gb)
