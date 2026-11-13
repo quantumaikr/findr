@@ -558,6 +558,15 @@ def cmd_doctor(a):
     if dev == "cpu":
         ox = (paths.MODELS / "rank" / "model_int8.onnx").exists()
         print(L(f"  {'✓' if ox or (paths.MODELS / 'rank' / 'model.safetensors').exists() else '✗'} 재정렬: {'가벼운 8비트 (CPU용)' if ox else '전체 정밀도'}", f"  {'✓' if ox or (paths.MODELS / 'rank' / 'model.safetensors').exists() else '✗'} reranker: {'light 8-bit (for CPU)' if ox else 'full precision'}"))
+        try:
+            if str(paths.CORE) not in sys.path:
+                sys.path.insert(0, str(paths.CORE))
+            import gpu_dml
+            g = gpu_dml.describe()
+            if g:   # Windows: an AMD or Intel GPU runs the reranker where it was measured faster
+                print(L(f"    재정렬 장치: {g[0]}", f"    reranker device: {g[1]}"))
+        except Exception:   # noqa: BLE001
+            pass
     if models.qu_ok(dev):
         print(L(f"  {'✓' if models.llama_server() else '✗'} llama-server (없으면 질문을 규칙으로 읽음)", f"  {'✓' if models.llama_server() else '✗'} llama-server (without it, questions are read by rules)"))
     else:

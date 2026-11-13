@@ -37,6 +37,12 @@ if ($LASTEXITCODE -ne 0) { Say "  PyTorch를 설치하지 못했습니다. 인�
 Write-Host "[4/5] findr"
 uv pip install --python $py -e .
 if ($LASTEXITCODE -ne 0) { Say "  findr를 설치하지 못했습니다. 위의 오류를 확인하고 다시 실행하세요." "  Could not install findr. See the error above, then run this again."; exit 1 }
+# an older install has the plain onnxruntime beside its DirectML build (the same module folder): keep only the DirectML one
+& $py -c "import importlib.metadata as m; m.version('onnxruntime')" 2>$null
+if ($LASTEXITCODE -eq 0) {
+  uv pip uninstall --python $py onnxruntime
+  uv pip install --python $py --reinstall-package onnxruntime-directml onnxruntime-directml
+}
 Set-Content -Path (Join-Path $PSScriptRoot "findr.cmd") -Encoding ascii -Value "@echo off`r`n`"%~dp0.venv\Scripts\findr.exe`" %*"
 
 Say "[5/5] 모델 받기 (처음 한 번, PC에 따라 1~10GB)" "[5/5] Downloading the models (once, 1-10GB depending on the PC)"
