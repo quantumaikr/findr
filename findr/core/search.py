@@ -2630,6 +2630,9 @@ def add_probs(res):
                                                                        " They are listed most likely first. Please pick the right one.")
     return res
 FAILS = {}   # client -> [count, first failure time]; slows password guessing through the tunnel
+TUNNEL_FAILS = [0, 0.0]   # wrong passwords through any tunnel or proxy, every client together: [count, first failure time]
+FAIL_WINDOW, FAIL_PER_CLIENT, FAIL_TUNNEL = 600, 10, 100
+FAIL_LOCK = _thl.Lock()   # the page answers on several threads
 SEC_HEADERS = [("X-Content-Type-Options", "nosniff"), ("X-Frame-Options", "DENY"), ("Referrer-Policy", "no-referrer"),
                ("Cache-Control", "no-store"),
                ("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
@@ -2746,11 +2749,50 @@ def _local_request(h):
         h.headers.get(x) for x in ("CF-Connecting-IP", "X-Forwarded-For", "Forwarded", "X-Real-IP"))
 
 
+FWD_HEADERS = ("CF-Connecting-IP", "X-Forwarded-For", "Forwarded", "X-Real-IP")
+
+
 def _rate_limit_key(h):
-    """who authed() counts a wrong password against: the actual peer, never a forwarding header (CF-Connecting-IP
-    included) - through anything but Cloudflare's own edge, whoever is talking to us sets that header themselves, so
-    trusting it let an attacker pick a fresh bucket on every try and never trip the lockout"""
-    return h.client_address[0]
+    """who authed() counts a wrong password against. The page listens on 127.0.0.1 only, so every tunnel visitor
+    arrives from the same peer: keying on the peer alone would let anyone lock the owner out with ten wrong tries.
+    A forwarded request is keyed on what its header claims instead - a claim the sender may forge, so it only keeps
+    honest visitors apart; _fail_blocked's limit on all tunnel traffic together is what bounds the guessing"""
+    if _local_request(h):
+        return h.client_address[0]
+    claim = next((h.headers.get(x) for x in FWD_HEADERS if h.headers.get(x)), "")
+    return "via " + claim.split(",")[0].strip()[:64]
+
+
+def _fail_blocked(h, now=None):
+    """refuse this request before checking any password: ten wrong in ten minutes from one client, or FAIL_TUNNEL wrong
+    through the tunnel from everyone together (a forged header per try dodges the first, never the second). A browser
+    or the CLI on this PC itself is never held by the tunnel's limit, so an outsider cannot lock the owner out of it"""
+    now = time.time() if now is None else now
+    with FAIL_LOCK:
+        if TUNNEL_FAILS[0] and now - TUNNEL_FAILS[1] > FAIL_WINDOW:
+            TUNNEL_FAILS[:] = [0, 0.0]
+        n_, t_ = FAILS.get(_rate_limit_key(h), (0, now))
+        if now - t_ <= FAIL_WINDOW and n_ >= FAIL_PER_CLIENT:
+            return True
+        return not _local_request(h) and TUNNEL_FAILS[0] >= FAIL_TUNNEL
+
+
+def _fail_note(h, now=None):
+    """count one wrong password (header or cookie) against this client and, through a tunnel, against all of it"""
+    now = time.time() if now is None else now
+    who = _rate_limit_key(h)
+    with FAIL_LOCK:
+        if len(FAILS) > 1000:   # forged keys come and go: drop the ones whose window has passed
+            for k in [k for k, (_, t) in FAILS.items() if now - t > FAIL_WINDOW]:
+                del FAILS[k]
+        n_, t_ = FAILS.get(who, (0, now))
+        if now - t_ > FAIL_WINDOW:
+            n_, t_ = 0, now
+        FAILS[who] = [n_ + 1, t_]
+        if not _local_request(h):
+            if not TUNNEL_FAILS[0]:
+                TUNNEL_FAILS[1] = now
+            TUNNEL_FAILS[0] += 1
 
 
 def proc_memory():
@@ -3228,11 +3270,7 @@ def serve(f, port):
             """HTTP Basic (any user name): a tunnel makes this page reachable from outside, so it never runs without one"""
             import base64
             import hmac
-            who = _rate_limit_key(self)
-            n_, t_ = FAILS.get(who, [0, time.time()])
-            if time.time() - t_ > 600:
-                n_, t_ = 0, time.time()
-            if n_ >= 10:   # ten wrong passwords in ten minutes: refuse that client for the rest of the window
+            if _fail_blocked(self):   # too many wrong passwords: refuse without checking, for the rest of the window
                 self.send_response(429); self.end_headers(); return False
             ck_ = re.search(r"(?:^|;\s*)findr_t=([^;]+)", self.headers.get("Cookie", ""))
             if PASSWORD and ck_ and hmac.compare_digest(ck_.group(1).encode(), PASSWORD.encode()):
@@ -3244,8 +3282,8 @@ def serve(f, port):
                 pw = ""
             if PASSWORD and hmac.compare_digest(pw.encode(), PASSWORD.encode()):
                 return True
-            if got:
-                FAILS[who] = [n_ + 1, t_]
+            if got or ck_:   # a wrong cookie is a guess too, not only a wrong Authorization header
+                _fail_note(self)
             self.send_response(401); self.send_header("WWW-Authenticate", 'Basic realm="findr", charset="UTF-8"'); self.end_headers()
             return False
 

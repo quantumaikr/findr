@@ -19,11 +19,55 @@ def test_local_browser_only():
         assert not search._local_request(_h("127.0.0.1", **{hdr: "203.0.113.5"})), hdr
 
 
-def test_rate_limit_key_ignores_forwarding_headers():
-    """a tunnel visitor must not be able to pick their own lockout bucket and dodge the ten-tries limit"""
-    assert search._rate_limit_key(_h("203.0.113.5")) == "203.0.113.5"
-    for hdr in ("CF-Connecting-IP", "X-Forwarded-For", "Forwarded", "X-Real-IP"):
-        assert search._rate_limit_key(_h("203.0.113.5", **{hdr: "198.51.100.9"})) == "203.0.113.5", hdr
+def _fresh(monkeypatch):
+    monkeypatch.setattr(search, "FAILS", {})
+    monkeypatch.setattr(search, "TUNNEL_FAILS", [0, 0.0])
+
+
+def test_forged_headers_cannot_dodge_the_tunnel_limit(monkeypatch):
+    """a tunnel visitor forging a new header value on every try gets a fresh per-client count each time, but every
+    wrong try through the tunnel counts toward one shared limit (#177)"""
+    _fresh(monkeypatch)
+    for hdr in search.FWD_HEADERS:
+        assert not search._fail_blocked(_h("127.0.0.1", **{hdr: "198.51.100.9"}), now=1000), hdr
+    for i in range(search.FAIL_TUNNEL):
+        h = _h("127.0.0.1", **{"CF-Connecting-IP": f"198.51.100.{i % 250}-{i}"})
+        assert not search._fail_blocked(h, now=1000 + i)
+        search._fail_note(h, now=1000 + i)
+    assert search._fail_blocked(_h("127.0.0.1", **{"X-Forwarded-For": "203.0.113.77"}), now=1200)
+    assert not search._fail_blocked(_h("127.0.0.1", **{"X-Forwarded-For": "203.0.113.77"}), now=1000 + 99 + 601)
+
+
+def test_outsiders_cannot_lock_out_this_pc_or_each_other(monkeypatch):
+    """the page listens on 127.0.0.1, so every tunnel visitor shares one peer address: ten wrong tries from one of
+    them must not lock out another visitor, nor the browser, CLI or app on this PC itself"""
+    _fresh(monkeypatch)
+    bad = _h("127.0.0.1", **{"CF-Connecting-IP": "198.51.100.9"})
+    for _ in range(search.FAIL_PER_CLIENT):
+        search._fail_note(bad, now=1000)
+    assert search._fail_blocked(bad, now=1001)
+    assert not search._fail_blocked(_h("127.0.0.1", **{"CF-Connecting-IP": "203.0.113.5"}), now=1001)
+    assert not search._fail_blocked(_h("127.0.0.1"), now=1001)
+    monkeypatch.setattr(search, "TUNNEL_FAILS", [search.FAIL_TUNNEL, 1000.0])   # the tunnel as a whole is held
+    assert not search._fail_blocked(_h("127.0.0.1"), now=1001)
+    assert not search._fail_blocked(_h("::1"), now=1001)
+
+
+def test_a_local_client_still_has_its_own_ten_tries(monkeypatch):
+    _fresh(monkeypatch)
+    for _ in range(search.FAIL_PER_CLIENT):
+        search._fail_note(_h("127.0.0.1"), now=1000)
+    assert search._fail_blocked(_h("127.0.0.1"), now=1001)
+    assert not search._fail_blocked(_h("127.0.0.1"), now=1000 + 601)
+    assert search.TUNNEL_FAILS[0] == 0   # local tries never count against the tunnel
+
+
+def test_forged_keys_do_not_grow_without_bound(monkeypatch):
+    _fresh(monkeypatch)
+    for i in range(1500):
+        search._fail_note(_h("127.0.0.1", **{"X-Real-IP": f"k{i}"}), now=1000)
+    search._fail_note(_h("127.0.0.1", **{"X-Real-IP": "late"}), now=1000 + 601)
+    assert len(search.FAILS) < 1100
 
 
 def test_open_and_reveal_use_the_system(monkeypatch, tmp_path):
