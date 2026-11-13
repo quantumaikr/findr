@@ -131,13 +131,13 @@ def test_doctor_counts_pieces_left_for_the_deep_run(tmp_path):
     import sqlite3
     db = tmp_path / "index.db"
     con = sqlite3.connect(db)
-    con.executescript("CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT, name TEXT);"
+    con.executescript("CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT, name TEXT, ext TEXT, size INT, tier INT, pending INT);"
                       "CREATE TABLE chunks(id INTEGER PRIMARY KEY, file INT, n INT, text TEXT, emb BLOB);")
-    con.executemany("INSERT INTO files VALUES(?,?,?)", [(1, "/d/a.txt", "a.txt"), (2, "/d/b.txt", "b.txt")])
+    con.executemany("INSERT INTO files VALUES(?,?,?,'.txt',100,1,0)", [(1, "/d/a.txt", "a.txt"), (2, "/d/b.txt", "b.txt")])
     con.executemany("INSERT INTO chunks(file, n, text, emb) VALUES(?,?,?,?)",
                     [(1, i, "x", b"v" if i < 8 else None) for i in range(12)] + [(2, 0, "y", None)])   # b: not embedded yet, not deferred
     con.commit(); con.close()
     env = {**os.environ, "FINDR_LANG": "ko", "PYTHONUTF8": "1", "FINDR_HOME": str(tmp_path / "home")}
     out = subprocess.run([sys.executable, "-m", "findr", "--db", str(db), "doctor"], env=env, capture_output=True, text=True,
                          encoding="utf-8", cwd=str(Path(__file__).resolve().parents[1]), timeout=300).stdout
-    assert "긴 문서 1개의 뒷부분 4조각" in out and "findr index --deep" in out, out[-800:]
+    assert "긴 문서 1개의 뒷부분 약 4조각" in out and "findr index --deep" in out, out[-800:]

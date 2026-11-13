@@ -721,6 +721,46 @@ def read_all(jobs):
         yield from map(_read_one, jobs[skip:])
 
 
+# pieces per MB of documents read in full, by kind (a real PC's index, 829 documents, 11/13); pdf between that PC (3.7, many
+# scans and slides) and a folder of text-heavy reports (82). For a deep-run estimate on a PC with fewer than 5 of a kind read
+DEEP_PPMB = {".pdf": 17, ".docx": 4.7, ".doc": 14, ".hwp": 14, ".hwpx": 14, ".pptx": 0.6, ".ppt": 0.6, ".xlsx": 375, ".xls": 375,
+             ".html": 250, ".htm": 250}
+
+
+def deep_left(con, cap=None):
+    """the pieces a deep run will embed, and in how many files: (pieces, files). #67-1: the first pass said 127,674 pieces
+    left, the deep run embedded 725,756 on a Mac. What it does:
+    - files read in full: their pieces past the opening `cap` (FIRST_PIECES) that have no vector yet
+    - files read in part (pending=2): read again from the start, so all their pieces, the ones there now included. Their
+      size tells how many: plain text at the pieces per byte of what was read from that file (nothing read from the
+      opening, nothing more); a document read through a parser (pdf, hwp...) at the pieces per byte of files of that kind
+      read in full here (DEEP_PPMB when fewer than 5, else all kinds together)
+    - files not read yet (pending=1): the same, from their size"""
+    cap = int(os.environ.get("FINDR_FIRST_PIECES") or 8) if cap is None else cap
+    work, files = 0, set()
+    for fid, k in con.execute("SELECT c.file, count(*) FROM chunks c JOIN files f ON f.id=c.file WHERE c.emb IS NULL "
+                              "AND f.tier>0 AND COALESCE(f.pending,0)=0 AND c.n >= ? GROUP BY c.file", (cap,)):
+        work += k; files.add(fid)
+    per = {}   # ext -> [pieces, bytes, files] of files read in full
+    for ext, n_, b_ in con.execute("""SELECT f.ext, count(c.id), f.size FROM files f JOIN chunks c ON c.file=f.id
+                                       WHERE f.tier=1 AND COALESCE(f.pending,0)=0 AND f.size>0 AND COALESCE(c.text,'')!=''
+                                       GROUP BY f.id"""):
+        a_ = per.setdefault((ext or "").lower(), [0, 0, 0]); a_[0] += n_; a_[1] += b_; a_[2] += 1
+    nb = sum(v[1] for v in per.values())
+    every = sum(v[0] for v in per.values()) / nb if nb else 0.0
+    rate = {e: v[0] / v[1] for e, v in per.items() if v[2] >= 5 and v[1]}
+    for fid, ext, size, pend, have, txt, got in con.execute(
+            """SELECT f.id, f.ext, f.size, f.pending, count(c.id), count(NULLIF(c.text, '')), COALESCE(sum(length(CAST(c.text AS BLOB))), 0)
+               FROM files f LEFT JOIN chunks c ON c.file=f.id WHERE f.tier>0 AND f.pending IN (1,2) GROUP BY f.id"""):
+        e_ = (ext or "").lower()
+        if pend == 2 and e_ not in RICH:
+            whole = txt * (size or 0) / got if got else 0   # this file's own pieces per byte
+        else:
+            whole = (size or 0) * rate.get(e_, DEEP_PPMB[e_] / 1e6 if e_ in DEEP_PPMB else every)
+        work += max(have, min(2000, round(whole)), 1); files.add(fid)
+    return work, len(files)
+
+
 def read_wave(con, root, a):
     """read the content of pending files under this root, best first, within this wave's age and size limits"""
     now = time.time(); pre = root.as_posix().rstrip("/") + "/"
@@ -1545,8 +1585,7 @@ def embed(con, model, names_only=False):
         rows = con.execute(f"""SELECT c.id, c.text, f.path FROM chunks c JOIN files f ON f.id=c.file
                           WHERE c.emb IS NULL AND f.tier>0 AND COALESCE(f.pending,0) IN (0,2) {"AND c.n < %d" % cap if cap > 0 else ""}
                           ORDER BY (c.n > 1), f.mtime DESC, c.n""").fetchall()   # every file's opening pieces first, newest first
-    later = con.execute("SELECT count(*) FROM chunks c JOIN files f ON f.id=c.file WHERE c.emb IS NULL AND f.tier>0 "
-                        "AND COALESCE(f.pending,0) IN (0,2) AND c.n >= ?", (cap,)).fetchone()[0] if cap > 0 and not names_only else 0
+    later = deep_left(con, cap)[0] if cap > 0 and not names_only else 0   # with the unread rest of long files (#67-1)
     if not rows:   # nothing to embed: no encoder load (three loads cost ~7 s per run with nothing new)
         con.commit(); print(f"FINDR_EMBED 0 chunks 0s (computed 0, identical skipped 0" + (f", later pieces left for a deep run {later})" if later else ")"))
         return
