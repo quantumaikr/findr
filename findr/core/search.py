@@ -761,15 +761,21 @@ class Finder:
                 ws.append(w)
         return ws
 
-    def scan_text(self, like, seconds=None, every=20000):
+    def scan_text(self, like, seconds=None, every=20000, pieces=None):
         """files whose text holds a 2-letter word, read without an index. After a deep run (920k pieces) one such question took
-        24-31 s on a Mac (사진, 예산, 계약) and the time showed in no stage. Two bounds: stop at 201 files (more than 200 is a
-        common word, which literal_files drops anyway: the same answer, at once), and stop reading after LIT_SCAN_S (1 s) for a
-        rare word on a large index (then names and paths alone)"""
-        t0 = time.time(); limit = float(os.environ.get("LIT_SCAN_S") or 1.0) if seconds is None else seconds
+        24-31 s on a Mac (사진, 예산, 계약) and the time showed in no stage. Bounds:
+        - stop at 201 files (more than 200 is a common word, which literal_files drops anyway: the same answer, at once)
+        - read the first LIT_SCAN_PIECES pieces (250k) in index order, which puts each file's opening and the most wanted files
+          first. A count, not a time: under a 1 s limit the same question gave other answers on a slower or busier PC (#74).
+          250k pieces take 0.33 s on the HQ PC (5 SQLite steps a piece)
+        - LIT_SCAN_S (5 s) stays as a last guard for a very slow disk; past it, names and paths alone"""
+        t0 = time.time(); limit = float(os.environ.get("LIT_SCAN_S") or 5.0) if seconds is None else seconds
+        n = int(os.environ.get("LIT_SCAN_PIECES") or 250000) if pieces is None else pieces
         self.con.set_progress_handler(lambda: int(time.time() - t0 > limit), every)   # checked every N SQLite steps
         try:
-            out = {f_ for (f_,) in self.con.execute("SELECT DISTINCT file FROM chunks WHERE text LIKE ? ESCAPE '\\' LIMIT 201", (like,))}
+            out = {f_ for (f_,) in self.con.execute(
+                "SELECT DISTINCT file FROM (SELECT file, text FROM chunks ORDER BY id LIMIT ?) WHERE text LIKE ? ESCAPE '\\' LIMIT 201",
+                (n, like))}
         except sqlite3.OperationalError:   # interrupted at the time limit
             out = set()
         finally:
