@@ -20,5 +20,6 @@ def test_registered_commands_are_listed_and_allowed():
 
 
 def test_the_search_page_may_only_open_files():
+    """and go back to the app's search screen, which starts the engine again (the page cannot start one itself)"""
     page = json.loads((APP / "capabilities" / "search-page.json").read_text(encoding="utf-8"))
-    assert page["permissions"] == ["allow-open-path"]
+    assert page["permissions"] == ["allow-open-path", "allow-restart-search"]

@@ -3024,6 +3024,88 @@ def open_on_pc(path, reveal=False):
         subprocess.Popen(["xdg-open", str(Path(p).parent) if reveal else p])
 
 
+def client_gone(sock):
+    """the page gave up on this request (a newer question aborted it, or its 90 s ran out): the connection is closed from its
+    side. A question that waited its turn behind another one is then not searched for nobody (field, CPU laptop: every
+    earlier question was still searched, one after another, before the newest one)"""
+    import select
+    import socket
+    try:
+        readable, _, _ = select.select([sock], [], [], 0)
+        if not readable:
+            return False
+        return sock.recv(1, socket.MSG_PEEK) == b""   # a GET has no body: anything readable now is the close
+    except ConnectionError:   # reset by the page's abort
+        return True
+    except (OSError, ValueError):   # anything else: unsure, so the question is answered (never skipped by mistake)
+        return False
+
+
+def answer_errors(h, run):
+    """run one request; an error in it comes back as JSON the page can say, not a dropped connection that the page took for
+    a stopped engine ('could not connect', with an engine that was there). The traceback goes to the engine log"""
+    h._replied = False
+    try:
+        run()
+    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+        pass   # the page went away before the answer: nobody to tell
+    except Exception as e:   # noqa: BLE001
+        traceback.print_exc()
+        if not h._replied:
+            body = json.dumps({"error": M("검색 중 오류가 났습니다. 다시 시도해 주세요.", "Something went wrong during the search. Please try again."),
+                               "kind": "error", "detail": type(e).__name__}, ensure_ascii=False).encode()
+            try:
+                h.reply(500, body, "application/json; charset=utf-8")
+            except OSError:
+                pass
+
+
+def parent_check(pid=None):
+    """a test that says whether the app that started this engine (FINDR_PARENT) is still there, or None (no parent given).
+    On Windows by a handle opened now, so a new process given the same number later is not taken for the app"""
+    pid = int(pid if pid is not None else (os.environ.get("FINDR_PARENT") or 0) or 0)
+    if pid <= 0:
+        return None
+    if os.name == "nt":
+        import ctypes
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.OpenProcess.restype = ctypes.c_void_p
+        k.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        h = k.OpenProcess(0x00100000, False, pid)   # SYNCHRONIZE
+        if not h:
+            gone = ctypes.get_last_error() == 87   # ERROR_INVALID_PARAMETER: no such process
+            return (lambda: False) if gone else None
+        return lambda: k.WaitForSingleObject(h, 0) == 0x102   # WAIT_TIMEOUT: still running
+    def alive():
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+    return alive
+
+
+def watch_parent(stop, every=5.0, alive=None, hard_exit=None):
+    """the engine ends when the app that started it is gone (killed, crashed): it stayed with its models in memory and its
+    port, and the app started next could not start an engine of its own. `stop` ends the server the usual way, so the
+    helper servers are stopped too (atexit); if that does not finish, the process ends anyway 15 s later"""
+    alive = alive or parent_check()
+    if alive is None:
+        return None
+
+    def run():
+        while alive():
+            time.sleep(every)
+        print("FINDR_PARENT gone: the engine stops", flush=True)
+        t = threading.Timer(15, hard_exit or (lambda: os._exit(0))); t.daemon = True; t.start()
+        stop()
+    th = threading.Thread(target=run, daemon=True, name="findr-parent")
+    th.start()
+    return th
+
+
 def serve(f, port):
     _stage_timers()
     global GOV
@@ -3041,13 +3123,23 @@ def serve(f, port):
         print(f"FINDR_GOV off {type(e).__name__}", flush=True)
 
     class H(BaseHTTPRequestHandler):
+        def send_response(self, code, message=None):
+            self._replied = True   # an error after this point cannot be answered as JSON any more
+            super().send_response(code, message)
+
+        def do_GET(self):
+            answer_errors(self, self._get)
+
+        def do_POST(self):
+            answer_errors(self, self._post)
+
         def reply(self, code, body, ct):
             self.send_response(code); self.send_header("Content-Type", ct)
             for k_, v_ in SEC_HEADERS:
                 self.send_header(k_, v_)
             self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
 
-        def do_GET(self):
+        def _get(self):
             set_lang(parse_qs(urlparse(self.path).query).get("lang", [""])[0])   # every request sets it: Korean unless lang=en
             if urlparse(self.path).path == "/healthz":   # for the watchdog: says nothing but "ok"
                 return self.reply(200, b"ok", "text/plain")
@@ -3068,7 +3160,10 @@ def serve(f, port):
                     else:
                         # paused is the pause file itself: a paused indexer waits without writing progress, and a page opened
                         # after a restart showed '진행 중' with a pause button that paused it again (field, Mac)
-                        p_["paused"] = (data_ / "pause").exists()
+                        asked = (data_ / "pause").exists()
+                        # pausing: asked, and the indexer has not said it holds yet (it finishes the file it reads: up to 14 s)
+                        p_["pausing"] = asked and not p_.get("paused")
+                        p_["paused"] = asked
                 except (OSError, ValueError):
                     p_ = {}
                 # #106: in the app, the page offers '지금 반영' and says when new files were last taken in, idle or not
@@ -3253,6 +3348,16 @@ def serve(f, port):
                 _ST.d = {}
                 with SEARCH_LOCK:
                   _ST.d["lock_wait"] = time.time() - t_req
+                  if _ST.d["lock_wait"] >= 0.05 and client_gone(self.connection):   # waited its turn, and the page has gone on
+                      _ST.d = None
+                      return
+                  # the same question asked again while this one waited: the answer the first one just kept, not a second search
+                  with RESULTS_LOCK:
+                      hit = RESULTS.get(rkey) if rkey else None
+                  if hit is not None:
+                      res = drop_gone(f.con, json.loads(hit)); res["cached"] = True
+                      res["ms"] = int((time.time() - t_req) * 1000); _ST.d = None
+                      return self.reply(200, json.dumps(res, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
                   global EVAL_NOW
                   try:
                     pin = self.headers.get("X-Findr-Today")
@@ -3361,7 +3466,7 @@ def serve(f, port):
                 body = (pg.read_text(encoding="utf-8") if pg.exists() else PAGE).encode(); ct = "text/html; charset=utf-8"
             self.reply(200, body, ct)
 
-        def do_POST(self):
+        def _post(self):
             if not self.authed():
                 return
             if self.headers.get("X-Findr") == "1" and urlparse(self.path).path == "/embed":
@@ -3475,6 +3580,7 @@ def serve(f, port):
     PASSWORD = read_or_make_password(Path(os.environ.get("FINDR_DATA") or (Path.home() / ".findr")) / ".password")
     print(f"FINDR_SERVE http://localhost:{port}", flush=True)
     httpd = ThreadingHTTPServer(("127.0.0.1", port), H)
+    watch_parent(httpd.shutdown)
     if os.environ.get("FINDR_READY_LINE"):
         print(os.environ["FINDR_READY_LINE"], flush=True)
     if os.environ.get("FINDR_WARM", "1") == "1":   # the first question loaded the reranker and GPU kernels: 2.3 s instead of 0.2 s

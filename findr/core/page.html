@@ -34,6 +34,7 @@ main{padding:22px 28px 60px;max-width:1080px;width:100%}
 .pipe .st b{color:var(--fg);font-weight:600}
 @keyframes in{to{opacity:1;transform:none}}
 .notice{margin:12px 0;padding:10px 14px;border-radius:10px;background:var(--warnbg);color:var(--warn);font-weight:600;font-size:13.5px}
+.notice .again{display:flex;gap:8px;margin-top:8px}.notice .again button{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:4px 12px;font-weight:600}
 .meta{display:flex;justify-content:space-between;color:var(--faint);font-size:12px;margin:14px 2px 6px}
 .res{display:flex;flex-direction:column;gap:8px}
 .card{display:grid;grid-template-columns:44px 1fr auto;gap:12px;padding:12px 14px;background:var(--panel);border:1px solid var(--line);border-radius:12px;transition:border-color .15s,box-shadow .15s;opacity:0;transform:translateY(6px);animation:in .3s forwards}
@@ -194,8 +195,17 @@ $('#modes').onclick=e=>{const b=e.target.closest('button');if(b){setMode(b.datas
 $('#groups').innerHTML=Object.entries(EX).map(([k,v])=>'<div class="grp"><h3>'+k+'</h3>'+v.map(x=>'<button data-ex="'+esc(x)+'">'+esc(x)+'</button>').join('')+'</div>').join('');
 $('#groups').onclick=e=>{const b=e.target.closest('[data-ex]');if(b){q.value=b.dataset.ex;go()}};
 // search
+// the request now out, and its question. A newer question aborts it (AbortController): before, every earlier question went on
+// waiting its turn on the engine, one search at a time, and the newest answer came last (field, CPU laptop: searching several
+// times left the page waiting for minutes). The same question while its answer is on the way is not sent again
+let ctl=null, asking='';
+const SLOW_MS=5000, GIVE_UP_MS=90000;
 async function go(){
- const qq=q.value.trim(); if(!qq)return; const my=++seq; $('#empty').style.display='none'; fKind=fDir=null;
+ const qq=q.value.trim(); if(!qq)return;
+ if(ctl&&asking===qq+'\n'+mode)return;
+ if(ctl)ctl.abort();
+ const c=new AbortController(); ctl=c; asking=qq+'\n'+mode; let late=false;
+ const my=++seq; $('#empty').style.display='none'; fKind=fDir=null;
  if(last&&last.q0&&last.q0!==qq&&!last.picked)tried.push(last.q0); if(tried.length>8)tried=tried.slice(-8);
  // the last answer stays, dimmed, until the new one arrives: clearing it left the list empty for a moment on every
  // question (a Mac Air, 11/9: 0.19 s blank before the quick list); the first question of a visit still shows placeholders
@@ -205,20 +215,39 @@ async function go(){
  // fast first, then smarter: where the full search takes over a second (a Mac or a CPU laptop: the reranker, 2-3 s), the
  // first stage's list (~0.1 s) is shown at once and the reranked order replaces it in place, without the fade
  let pre=false, slowMs=0; try{slowMs=+localStorage.getItem('findr_full_ms')||0}catch(e){}
- if(mode==='auto'&&slowMs>1000){try{const p=await (await fetch('/api?'+new URLSearchParams({q:qq,mode:'base',k:30,lang:LANG}))).json();
+ // a busy PC answers slowly: said after 5 s (a dimmed list and nothing else looked hung, and the person asked again), and
+ // after 90 s the request is given up with a way to try again, instead of waiting for good on an engine that may be stuck
+ const slow=setTimeout(()=>{if(my!==seq)return;const t=T('아직 찾는 중이에요… PC가 바쁘면 조금 더 걸려요','Still searching… it takes longer when the PC is busy');const rf=$('#rf');if(pre&&rf)rf.textContent=t;else $('#meta').textContent=t},SLOW_MS);
+ const dead=setTimeout(()=>{if(my===seq){late=true;c.abort()}},GIVE_UP_MS);
+ if(mode==='auto'&&slowMs>1000){try{const p=await (await fetch('/api?'+new URLSearchParams({q:qq,mode:'base',k:30,lang:LANG}),{signal:c.signal})).json();
   if(my!==seq)return; if(p&&p.results&&p.results.length&&!p.error){p._rt=Math.round(performance.now()-t0);p.q0=qq;p.rfText=T('정밀하게 정리하는 중…','Refining the order…');
    last=p;last.first=p.results.map(x=>x.path);show(p);pre=true}}catch(e){}}
- try{const r=await (await fetch('/api?'+new URLSearchParams({q:qq,mode,k:30,lang:LANG}))).json(); if(my!==seq)return;
-  try{localStorage.setItem('findr_full_ms',String(r.ms||0))}catch(e){} r._rt=Math.round(performance.now()-t0); if(r.error){$('#res').innerHTML='';$('#notice').innerHTML='<div class="notice">'+esc(r.error)+'</div>';return} if(DEMO&&r.results)r.results=r.results.filter(x=>!/googledrive/i.test(x.path)); last=r; last.q0=qq; last.first=(r.results||[]).map(x=>x.path); last.t0=Date.now(); if(DEMO)speed(r); sel=-1;
-  show(r,!pre); remember(qq,mode,r.results&&r.results[0]?base(r.results[0].path):''); refine(qq,r)}
- catch(e){$('#res').classList.remove('dim');$('#res').innerHTML='';$('#notice').innerHTML='<div class="notice">'+T('검색 서버에 연결하지 못했습니다.',"Couldn't reach the search engine.")+'</div>'}
+ try{const resp=await fetch('/api?'+new URLSearchParams({q:qq,mode,k:30,lang:LANG}),{signal:c.signal}); let r=null; try{r=await resp.json()}catch(_){}
+  if(my!==seq)return; if(!r||(!resp.ok&&!r.error)){failed('error');return}
+  try{localStorage.setItem('findr_full_ms',String(r.ms||0))}catch(e){} r._rt=Math.round(performance.now()-t0); if(r.error){failed('error',r.error);return} if(DEMO&&r.results)r.results=r.results.filter(x=>!/googledrive/i.test(x.path)); last=r; last.q0=qq; last.first=(r.results||[]).map(x=>x.path); last.t0=Date.now(); if(DEMO)speed(r); sel=-1;
+  show(r,!pre); remember(qq,mode,r.results&&r.results[0]?base(r.results[0].path):''); refine(qq,r,c.signal)}
+ catch(e){if(my===seq)failed(late?'late':'gone')}   // aborted for a newer question: that one's answer is drawn, not this
+ finally{clearTimeout(slow);clearTimeout(dead);if(ctl===c){ctl=null;asking=''}}
 }
+// a search that got no answer. 'gone': no connection (the engine stopped, or is starting again), 'late': none for 90 s,
+// 'error': the engine answered with an error. They are said apart: one message for all three sent people to restart an
+// engine that only had a bad question. In the app the engine can be started again from here (the app's search screen)
+function failed(kind,text){
+ $('#res').classList.remove('dim');$('#res').innerHTML='';
+ const msg=text||{gone:T('검색 엔진에 연결하지 못했습니다. 엔진이 멈췄거나 다시 켜지는 중일 수 있어요.',"Couldn't reach the search engine. It may have stopped, or it may be starting again."),
+  late:T('90초 동안 답이 없어 검색을 멈췄습니다. PC가 바쁘면 조금 뒤 다시 시도해 주세요.','No answer for 90 seconds, so the search was stopped. If the PC is busy, try again in a moment.'),
+  error:T('검색 중 오류가 났습니다. 다시 시도해 주세요.','Something went wrong during the search. Please try again.')}[kind];
+ $('#notice').innerHTML='<div class="notice">'+esc(msg)+'<div class="again"><button data-retry="1">'+T('다시 시도','Try again')+'</button>'+
+  (APP&&kind!=='error'?'<button data-restart="1">'+T('검색 엔진 다시 켜기','Restart the search engine')+'</button>':'')+'</div></div>'}
+document.addEventListener('click',e=>{
+ if(e.target.closest('[data-retry]')){go();return}
+ const rs=e.target.closest('[data-restart]');if(rs&&APP){rs.disabled=true;window.__TAURI__.core.invoke('restart_search').catch(err=>{rs.disabled=false;toast(String(err))})}});
 let tried=[];
-async function refine(qq,r){   // a small local model lays the top 10 side by side and moves its picks up
+async function refine(qq,r,signal){   // a small local model lays the top 10 side by side and moves its picks up
  // the status sits inline in the count line (no block that pushes the list down), and the list is drawn again only when
  // the order really changed: redrawing an unchanged list a few seconds after the results made the page flicker
  if(!r.results||r.results.length<2)return; const say=t=>{r.rfText=t;const e=$('#rf');if(e)e.textContent=t};say(T('후보를 열어 보고 비교하는 중…','Opening the top results to compare…'));
- try{const f=await (await fetch('/refine?'+new URLSearchParams({q:qq,mode:r.route||mode,lang:LANG}))).json(); if(!last||last.q0!==qq)return;
+ try{const f=await (await fetch('/refine?'+new URLSearchParams({q:qq,mode:r.route||mode,lang:LANG}),{signal})).json(); if(!last||last.q0!==qq)return;
   if(f.skipped){say('');return}   // not needed this time (clear order, or indexing on a slower PC)
   if(f.results){const no=new Set(last.results.filter(x=>x.no).map(x=>x.path)); f.results.forEach(x=>{if(no.has(x.path))x.no=true});
    const moved=f.results.map(x=>x.path).join('\n')!==last.results.map(x=>x.path).join('\n'); last.results=f.results;
@@ -244,6 +273,11 @@ function pipeline(r){
  return st.map((s,i)=>(i?'<span class="ar"></span>':'')+'<span class="st" style="animation-delay:'+(i*70)+'ms">'+esc(s[0])+' <b>'+esc(s[1])+'</b></span>').join('');
 }
 const APP=!!(window.__TAURI__&&window.__TAURI__.core);   // inside the desktop app: open files and folders directly
+// a file being opened is not opened again until that is done (and for at least 1.5 s): a double click opened it twice, two
+// windows of an office program or 'the file is in use'. Said when the system takes a moment to open it (a busy PC)
+const opening=new Set();
+function once(key,run){if(opening.has(key))return;opening.add(key);const t0=Date.now(),tt=setTimeout(()=>toast(T('여는 중…','Opening…')),700);
+ Promise.resolve().then(run).catch(()=>{}).finally(()=>{clearTimeout(tt);setTimeout(()=>opening.delete(key),Math.max(0,1500-(Date.now()-t0)))})}
 let LOCAL=false;   // a browser on this PC: the engine opens files for it (never through a tunnel)
 if(!APP)fetch('/canopen').then(r=>r.json()).then(j=>{LOCAL=!!j.local;if(LOCAL&&last)list()}).catch(()=>{});
 // the engine answers at once but warms up for a few seconds after a start: say so instead of a silent first wait (#68)
@@ -267,7 +301,7 @@ if(!APP)fetch('/canopen').then(r=>r.json()).then(j=>{LOCAL=!!j.local;if(LOCAL&&l
   const c=now();if(c&&P.total)d+=Math.min(1,P.done/P.total);return Math.round(100*d/ST.length)}
  function render(){
   const p=pct(),c=now();chip.style.setProperty('--p',p);chip.classList.toggle('paused',!!P.paused);chip.classList.toggle('ok',!active);
-  chip.querySelector('.ixt').textContent=!active?T('모두 준비됐어요','All set'):P.paused?T('잠시 멈춤','Paused'):T(`살펴보는 중 ${p}%`,`Scanning ${p}%`);
+  chip.querySelector('.ixt').textContent=!active?T('모두 준비됐어요','All set'):P.pausing?T('멈추는 중…','Pausing…'):P.paused?T('잠시 멈춤','Paused'):T(`살펴보는 중 ${p}%`,`Scanning ${p}%`);
   chip.setAttribute('aria-label',chip.querySelector('.ixt').textContent+T(' · 자세히 보기',' · details'));
   if(pan.hidden)return;
   const sg=P.stages||{};
@@ -277,20 +311,22 @@ if(!APP)fetch('/canopen').then(r=>r.json()).then(j=>{LOCAL=!!j.local;if(LOCAL&&l
    else if(v==='later')sub='<div class="ixs">'+T('PC를 쓰지 않을 때 조금씩 읽어요','Read bit by bit while the PC is idle')+'</div>';
    return `<li class="${v}"><span class="ic" aria-hidden="true">${ic}</span><div><div class="ixl">${can}</div>${sub}</div><span class="ixv">${lab}</span></li>`}).join('');
   const files=P.files?T(`파일 ${Number(P.files).toLocaleString()}개 · `,`${Number(P.files).toLocaleString()} files · `):'';
-  pan.innerHTML=`<div class="ixh"><div><h3>${active?(P.paused?T('잠시 멈췄어요','Paused'):T('내 파일을 살펴보는 중','Scanning your files')):T('모두 준비됐어요','All set')}</h3>
+  pan.innerHTML=`<div class="ixh"><div><h3>${active?(P.pausing?T('멈추는 중…','Pausing…'):P.paused?T('잠시 멈췄어요','Paused'):T('내 파일을 살펴보는 중','Scanning your files')):T('모두 준비됐어요','All set')}</h3>
    <div class="ixsub">${files}${T('이 PC 안에서만 처리해요','Processed only on this PC')}</div></div><button class="ixx" aria-label="${T('닫기','Close')}">✕</button></div>
    <p class="ixn">${active?T('지금도 검색할 수 있어요. 새로 읽은 내용은 곧 결과에 들어가요.','You can search now. Newly read files show up in results soon.'):T('처음부터 끝까지 살펴봤어요. 바뀐 파일은 알아서 다시 읽어요.','Everything has been scanned. Changed files are re-read automatically.')}</p>
    ${active||Object.keys(sg).length?`<ol>${rows}</ol>`:''}
    ${!active&&P.app?`<div class="ixa"><button class="ixnow" ${P.refresh_asked?'disabled':''}>${P.refresh_asked?T('곧 시작해요…','Starting soon…'):T('지금 반영','Update now')}</button><span class="ixsub">${P.last_refresh?T('마지막 반영 ','Last update ')+hm(P.last_refresh)+' · ':''}${T('새 파일은 10분마다 알아서 들어와요','New files are picked up every 10 minutes')}</span></div>`:''}
    ${active?`<div class="ixa"><button class="ixpause">${P.paused?T('이어서 하기','Resume'):T('잠시 멈추기','Pause')}</button><span class="ixsub">${P.paused?T('1시간 뒤에는 저절로 이어서 해요','Resumes on its own after 1 hour'):T('PC가 느려지면 멈춰 두세요','Pause it if your PC feels slow')}</span></div>`:''}`;
  }
- async function tick(){clearTimeout(timer);
+ // one look at a time: opening or closing the panel during a look started a second chain of looks that never ended
+ let looking=false;
+ async function tick(){if(looking)return;looking=true;clearTimeout(timer);
   try{const q=await (await fetch('/progress')).json();
    const fresh=q.stage&&q.stage!=='done'&&Date.now()/1000-q.t<900;
    if(fresh){P=q;active=true;wasActive=true}else{if(active){doneAt=Date.now();P.stages=Object.fromEntries(ST.map(s=>[s[0],(P.stages||{})[s[0]]==='later'?'later':'done']))}active=false;
     P.app=q.app;P.last_refresh=q.last_refresh;P.refresh_asked=q.refresh_asked}
    chip.hidden=!active&&!P.app&&!(wasActive&&Date.now()-doneAt<10000)&&pan.hidden; render()}catch(e){}
-  timer=setTimeout(tick,pan.hidden?5000:1500)}
+  looking=false; timer=setTimeout(tick,pan.hidden?5000:1500)}
  function open_(){pan.hidden=false;render();tick();pan.querySelector('.ixx')?.focus()}
  function close_(){pan.hidden=true;chip.focus();tick()}
  chip.onclick=()=>pan.hidden?open_():close_();
@@ -300,7 +336,7 @@ if(!APP)fetch('/canopen').then(r=>r.json()).then(j=>{LOCAL=!!j.local;if(LOCAL&&l
    P.refresh_asked=true;render();setTimeout(tick,1500);return}
   if(e.target.closest('.ixpause')){e.target.disabled=true;
    await fetch('/pause',{method:'POST',headers:{'X-Findr':'1','Content-Type':'application/json'},body:JSON.stringify({on:!P.paused})}).catch(()=>{});
-   P.paused=!P.paused;render();setTimeout(tick,800)}});
+   P.paused=!P.paused;P.pausing=P.paused;render();setTimeout(tick,800)}});
  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!pan.hidden)close_()});
  document.addEventListener('click',e=>{if(!pan.hidden&&!pan.contains(e.target)&&!chip.contains(e.target))close_()});
  const _show=show; show=function(r,f){_show(r,f);   // while files are still being read, say why some were found by name only
@@ -342,14 +378,15 @@ document.addEventListener('click',e=>{
  const sd=e.target.closest('[data-dir]');if(sd){fDir=sd.dataset.dir;list();toast(T('폴더로 거름: ','Filtered to folder: ')+fDir.split('/').slice(-2).join('/'));return}
  const vo=e.target.closest('[data-vopen]');if(vo&&(APP||LOCAL)){const [ci,vi]=vo.dataset.vopen.split(':').map(Number),vx=filtered()[ci],vp=vx.versions[vi].path,
    vfb=()=>fb('open',vp,last.results.indexOf(vx)+1,vx.prob,1);   // opened from 'other versions': that version's path, ver=1
-  if(APP){window.__TAURI__.core.invoke('open_path',{path:vp,reveal:false}).then(vfb).catch(err=>toast(String(err)));return}
-  fetch('/open',{method:'POST',headers:{'X-Findr':'1','Content-Type':'application/json'},body:JSON.stringify({path:vp,reveal:false})}).then(r=>{if(r.ok)vfb();toast(r.ok?T('파일을 열었습니다','File opened'):T('열지 못했습니다',"Couldn't open it"))}).catch(err=>toast(String(err)));return}
+  if(APP){once('o'+vp,()=>window.__TAURI__.core.invoke('open_path',{path:vp,reveal:false}).then(vfb).catch(err=>toast(String(err))));return}
+  once('o'+vp,()=>fetch('/open',{method:'POST',headers:{'X-Findr':'1','Content-Type':'application/json'},body:JSON.stringify({path:vp,reveal:false})}).then(r=>{if(r.ok)vfb();toast(r.ok?T('파일을 열었습니다','File opened'):T('열지 못했습니다',"Couldn't open it"))}).catch(err=>toast(String(err))));return}
  const op=e.target.closest('[data-open],[data-reveal]');if(op&&(APP||LOCAL)){const x=filtered()[+(op.dataset.open!=null?op.dataset.open:op.dataset.reveal)],rv=op.dataset.reveal!=null,
    ofb=()=>fb(rv?'reveal':'open',x.path,last.results.indexOf(x)+1,x.prob);   // what was really opened is what findr learns from
-  if(APP){window.__TAURI__.core.invoke('open_path',{path:x.path,reveal:rv}).then(ofb).catch(err=>toast(String(err)));return}
-  fetch('/open',{method:'POST',headers:{'X-Findr':'1','Content-Type':'application/json'},body:JSON.stringify({path:x.path,reveal:rv})})
+  const ok_=(rv?'r':'o')+x.path;
+  if(APP){once(ok_,()=>window.__TAURI__.core.invoke('open_path',{path:x.path,reveal:rv}).then(ofb).catch(err=>toast(String(err))));return}
+  once(ok_,()=>fetch('/open',{method:'POST',headers:{'X-Findr':'1','Content-Type':'application/json'},body:JSON.stringify({path:x.path,reveal:rv})})
    .then(r=>r.ok?(ofb(),toast(rv?T('폴더를 열었습니다','Folder opened'):T('파일을 열었습니다','File opened'))):r.json().then(j=>toast(T('열지 못했습니다',"Couldn't open it")+(j.why=='not indexed'?T(': 색인에 없는 파일',': not in the index'):j.why=='FileNotFoundError'?T(': 파일이 옮겨졌거나 지워졌습니다',': the file was moved or deleted'):''))))
-   .catch(err=>toast(String(err)));return}
+   .catch(err=>toast(String(err))));return}
  const cp=e.target.closest('[data-copy]');if(cp){const x=filtered()[+cp.dataset.copy];copy(x.path);fb('copy',x.path,last.results.indexOf(x)+1,x.prob);return}
  const no=e.target.closest('[data-no]');if(no){const x=filtered()[+no.dataset.no];x.no=true;fb('reject',x.path,last.results.indexOf(x)+1,x.prob);list();toast(T('기록: 이 파일은 아님','Noted: not this file'));return}
  const ok=e.target.closest('[data-ok]');if(ok){const x=filtered()[+ok.dataset.ok];fb('hit',x.path,last.results.indexOf(x)+1,x.prob);last.picked=1;ok.classList.add('done');ok.textContent=T('✔ 기록됨','✔ Saved');
@@ -365,7 +402,7 @@ function fb(v,p,k,pr,ver){const L=last||{},quiet=v==='open'||v==='reveal'||v==='
 // keyboard
 document.addEventListener('keydown',e=>{
  if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();q.select();return}
- if(e.key==='Enter'&&document.activeElement===q){if(e.isComposing||e.keyCode===229)return;go();return}   // Hangul: the Enter that ends a syllable is not a second search
+ if(e.key==='Enter'&&document.activeElement===q){if(e.repeat)return;if(e.isComposing||e.keyCode===229)return;go();return}   // Hangul: the Enter that ends a syllable is not a second search
  if(e.key==='Escape'){q.value='';q.focus();return}
  const cards=[...document.querySelectorAll('.card')];if(!cards.length)return;
  if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();sel=Math.max(0,Math.min(cards.length-1,sel+(e.key==='ArrowDown'?1:-1)));

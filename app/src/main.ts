@@ -29,7 +29,13 @@ invoke<string>('saved_lang_choice').then(v => {
 const L = (ko: string, en: string) => LANG === 'ko' ? ko : en   // tables below are functions so that a language change redraws them
 const GPU = (): Record<string, string> => ({ nvidia: 'NVIDIA GPU', apple: L('Apple 칩', 'Apple silicon'), cpu: L('GPU 없음 (CPU)', 'No GPU (CPU)') })
 let unlisten: UnlistenFn[] = []
-const clear = () => { unlisten.forEach(u => u()); unlisten = [] }
+// a screen's timers end with it, and `screen` says whether the screen that set one is still the one shown: the indexing
+// screen's countdown, left running after the menu opened the settings, took the person from there to search 5 s later
+let timers: number[] = [], screen = 0
+const clear = () => { unlisten.forEach(u => u()); unlisten = []; timers.forEach(t => clearTimeout(t)); timers = []; screen++ }
+// '검색으로' from a screen: a changed address runs route() by itself (hashchange); calling it as well ran the screen twice,
+// and two engine starts at once
+const goHash = (to: string) => { if (location.hash === '#' + to) route(); else location.hash = to }
 const photoOn = () => { try { return localStorage.getItem('findr.photo') !== 'off' } catch { return true } }
 
 async function route() {
@@ -45,7 +51,7 @@ async function route() {
   if (h === 'settings') return settings(s)
   if ((h === 'index' || h === 'deep') && s.folders.length) return indexing(s.folders, h === 'deep')
   if (h === 'folders' || !s.indexed) return folders(s)
-  return search()
+  return search(h === 'restart')   // 'restart': the engine ended, or the search page asked for a new one
 }
 window.addEventListener('hashchange', route)
 
@@ -111,7 +117,7 @@ async function setup(s: AppState) {
     document.getElementById('retry')!.onclick = () => { if (location.hash === '#setup') route(); else location.hash = 'setup' }
     document.getElementById('later')?.addEventListener('click', () => {
       try { sessionStorage.setItem('findr.updateLater', '1') } catch { /* no storage */ }
-      location.hash = 'search'; route()
+      goHash('search')
     })
   }
   unlisten.push(await listen<Done>('setup-done', e => finish(e.payload)))
@@ -181,7 +187,7 @@ const CAN = (): [string, string, string][] => [   // stage, what the person can 
   ['meaning', L('기억나는 대로 물어보기', 'Ask the way you remember it'), L('내용의 뜻을 파악하는 중', 'Learning what the contents mean')],
   ['ocr', L('스캔·스크린샷 속 글자 찾기', 'Find text in scans and screenshots'), L('스캔 글자를 읽는 중', 'Reading text in scans')],
 ]
-type Progress = { stage?: string; done?: number; total?: number; minutes_left?: number | null; files?: number | null; paused?: boolean
+type Progress = { stage?: string; done?: number; total?: number; minutes_left?: number | null; files?: number | null; paused?: boolean; pausing?: boolean
   stages?: Record<string, string>; t?: number; started?: number; scanned?: number; rate?: number; folder?: string }
 // '약 3분', '1분 안에', '약 1시간 20분': the time left of a stage, said plainly
 const left = (m: number) => m < 1 ? L('1분 안에 끝나요', 'less than a minute left') : m < 60 ? L(`약 ${Math.round(m)}분 남았어요`, `about ${Math.round(m)} min left`) : L(`약 ${Math.floor(m / 60)}시간 ${Math.round(m % 60)}분 남았어요`, `about ${Math.floor(m / 60)} h ${Math.round(m % 60)} min left`)
@@ -212,11 +218,12 @@ async function indexing(list: string[], deep = false) {
   const $ = (id: string) => document.getElementById(id)!
   const set = (id: string, t: string) => { const e = document.getElementById(id); if (e) e.textContent = t }
   let ti = 0; const tip = () => set('tip', '“' + TIPS()[ti++ % TIPS().length] + '”'); tip()
-  const tipTimer = setInterval(tip, 6000)
+  const mine = screen   // this screen, until route() draws another
+  const tipTimer = setInterval(tip, 6000); timers.push(tipTimer)
   const goSearch = async () => {   // the engine was started in advance: no second wait
-    if (moved) return; moved = true; clearInterval(tipTimer); clearInterval(poll)
-    try { const url = await (engine || invoke<string>('start_engine', { photo: photoOn() })); location.href = url }
-    catch (e) { location.hash = 'search' }
+    if (moved || mine !== screen) return; moved = true; clearInterval(tipTimer); clearInterval(poll)
+    try { const url = await (engine || invoke<string>('start_engine', { photo: photoOn() })); if (mine === screen) location.href = url }
+    catch (e) { if (mine === screen) location.hash = 'search' }
   }
   const render = () => {
     const sg = P.stages || {}
@@ -241,8 +248,8 @@ async function indexing(list: string[], deep = false) {
     $('bar').parentElement!.classList.toggle('busy', P.stage === 'names' && sg.names === 'now' && !P.paused)
     if (P.stage === 'names' && P.folder) set('where', L(`둘러보는 중: ${P.folder}`, `Looking in: ${P.folder}`))
     if (P.started) set('elapsed', L(`시작한 지 ${clock(Date.now() / 1000 - P.started)}`, `${clock(Date.now() / 1000 - P.started)} elapsed`) + (P.t && Date.now() / 1000 - P.t > 20 && !P.paused ? L(' · 큰 파일을 처리하는 중이에요', ' · working on a large file') : ''))
-    set('pct', P.paused ? L(`${pct}% · 잠시 멈춤`, `${pct}% · paused`) : `${pct}%`)
-    set('eta', P.paused ? L('1시간 뒤에는 저절로 이어서 해요', 'Resumes on its own in an hour') : P.minutes_left != null ? L(`이 단계 ${left(P.minutes_left)}`, `This step: ${left(P.minutes_left)}`) : P.stage === 'names' ? L('파일 목록이 끝나면 남은 시간을 알려 드려요', 'Time left appears once the file list is done') : '')
+    set('pct', P.pausing ? L(`${pct}% · 멈추는 중…`, `${pct}% · pausing…`) : P.paused ? L(`${pct}% · 잠시 멈춤`, `${pct}% · paused`) : `${pct}%`)
+    set('eta', P.pausing ? L('읽고 있던 파일을 마치고 멈춰요', 'Stopping after the file it is reading') : P.paused ? L('1시간 뒤에는 저절로 이어서 해요', 'Resumes on its own in an hour') : P.minutes_left != null ? L(`이 단계 ${left(P.minutes_left)}`, `This step: ${left(P.minutes_left)}`) : P.stage === 'names' ? L('파일 목록이 끝나면 남은 시간을 알려 드려요', 'Time left appears once the file list is done') : '')
     if (P.files) found = Math.max(found, P.files)
     if (P.scanned) found = Math.max(found, P.scanned)
     set('nfiles', found.toLocaleString())
@@ -253,24 +260,25 @@ async function indexing(list: string[], deep = false) {
     }
   }
   const tickDown = () => {
-    if (stay || moved) return
+    if (stay || moved || mine !== screen) return
     $('auto').innerHTML = L(`${countdown}초 뒤 검색 화면으로 넘어가요. 살펴보기는 계속돼요. <button class="link" id="stay">여기 머물기</button>`, `Opening search in ${countdown} s. Indexing keeps going. <button class="link" id="stay">Stay here</button>`)
     $('stay').onclick = () => { stay = true; $('auto').textContent = L('여기서 지켜볼게요. 준비되면 언제든 ‘검색 시작하기’를 누르세요.', 'Staying here. Click “Start searching” whenever you are ready.') }
     if (countdown-- <= 0) return goSearch()
-    setTimeout(tickDown, 1000)
+    timers.push(setTimeout(tickDown, 1000))
   }
   const poll = setInterval(async () => {
     // a refused or failing command is said in the detailed log once: swallowed, it left the bar at 0% for the whole first index
     try { const t = await invoke<string>('read_progress'); if (t) { P = JSON.parse(t); render() } }
     catch (e) { if (!pollErr) { pollErr = true; log.push('read_progress: ' + String(e)); set('log', log.join('\n')) } }
   }, 700)
+  timers.push(poll)
   unlisten.push(await listen<Line>('index', e => {
     const l = e.payload.line
     log.push(l); if (log.length > 300) log.shift(); set('log', log.join('\n'))
     let m
     if (!engine && l.startsWith('FINDR_ROOT')) {   // the index exists from the first folder on: start the engine now, in parallel
       engine = invoke<string>('start_engine', { photo: photoOn() })
-      engine.then(() => { ready = true; render() }).catch(() => {})
+      engine.then(() => { ready = true; if (mine === screen) render() }).catch(() => {})
     }
     if ((m = l.match(/^FINDR_ROOT (\{.*\})/))) { const r = JSON.parse(m[1]); set('where', L(`둘러보는 중: ${r.path}`, `Looking in: ${r.path}`)) }
     else if ((m = l.match(/^FINDR_SCAN new\/changed (\d+)/))) { found += +m[1]; set('nfiles', found.toLocaleString()) }
@@ -283,25 +291,33 @@ async function indexing(list: string[], deep = false) {
     set('where', L('모두 살펴봤어요', 'All done')); if (!stay) goSearch()
   }))
   $('go').onclick = goSearch
-  $('pause').onclick = async () => { const on = !P.paused; await invoke('set_pause', { on }); P.paused = on; render() }
+  $('pause').onclick = async () => { const on = !P.paused; await invoke('set_pause', { on }); P.paused = on; P.pausing = on; render() }
   invoke('start_index', { folders: list, deep })
 }
 
 // ---------- search ----------
-async function search() {
+async function search(restart = false) {
+  const mine = screen
   view.innerHTML = `<h1>${L('검색을 준비하는 중', 'Getting search ready')}</h1>
-    <div class="card"><div class="row"><div class="spinner"></div><span>${L('검색 엔진을 켜고 있습니다. 처음에는 1분 정도 걸립니다.', 'Starting the search engine. The first start takes about a minute.')}</span></div></div>`
+    <div class="card"><div class="row"><div class="spinner"></div><span>${restart
+      ? L('검색 엔진이 멈춰서 다시 켜고 있습니다. 1분 정도 걸립니다.', 'The search engine stopped, so it is being started again. This takes about a minute.')
+      : L('검색 엔진을 켜고 있습니다. 처음에는 1분 정도 걸립니다.', 'Starting the search engine. The first start takes about a minute.')}</span></div></div>`
   try {
+    // 'restart': the engine ended on its own, or the search page got no answer from it. One that is still there is stopped
+    // first, since it may be the one that stopped answering
+    if (restart) await invoke('stop_engine').catch(() => {})
     const url = await invoke<string>('start_engine', { photo: photoOn() })
     const s = await invoke<AppState>('app_state')
+    if (mine !== screen) return   // the person went to another screen meanwhile: the engine is up, that screen stays
     location.href = s.autotest ? url + '&q=' + encodeURIComponent('고객사 미팅용 견적서') : url
   } catch (e) {
+    if (mine !== screen) return
     view.innerHTML = `<h1>${L('검색 엔진을 켜지 못했습니다', 'Could not start the search engine')}</h1><div class="notice err">${esc(String(e))}</div>
       <div class="actions"><button class="primary" id="retry">${L('다시 시도', 'Try again')}</button><button id="set">${L('설정', 'Settings')}</button></div>`
     document.getElementById('retry')!.onclick = () => { route() }
     document.getElementById('later')?.addEventListener('click', () => {
       try { sessionStorage.setItem('findr.updateLater', '1') } catch { /* no storage */ }
-      location.hash = 'search'; route()
+      goHash('search')
     })
     document.getElementById('set')!.onclick = () => { location.hash = 'settings' }
   }
@@ -364,7 +380,7 @@ async function settings(s: AppState) {
   document.getElementById('photo')!.onchange = ev => {
     try { localStorage.setItem('findr.photo', (ev.target as HTMLInputElement).checked ? 'on' : 'off') } catch { /* private storage off */ }
   }
-  document.getElementById('back')!.onclick = () => { location.hash = 'search'; if (location.hash === '#search') route() }
+  document.getElementById('back')!.onclick = () => goHash('search')
   document.getElementById('lang')!.onchange = ev => {   // saved, then the screen is drawn again in the chosen language
     LANG = (ev.target as HTMLSelectElement).value === 'ko' ? 'ko' : 'en'; document.documentElement.lang = LANG
     try { localStorage.setItem('findr.lang', LANG) } catch { /* private storage off */ }
