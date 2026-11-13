@@ -544,6 +544,9 @@ class Finder:
             import enc_eg2
             if self.l2target == "embeddinggemma-2" and not Path(enc_eg2.PATH).is_dir():
                 raise FileNotFoundError("model folder missing")   # never a download in the middle of a question
+            free = _mem_free_gb()
+            if free is not None and free < LANE2_FREE_GB:   # the larger model takes 1.2 GB on a CPU: not on a PC near its limit
+                raise MemoryError(f"{free:.1f} GB free")
             self._l2enc = (self.l2target, enc_eg2.make_encoder(self.l2target, DEVICE, max_len=128))
             return self._l2enc[1]
         except BaseException as e:   # noqa: BLE001
@@ -554,6 +557,8 @@ class Finder:
 
     def lane2_off(self, e):
         self._l2off = True; self._l2enc = None
+        import gc
+        gc.collect()
         print(f"FINDR_LANE2 off ({type(e).__name__}): the second meaning lane is not used in this run", file=sys.stderr, flush=True)
 
     def lane2(self, text, ok=None):
@@ -2272,6 +2277,15 @@ PASSWORD = ""
 import math  # noqa: E402
 import threading  # noqa: E402
 import traceback  # noqa: E402
+def _mem_free_gb():
+    try:
+        from governor import mem_available_gb
+        return mem_available_gb()
+    except Exception:   # noqa: BLE001
+        return None
+
+
+LANE2_FREE_GB = 3.0   # free memory needed before the second lane loads its model (1.2 GB) at the first question
 SEARCH_LOCK = threading.Lock()   # the finder shares one DB connection, GPU models and per-search state: one search at a time
 _CE_LOCK = threading.Lock()   # loading a reranker (once per model folder)
 READY = threading.Event()   # set when the warm-up is done: /healthz answers at once, /ready says when a question gets full speed (#68)
@@ -2859,7 +2873,14 @@ def serve(f, port):
     global GOV
     try:   # the resource manager: observes this PC (profile, memory, CPU, power, heat) and says what it would do (/status)
         from governor import Governor
-        GOV = Governor(dev=DEVICE, log=lambda s: print(s, flush=True)); GOV.start()
+        def act(what):
+            """memory turned critical: drop the second lane's model (1.2 GB on a CPU); search goes on with the first lane"""
+            if what == "memory" and getattr(f, "_l2enc", None) is not None:
+                with SEARCH_LOCK:   # not in the middle of a question that uses it
+                    f.lane2_off(MemoryError("memory critical"))
+                return "두 번째 뜻 경로 모델 내림"
+            return ""
+        GOV = Governor(dev=DEVICE, log=lambda s: print(s, flush=True), act=act); GOV.start()
     except Exception as e:   # noqa: BLE001  (search works without it)
         print(f"FINDR_GOV off {type(e).__name__}", flush=True)
 
