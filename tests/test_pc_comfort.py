@@ -80,7 +80,8 @@ def test_pause_wait_checks_memory_first():
 def test_governor_acts_once_when_memory_turns_critical(monkeypatch):
     calls = []
     g = governor.Governor(every=999, dev="cpu", gpu_gb=0, log=lambda s: None, act=lambda w: calls.append(w) or "dropped")
-    monkeypatch.setattr(g, "_smooth", lambda k, v, a=0.4: v)
+    load = iter([10.0, 10.0, 95.0, 10.0, 95.0, 10.0, 10.0])   # the CPU load moves while memory stays critical
+    monkeypatch.setattr(g, "_smooth", lambda k, v, a=0.4: next(load) if k == "cpu" else v)
     for gb in (3.0, 0.5, 0.6, 0.4, 2.5, 0.5):
         monkeypatch.setattr(governor, "mem_available_gb", lambda gb=gb: gb)
         g.sample()
