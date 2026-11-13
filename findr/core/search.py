@@ -2879,8 +2879,10 @@ def client_gone(sock):
         if not readable:
             return False
         return sock.recv(1, socket.MSG_PEEK) == b""   # a GET has no body: anything readable now is the close
-    except (OSError, ValueError):
+    except ConnectionError:   # reset by the page's abort
         return True
+    except (OSError, ValueError):   # anything else: unsure, so the question is answered (never skipped by mistake)
+        return False
 
 
 def answer_errors(h, run):
