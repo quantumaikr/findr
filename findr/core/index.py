@@ -592,12 +592,53 @@ def tick(stage, done, total, every=0.7, **kw):
     progress(stage, done, total, rate=round(rate, 1), **kw)
 
 
+MEM_LOW_GB = 0.8     # free memory below this: the indexer lets go of what it can and waits (the engine and the person first)
+MEM_BACK_GB = 2.0    # ... and goes on once this much is free again
+MEM_WAIT_MAX = 900   # never waits longer than this at a time: memory another program keeps forever does not stop indexing
+_RELEASE = []        # what the indexer can let go of under memory pressure (its own encoder); taken up again when needed
+
+
+def mem_free_gb():
+    """memory free now in GB (None when it cannot be read)"""
+    try:
+        from governor import mem_available_gb
+        return mem_available_gb()
+    except Exception:   # noqa: BLE001
+        return None
+
+
+def memory_wait():
+    """when the PC is nearly out of memory: let go of the indexer's own model, and wait until memory is back. Holding alone
+    frees nothing (a held process keeps what it holds, measured in a 3 GB limit); letting go of the model does, and not
+    reading more files keeps the indexer from pushing the PC into paging while the person works (field, 16 GB laptop)"""
+    free = mem_free_gb()
+    if free is None or free >= MEM_LOW_GB:
+        return
+    for f in list(_RELEASE):
+        try:
+            f()
+        except Exception:   # noqa: BLE001
+            pass
+    import gc
+    gc.collect()
+    print(f"FINDR_MEMWAIT {free:.1f} GB free: indexing waits for memory", flush=True)
+    t0 = time.time()
+    while time.time() - t0 < MEM_WAIT_MAX:
+        time.sleep(5)
+        free = mem_free_gb()
+        if free is None or free >= MEM_BACK_GB:
+            break
+    print(f"FINDR_MEMBACK {free if free is not None else 0:.1f} GB free after {time.time() - t0:.0f}s", flush=True)
+
+
 PAUSE_MAX = 3600   # a pause the person forgot about lapses after an hour
 PAUSE_BEAT = 60    # a paused indexer says it is still here this often (the page drops a progress line after 15 minutes)
 
 
 def pause_wait():
-    """hold while the person paused indexing (the app or the search page writes 'pause' in the data folder)"""
+    """hold while the person paused indexing (the app or the search page writes 'pause' in the data folder), and while the
+    PC is nearly out of memory (memory_wait)"""
+    memory_wait()
     d = os.environ.get("FINDR_DATA")
     if not d:
         return
@@ -701,16 +742,46 @@ def _read_one(job):
         return ""
 
 
+READER_GB = 0.35   # memory one reader process may take at its peak (parsers loaded, one large document open)
+
+
+def read_workers():
+    """reader processes for this run: FINDR_READ_WORKERS when set; else one per core less one, at most 8, no more than the
+    run's thread share (FINDR_THREADS: the app gives indexing half the cores) and no more than free memory allows. A 16 GB
+    laptop with a video and a browser open froze while the first index ran 8 readers beside the engine (field, 11-13)"""
+    if os.environ.get("FINDR_READ_WORKERS"):
+        return max(1, int(os.environ["FINDR_READ_WORKERS"]))
+    n = max(1, min(8, (os.cpu_count() or 2) - 1))
+    if os.environ.get("FINDR_THREADS"):
+        n = min(n, max(1, int(os.environ["FINDR_THREADS"])))
+    free = mem_free_gb()
+    if free is not None:   # leave 2 GB for the person and the engine; what is left decides how many readers fit
+        n = min(n, max(1, int((free - 2.0) / READER_GB)))
+    return n
+
+
 def read_all(jobs):
-    """text of each (path, limit) in order; several worker processes when there is enough to read (FINDR_READ_WORKERS)"""
-    n = int(os.environ.get("FINDR_READ_WORKERS") or max(1, min(8, (os.cpu_count() or 2) - 1)))
+    """text of each (path, limit) in order; several worker processes when there is enough to read (read_workers)"""
+    n = read_workers()
     if n <= 1 or len(jobs) < 16:
         yield from map(_read_one, jobs); return
+    from collections import deque
     from concurrent.futures import ProcessPoolExecutor
     done = 0
     try:
         with ProcessPoolExecutor(max_workers=n) as ex:
-            for r in ex.map(_read_one, jobs, chunksize=4):   # results come back in the given (priority) order
+            # a few files ahead of the one being stored, not all of them: Executor.map submits every job at once, and the
+            # texts read ahead (up to 2 MB each in a deep run) piled up in memory while storing was slower or paused
+            ahead, it = deque(), iter(jobs)
+            for j in it:
+                ahead.append(ex.submit(_read_one, j))
+                if len(ahead) >= n * 3:
+                    break
+            while ahead:
+                r = ahead.popleft().result()   # results come back in the given (priority) order
+                nxt = next(it, None)
+                if nxt is not None:
+                    ahead.append(ex.submit(_read_one, nxt))
                 done += 1
                 yield r
     except Exception:   # a worker died (out of memory, a reader crashed), or no worker processes on this platform
@@ -1573,6 +1644,9 @@ def _meta_encoder(con):
     return r[0] if r else None
 
 
+LOCAL_STEP = 32   # texts per forward pass of the indexer's own encoder
+
+
 def embed(con, model, names_only=False):
     con.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
     if model in ("embeddinggemma-2", "e5-small", "e5-base", "ko-sroberta") and not con.execute("SELECT 1 FROM chunks WHERE emb IS NOT NULL LIMIT 1").fetchone():
@@ -1616,11 +1690,21 @@ def embed(con, model, names_only=False):
         if enc is None:
             enc = local()
         import torch
+        out = []
         with torch.no_grad():
-            return emb512(enc, texts).cpu().numpy().astype(np.float16)
+            # 32 texts at a time, as the engine computes them: 256 texts of 512 tokens at once held gigabytes of attention
+            # scores on a CPU for one batch, the same vectors either way
+            for k in range(0, len(texts), LOCAL_STEP):
+                out.append(emb512(enc, texts[k:k + LOCAL_STEP]).cpu().numpy().astype(np.float16))
+        return np.concatenate(out) if out else np.zeros((0, 1), np.float16)
+
+    def let_go():
+        nonlocal enc
+        enc = None   # vecs() loads it again when the next batch needs it
 
     if eng is None:
         enc = local()
+    _RELEASE.append(let_go)
     print(f"FINDR_EMBED_VIA {'engine' if eng is not None else 'local'} ({name})", flush=True)
     # identical inputs (a copied file, repeated boilerplate under the same name) are computed once
     groups = {}
@@ -1650,6 +1734,8 @@ def embed(con, model, names_only=False):
                 print("FINDR_SLOW 이 PC에서는 큰 모델이 느립니다. 작은 모델로 바꾸면 훨씬 빨라집니다:  findr setup --lite", flush=True)
     con.commit(); print(f"FINDR_EMBED {len(rows)} chunks {time.time() - t0:.0f}s (computed {len(uniq)}, identical skipped {len(rows) - len(uniq)}"
                         + (f", later pieces left for a deep run {later})" if later else ")"))
+    if let_go in _RELEASE:
+        _RELEASE.remove(let_go)
 
 
 def user_idle_seconds():

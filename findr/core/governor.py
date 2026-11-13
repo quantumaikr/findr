@@ -1,8 +1,10 @@
 """Resource manager: what this PC is (profile) and how it is doing right now (signals), so findr does what fits comfortably.
 
-Comfort before capability: a feature that makes the PC slow is worse than a lighter one that keeps it pleasant. This first
-step only observes: it reads the signals every few seconds, judges the pressure with hysteresis, and records what it
-would do (FINDR_GOV lines and /status). The actions come next, once the real signals have shown where the lines belong.
+Comfort before capability: a feature that makes the PC slow is worse than a lighter one that keeps it pleasant. It reads
+the signals every few seconds, judges the pressure with hysteresis, and records what it would do (FINDR_GOV lines and
+/status). One action is taken: when memory turns critical, `act("memory")` lets the engine drop what it can rebuild (the
+second meaning lane's model). A 16 GB laptop with a video and a browser open froze while findr indexed and searched (field,
+11-13); the indexer waits for memory on its own (index.memory_wait).
 
     profile()  -> {"tier", "reasons", "ram_gb", "cores", "gpu", "gpu_gb"}          fixed for this run
     Governor() -> thread; .state() -> {"profile", "signals", "pressure", "would", "since"}"""
@@ -121,9 +123,9 @@ class Governor(threading.Thread):
     CPU_BUSY = (70.0, 50.0)    # % of all cores used by other programs
     SLOW = (2.0, 1.4)          # reranker time per token against its best at that size: heat or another program sharing
 
-    def __init__(self, every=5.0, dev=None, gpu_gb=None, log=print):
+    def __init__(self, every=5.0, dev=None, gpu_gb=None, log=print, act=None):
         super().__init__(daemon=True, name="findr-governor")
-        self.every, self.log = every, log
+        self.every, self.log, self.act, self.acted = every, log, act, []
         self.prof = profile(dev, gpu_gb)
         self.sig, self.press, self.since = {}, {"memory": "ok", "cpu": "ok", "power": "ac", "heat": "ok"}, time.time()
         self._ema, self._lock = {}, threading.Lock()
@@ -215,6 +217,14 @@ class Governor(threading.Thread):
                 self.press, self.since = p, time.time()
         if changed:
             self.log("FINDR_GOV " + " ".join(f"{k}={v}" for k, v in p.items()) + " | would: " + ("; ".join(self.would()) or "-"))
+            if p["memory"] == "critical" and self.act is not None:
+                try:
+                    did = self.act("memory")
+                    if did:
+                        self.acted = (self.acted + [f"{int(time.time())} {did}"])[-10:]
+                        self.log(f"FINDR_GOV acted: {did}")
+                except Exception as e:   # noqa: BLE001  (the manager never takes the engine down)
+                    self.log(f"FINDR_GOV act error {type(e).__name__}")
         return self.state()
 
     def would(self):
@@ -239,7 +249,7 @@ class Governor(threading.Thread):
     def state(self):
         with self._lock:
             return {"profile": self.prof, "signals": dict(self.sig), "pressure": dict(self.press), "would": self.would(),
-                    "since": round(self.since), "observe_only": True}
+                    "since": round(self.since), "observe_only": self.act is None, "acted": list(self.acted)}
 
     def run(self):
         while True:

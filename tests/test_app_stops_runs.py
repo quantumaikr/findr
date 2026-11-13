@@ -22,6 +22,9 @@ def test_runs_tracked_and_stopped():
 
 def test_progress_says_paused(tmp_path, monkeypatch):
     src = Path(search.__file__).read_text(encoding="utf-8")
-    assert 'p_["paused"] = (data_ / "pause").exists()' in src
+    # paused is the pause file itself; pausing: asked, and the indexer has not said it holds yet (up to 14 s, #66-10)
+    assert 'asked = (data_ / "pause").exists()' in src and 'p_["pausing"] = asked and not p_.get("paused")' in src
+    assert 'p_["paused"] = asked' in src
     lib = LIB.read_text(encoding="utf-8")
-    assert 'm.insert("paused".into(), serde_json::Value::Bool(home().join("pause").exists()));' in lib
+    assert 'let asked = home().join("pause").exists();' in lib and 'm.insert("paused".into(), serde_json::Value::Bool(asked));' in lib
+    assert 'm.insert("pausing".into(), serde_json::Value::Bool(asked && !held));' in lib

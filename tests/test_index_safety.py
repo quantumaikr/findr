@@ -83,14 +83,20 @@ def test_dead_worker_keeps_texts_with_their_files(tmp_path, monkeypatch):
     for i in range(20):
         p = tmp_path / f"f{i}.txt"; p.write_text(f"text {i}", encoding="utf-8"); jobs.append((str(p), 1000))
 
+    class Done:   # a job the pool finished, or one lost when a worker died after the sixth
+        def __init__(self, fn, j, ok): self.fn, self.j, self.ok = fn, j, ok
+        def result(self):
+            if not self.ok:
+                raise RuntimeError("a worker died")
+            return self.fn(self.j)
+
     class Pool:
-        def __init__(self, **kw): pass
+        def __init__(self, **kw): self.n = 0
         def __enter__(self): return self
         def __exit__(self, *a): return False
-        def map(self, fn, js, chunksize=1):
-            for j in js[:6]:
-                yield fn(j)
-            raise RuntimeError("a worker died")
+        def submit(self, fn, j):
+            self.n += 1
+            return Done(fn, j, self.n <= 6)
 
     import concurrent.futures
     monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", Pool)

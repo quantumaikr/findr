@@ -213,14 +213,29 @@ def _index_encoder(db=None):
 
 
 LANE2_RAM_GB = 11.5   # a PC sold as 12 GB reports a little less
+LANE2_FREE_GB = 5.0   # free when the engine starts: the engine (2.7 GB) and the lane (1.2 GB) still leave the person room
 
 
-def _lane2():
+def _lane2(free=None):
     """the second meaning lane (first pieces by the larger model are kept, filled on slow PCs too, and read by the engine).
     LANE2=1 on, LANE2=0 off; not set: on where the PC has the memory for a second encoder. The engine holds 1.2 GB more
-    on a CPU, and an 8 GB laptop had 1.5 GB free with the engine running, so: 12 GB or more"""
+    on a CPU, and an 8 GB laptop had 1.5 GB free with the engine running, so: 12 GB or more, and free now. A 16 GB laptop
+    with a video and a browser open froze while findr searched and indexed (field, 11-13): what the PC has is not what is
+    left for findr. The engine also lets the lane go when memory turns critical (search.py, governor act)"""
     v = os.environ.get("LANE2", "")
-    return v == "1" or (v != "0" and _ram_gb() >= LANE2_RAM_GB)
+    if v in ("0", "1"):
+        return v == "1"
+    if _ram_gb() < LANE2_RAM_GB:
+        return False
+    if free is None:
+        try:
+            if str(paths.CORE) not in sys.path:
+                sys.path.insert(0, str(paths.CORE))
+            from governor import mem_available_gb
+            free = mem_available_gb()
+        except Exception:   # noqa: BLE001
+            free = None
+    return free is None or free >= LANE2_FREE_GB
 
 
 def _too_slow(why):
