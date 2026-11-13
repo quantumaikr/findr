@@ -2746,6 +2746,13 @@ def _local_request(h):
         h.headers.get(x) for x in ("CF-Connecting-IP", "X-Forwarded-For", "Forwarded", "X-Real-IP"))
 
 
+def _rate_limit_key(h):
+    """who authed() counts a wrong password against: the actual peer, never a forwarding header (CF-Connecting-IP
+    included) - through anything but Cloudflare's own edge, whoever is talking to us sets that header themselves, so
+    trusting it let an attacker pick a fresh bucket on every try and never trip the lockout"""
+    return h.client_address[0]
+
+
 def proc_memory():
     """this engine's memory now and at its peak (MB), and the GPU's peak when one is in use: the field reports had a 20 GB
     engine with no number to compare against (report the peak, not a plan)"""
@@ -3221,7 +3228,7 @@ def serve(f, port):
             """HTTP Basic (any user name): a tunnel makes this page reachable from outside, so it never runs without one"""
             import base64
             import hmac
-            who = self.headers.get("CF-Connecting-IP") or self.client_address[0]
+            who = _rate_limit_key(self)
             n_, t_ = FAILS.get(who, [0, time.time()])
             if time.time() - t_ > 600:
                 n_, t_ = 0, time.time()

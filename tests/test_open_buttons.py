@@ -19,6 +19,13 @@ def test_local_browser_only():
         assert not search._local_request(_h("127.0.0.1", **{hdr: "203.0.113.5"})), hdr
 
 
+def test_rate_limit_key_ignores_forwarding_headers():
+    """a tunnel visitor must not be able to pick their own lockout bucket and dodge the ten-tries limit"""
+    assert search._rate_limit_key(_h("203.0.113.5")) == "203.0.113.5"
+    for hdr in ("CF-Connecting-IP", "X-Forwarded-For", "Forwarded", "X-Real-IP"):
+        assert search._rate_limit_key(_h("203.0.113.5", **{hdr: "198.51.100.9"})) == "203.0.113.5", hdr
+
+
 def test_open_and_reveal_use_the_system(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **k: calls.append(cmd))
