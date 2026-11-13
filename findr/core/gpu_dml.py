@@ -143,6 +143,17 @@ def _inputs():
     return {"input_ids": ids, "attention_mask": mask}
 
 
+PROBE_TOKENS = 64   # one candidate of 64 tokens: about 1/30 of a full pass
+
+
+def _probe(s):
+    """seconds for one short pass (after a first one that compiles)"""
+    feed = {k: v[:1, :PROBE_TOKENS].copy() for k, v in _inputs().items()}
+    s.run(None, feed)
+    t = time.perf_counter(); s.run(None, feed)
+    return time.perf_counter() - t
+
+
 def _time(s, feed, runs=3):
     s.run(None, feed)   # the first pass compiles or allocates
     ts = []
@@ -160,23 +171,29 @@ def measure(model):
     g = session(model, True)
     if "DmlExecutionProvider" not in g.get_providers():
         return {"use": "cpu", "why": "no DirectML provider", "cpu_s": round(cpu_s, 4)}
+    # a short pass first: a slow GPU is told apart before it gets a full-length one. An Intel UHD 620 took 15 s per full pass,
+    # four times in a row, where Windows resets a display driver busy for 2 s (no reset seen there, field 11-13; not risked)
+    probe_s = _probe(g)
+    est = probe_s * (BATCH * TOKENS) / PROBE_TOKENS
+    if est > PASS_MAX_S:
+        return {"use": "cpu", "why": f"too slow on a short pass (about {est:.1f}s for a full one)", "cpu_s": round(cpu_s, 4),
+                "probe_s": round(probe_s, 4)}
     gpu_s, gpu_max, _ = _time(g, feed)
     pf, groups = _pairs(model)
     if pf is None:
         return {"use": "cpu", "why": "no tokenizer to check agreement", "cpu_s": round(cpu_s, 4), "gpu_s": round(gpu_s, 4)}
     same, diff = agree(c.run(None, pf)[0], g.run(None, pf)[0], groups)
+    why = []   # every reason, so doctor says whether it was the speed, the order or both
     if not same:
-        why = "ranks files differently"
-    elif diff > PROB_TOL:
-        why = f"scores differ ({diff:.3f})"
-    elif gpu_max > PASS_MAX_S:
-        why = f"one GPU pass took {gpu_max:.2f}s"
-    elif gpu_s * SPEEDUP > cpu_s:
-        why = f"not faster ({gpu_s:.3f}s vs {cpu_s:.3f}s on the CPU)"
-    else:
-        why = ""
-    return {"use": "cpu" if why else "dml", "why": why or "faster", "cpu_s": round(cpu_s, 4), "gpu_s": round(gpu_s, 4),
-            "gpu_max_s": round(gpu_max, 4), "diff": round(diff, 4)}
+        why.append("ranks files differently")
+    if diff > PROB_TOL:
+        why.append(f"scores differ ({diff:.3f})")
+    if gpu_max > PASS_MAX_S:
+        why.append(f"one GPU pass took {gpu_max:.2f}s")
+    if gpu_s * SPEEDUP > cpu_s:
+        why.append(f"not faster ({gpu_s:.3f}s vs {cpu_s:.3f}s on the CPU)")
+    return {"use": "cpu" if why else "dml", "why": "; ".join(why) or "faster", "cpu_s": round(cpu_s, 4), "gpu_s": round(gpu_s, 4),
+            "gpu_max_s": round(gpu_max, 4), "diff": round(diff, 4), "probe_s": round(probe_s, 4)}
 
 
 def check(model, wait=False):

@@ -31,6 +31,7 @@ def _verdict(monkeypatch, cpu_s, gpu_s, gpu_max=None, diff=0.0, provider=True, r
     monkeypatch.setattr(gpu_dml, "session", lambda model, dml, threads=None: sess[dml])
     times = {id(sess[False]): (cpu_s, cpu_s), id(sess[True]): (gpu_s, gpu_max if gpu_max is not None else gpu_s)}
     monkeypatch.setattr(gpu_dml, "_time", lambda s, feed, runs=3: times[id(s)] + (s.out,))
+    monkeypatch.setattr(gpu_dml, "_probe", lambda s: gpu_s * gpu_dml.PROBE_TOKENS / (gpu_dml.BATCH * gpu_dml.TOKENS))
     return gpu_dml.measure("model.onnx")
 
 
@@ -62,6 +63,18 @@ def test_scores_far_off_are_not_used(monkeypatch):
 def test_agreement_pairs_cover_korean_and_english():
     assert any(q.isascii() for q in gpu_dml.PAIRS) and any(not q.isascii() for q in gpu_dml.PAIRS)
     assert all(len(v) == 5 for v in gpu_dml.PAIRS.values())
+
+
+def test_a_slow_gpu_gets_only_a_short_pass(monkeypatch):
+    full = []
+    r = _verdict(monkeypatch, cpu_s=4.6, gpu_s=15.0)                # an Intel UHD 620 (field 11-13): 15 s per full pass
+    monkeypatch.setattr(gpu_dml, "_time", lambda s, feed, runs=3: full.append(1))
+    assert r["use"] == "cpu" and "short pass" in r["why"] and "gpu_s" not in r
+
+
+def test_every_reason_is_kept(monkeypatch):
+    r = _verdict(monkeypatch, cpu_s=0.5, gpu_s=0.9, reorder=True)
+    assert "differently" in r["why"] and "not faster" in r["why"]
 
 
 def test_a_long_gpu_pass_is_not_used(monkeypatch):
