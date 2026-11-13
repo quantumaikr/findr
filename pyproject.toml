@@ -35,7 +35,10 @@ dependencies = [
   "winrt-Windows.Foundation>=2.0; sys_platform == 'win32'",
   "truststore>=0.9",            # system certificates (company networks)
   "mcp>=1.2",                   # AI tools on this PC find files through findr (findr mcp)
-  "onnxruntime>=1.18",          # the int8 reranker on PCs without a GPU (about 2.7x faster)
+  "onnxruntime>=1.18; sys_platform != 'win32'",   # the int8 reranker on PCs without a GPU (about 2.7x faster)
+  # Windows: the same runtime in its DirectML build (one package, the same `onnxruntime` module), which also runs the reranker
+  # on an AMD or Intel GPU where that is measured to be faster (findr/core/gpu_dml.py)
+  "onnxruntime-directml>=1.18; sys_platform == 'win32'",
   "einops>=0.7",                # the photo model's image processor: without it the photo server stopped at start
   "accelerate>=1.0",
   "psutil>=5.9",                # the resource manager: free memory, CPU load, battery (it came with accelerate; now named)

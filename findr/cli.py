@@ -415,16 +415,13 @@ def cmd_serve(a):
         def photos():
             import sqlite3
             import index
-            index.embed_photos(sqlite3.connect(str(a.db), timeout=60), photo_url)
+            try:   # the index stayed locked past every retry: one line, and photos are found by name until the next start
+                index.embed_photos(sqlite3.connect(str(a.db), timeout=60), photo_url)
+            except Exception as e:   # noqa: BLE001
+                print(f"FINDR_PHOTO stopped ({type(e).__name__}): photos are found by name for now", flush=True)
         threading.Thread(target=photos, daemon=True).start()
     pw = paths.HOME / ".password"
-    if not pw.exists():
-        import secrets
-        pw.write_text(secrets.token_urlsafe(12))
-        try:
-            pw.chmod(0o600)
-        except OSError:
-            pass
+    search.read_or_make_password(pw)   # missing or empty: made anew, whole (an empty file locked every request out)
     url = f"http://127.0.0.1:{a.port}"
     if a.app:
         os.environ["FINDR_APP"] = "1"   # the page shows "지금 반영" only when the app's refresher is there to answer it
@@ -561,6 +558,15 @@ def cmd_doctor(a):
     if dev == "cpu":
         ox = (paths.MODELS / "rank" / "model_int8.onnx").exists()
         print(L(f"  {'✓' if ox or (paths.MODELS / 'rank' / 'model.safetensors').exists() else '✗'} 재정렬: {'가벼운 8비트 (CPU용)' if ox else '전체 정밀도'}", f"  {'✓' if ox or (paths.MODELS / 'rank' / 'model.safetensors').exists() else '✗'} reranker: {'light 8-bit (for CPU)' if ox else 'full precision'}"))
+        try:
+            if str(paths.CORE) not in sys.path:
+                sys.path.insert(0, str(paths.CORE))
+            import gpu_dml
+            g = gpu_dml.describe()
+            if g:   # Windows: an AMD or Intel GPU runs the reranker where it was measured faster
+                print(L(f"    재정렬 장치: {g[0]}", f"    reranker device: {g[1]}"))
+        except Exception:   # noqa: BLE001
+            pass
     if models.qu_ok(dev):
         print(L(f"  {'✓' if models.llama_server() else '✗'} llama-server (없으면 질문을 규칙으로 읽음)", f"  {'✓' if models.llama_server() else '✗'} llama-server (without it, questions are read by rules)"))
     else:

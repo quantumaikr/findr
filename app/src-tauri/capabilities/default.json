@@ -26,6 +26,7 @@
     "allow-set-pause",
     "allow-set-lang",
     "allow-saved-lang-choice",
-    "allow-setup-status"
+    "allow-setup-status",
+    "allow-restart-search"
   ]
 }
