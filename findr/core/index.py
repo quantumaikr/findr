@@ -1244,12 +1244,37 @@ def taken_at(path):
         return None
 
 
+DB_WAITS = (5, 15, 30, 60, 120)   # seconds between tries when another writer holds the index
+
+
+def db_retry(con, fn, waits=DB_WAITS):
+    """fn() (which writes and commits), tried again after a wait while the index is locked by another writer. The photo
+    thread in the search engine writes next to the indexer: a remask or an upgrade switch held the lock past the 60 s
+    timeout, and the thread ended for the rest of the session with no line about it"""
+    for i in range(len(waits) + 1):
+        try:
+            return fn()
+        except sqlite3.OperationalError as e:
+            if i == len(waits) or not any(w in str(e).lower() for w in ("locked", "busy")):
+                raise
+            try:
+                con.rollback()
+            except sqlite3.Error:
+                pass
+            print(f"FINDR_DB busy: trying again in {waits[i]} s", flush=True)
+            time.sleep(waits[i])
+
+
 def embed_photos(con, url, bs=16):
     """photo vectors for photos that have none yet, newest first; a photo the model cannot read stays searchable by name"""
     import base64, json as _j, urllib.request
-    con.execute("CREATE TABLE IF NOT EXISTS photo_emb(file INTEGER PRIMARY KEY, emb BLOB, taken REAL)")
-    if "taken" not in [r[1] for r in con.execute("PRAGMA table_info(photo_emb)")]:
-        con.execute("ALTER TABLE photo_emb ADD COLUMN taken REAL")
+
+    def tables():
+        con.execute("CREATE TABLE IF NOT EXISTS photo_emb(file INTEGER PRIMARY KEY, emb BLOB, taken REAL)")
+        if "taken" not in [r[1] for r in con.execute("PRAGMA table_info(photo_emb)")]:
+            con.execute("ALTER TABLE photo_emb ADD COLUMN taken REAL")
+        con.commit()
+    db_retry(con, tables)
     rows = [(i, p) for i, p, e, z in con.execute("SELECT id, path, ext, size FROM files WHERE id NOT IN (SELECT file FROM photo_emb) ORDER BY mtime DESC")
             if (e or "").lower() in PHOTO_EXT and not asset_like(p, z)]   # icons and '._' files: no photo vector (found by name)
     t0, done = time.time(), 0
@@ -1260,9 +1285,11 @@ def embed_photos(con, url, bs=16):
             vecs = _j.loads(urllib.request.urlopen(req, timeout=600).read())["vecs"]
         except Exception as e:
             print(f"FINDR_PHOTO stopped: photo model not reachable ({type(e).__name__})"); break
-        con.executemany("INSERT OR REPLACE INTO photo_emb(file, emb, taken) VALUES(?,?,?)",
-                        [(i, base64.b64decode(v), taken_at(p)) for (i, p), v in zip(b, vecs) if v])
-        con.commit(); done += sum(1 for v in vecs if v)
+        got = [(i, base64.b64decode(v), taken_at(p)) for (i, p), v in zip(b, vecs) if v]
+
+        def store():
+            con.executemany("INSERT OR REPLACE INTO photo_emb(file, emb, taken) VALUES(?,?,?)", got); con.commit()
+        db_retry(con, store); done += len(got)
     print(f"FINDR_PHOTO {done}/{len(rows)} photos {time.time() - t0:.0f}s")
 
 

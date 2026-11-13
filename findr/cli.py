@@ -415,16 +415,13 @@ def cmd_serve(a):
         def photos():
             import sqlite3
             import index
-            index.embed_photos(sqlite3.connect(str(a.db), timeout=60), photo_url)
+            try:   # the index stayed locked past every retry: one line, and photos are found by name until the next start
+                index.embed_photos(sqlite3.connect(str(a.db), timeout=60), photo_url)
+            except Exception as e:   # noqa: BLE001
+                print(f"FINDR_PHOTO stopped ({type(e).__name__}): photos are found by name for now", flush=True)
         threading.Thread(target=photos, daemon=True).start()
     pw = paths.HOME / ".password"
-    if not pw.exists():
-        import secrets
-        pw.write_text(secrets.token_urlsafe(12))
-        try:
-            pw.chmod(0o600)
-        except OSError:
-            pass
+    search.read_or_make_password(pw)   # missing or empty: made anew, whole (an empty file locked every request out)
     url = f"http://127.0.0.1:{a.port}"
     if a.app:
         os.environ["FINDR_APP"] = "1"   # the page shows "지금 반영" only when the app's refresher is there to answer it

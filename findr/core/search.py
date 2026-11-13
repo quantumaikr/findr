@@ -115,6 +115,15 @@ def M(ko, en):
 
 CLOSEST = ("가장 가까운 파일을 보여 드립니다.", "Showing the closest files.")   # the closing sentence add_probs replaces
 
+
+def fmt_time(t, fmt="%Y-%m-%d %H:%M"):
+    """a stored file time as the page shows it, or '' when the system cannot say it: on Windows a time before 1970
+    (a zeroed file time reads 1601) raised OSError, and one such file in the answer failed the whole question"""
+    try:
+        return dt.datetime.fromtimestamp(float(t)).strftime(fmt)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return ""
+
 import numpy as np
 
 KINDS = [  # (words in the query, extensions); a format name filters, a topic-like word ("영상", "코드") only boosts
@@ -980,7 +989,7 @@ class Finder:
         qm = ",".join("?" * len(fids))
         rows = {r[5]: r for r in self.con.execute(f"""SELECT f.path, f.name, f.size, f.mtime, f.tier, f.id,
                     (SELECT text FROM chunks c WHERE c.file=f.id AND c.n=0) FROM files f WHERE f.id IN ({qm})""", list(fids))}
-        return [{"path": winpath(r[0]), "name": r[1], "size": r[2], "date": dt.datetime.fromtimestamp(r[3]).strftime("%Y-%m-%d %H:%M"),
+        return [{"path": winpath(r[0]), "name": r[1], "size": r[2], "date": fmt_time(r[3]),
                  "kind": {1: "문서·코드", 2: "라이브러리", 3: "이름만"}.get(r[4], ""), "snippet": (r[6] or "")[:160], "score": 0, "fid": r[5]}
                 for f in fids for r in [rows.get(f)] if r]
 
@@ -1053,7 +1062,7 @@ class Finder:
             cond.append("f.mtime<?"); args.append(p["until"].timestamp())
         rows = self.con.execute(f"""SELECT f.path, f.name, f.size, f.mtime, f.tier, f.id, (SELECT text FROM chunks c WHERE c.file=f.id AND c.n=0)
                                     FROM files f WHERE {' AND '.join(cond)} ORDER BY f.mtime DESC LIMIT ?""", args + [max(k, 30)]).fetchall()
-        out = [{"path": winpath(path), "name": name, "size": size, "date": dt.datetime.fromtimestamp(mt).strftime("%Y-%m-%d %H:%M"),
+        out = [{"path": winpath(path), "name": name, "size": size, "date": fmt_time(mt),
                 "kind": {1: "문서·코드", 2: "라이브러리", 3: "이름만"}.get(tr, ""), "snippet": (txt or "")[:160], "score": 0, "fid": fid}
                for path, name, size, mt, tr, fid, txt in rows]
         n = self.con.execute(f"SELECT count(*) FROM files f WHERE {' AND '.join(cond)}", args).fetchone()[0]
@@ -1088,7 +1097,7 @@ class Finder:
                 """SELECT f.id, f.path, k.kind, k.partners, k.date, k.amount, k.people, k.status, f.mtime,
                           (SELECT group_concat(c.text, ' ') FROM chunks c WHERE c.file=f.id AND c.n>=0)
                    FROM files f JOIN facts k ON k.file=f.id"""):
-            day = d or dt.datetime.fromtimestamp(mt).strftime("%Y-%m-%d")
+            day = d or fmt_time(mt, "%Y-%m-%d")
             self.facts[fid] = dict(path=path, kind=kind, partners=json.loads(ps or "[]"), date=day, amount=amt,
                                    people=json.loads(pe or "[]"), status=st, text=text or "")
 
@@ -1472,7 +1481,7 @@ class Finder:
             seen.add(key); res.append((path, v))
             if len(res) == k:
                 break
-        out = [{"path": winpath(path), "name": v[2], "size": v[4], "date": dt.datetime.fromtimestamp(v[5]).strftime("%Y-%m-%d %H:%M"),
+        out = [{"path": winpath(path), "name": v[2], "size": v[4], "date": fmt_time(v[5]),
                 "kind": {1: "문서·코드", 2: "라이브러리", 3: "이름만"}.get(v[6], ""), "snippet": snip(v[1], words), "score": round(v[0] * 1000, 2),
                 "fid": v[7]}
                for path, v in res]
@@ -1710,6 +1719,68 @@ def _gone(p):
         return False
 
 
+GONE_WAIT = float(os.environ.get("GONE_WAIT") or 0.5)   # seconds all the looks of one answer may take together
+GONE_SLOW_S = 300   # a place that did not answer in time is not looked at again for this long
+GONE_POOL = None
+_SLOW_ROOTS = {}   # root -> until when its files are taken as there without looking
+_SLOW_LOCK = _thl.Lock()
+
+
+def _root(p):
+    """the place a path lives on: a drive (C:, Z:), a share (\\\\server\\share, //server/share) or a mounted volume
+    (/mnt/x, /Volumes/x, /media/user/x); '/' for the system disk elsewhere"""
+    s = _local(p)
+    if os.name == "nt":
+        return os.path.splitdrive(s)[0].lower() or "/"
+    m = re.match(r"^(/run/media/[^/]+/[^/]+|/media/[^/]+/[^/]+|/mnt/[^/]+|/Volumes/[^/]+|//[^/]+/[^/]+)", s)
+    return m.group(1) if m else "/"
+
+
+def _gone_paths(res, top=GONE_TOP):
+    out = []
+    for x in (res.get("results") or [])[:top]:
+        out.append(x.get("path"))
+        for key in ("copies", "versions"):
+            out += [c.get("path") if isinstance(c, dict) else c for c in x.get(key) or []]
+    return [p for p in dict.fromkeys(out) if p]
+
+
+def gone_map(res, top=GONE_TOP, wait=None, now=None):
+    """{path: gone?} for the lines drop_gone looks at, read without the search lock. A network share that is offline or a
+    disk that sleeps can hold a look for tens of seconds: past `wait` seconds the files not yet answered are taken as there
+    (as before the look existed), and their place is not looked at again for GONE_SLOW_S. Reachable files: the same answer"""
+    global GONE_POOL
+    from concurrent.futures import ThreadPoolExecutor, wait as _wait
+    paths = _gone_paths(res, top)
+    if not paths:
+        return {}
+    now = time.time() if now is None else now
+    with _SLOW_LOCK:
+        for r_ in [r_ for r_, t_ in _SLOW_ROOTS.items() if t_ <= now]:
+            del _SLOW_ROOTS[r_]
+        slow = set(_SLOW_ROOTS)
+        if GONE_POOL is None:   # one pool for the engine (the page answers on several threads)
+            GONE_POOL = ThreadPoolExecutor(8, thread_name_prefix="findr-gone")
+    out, futs = {}, {}
+    for p_ in paths:
+        if _root(p_) in slow:
+            out[p_] = False
+        else:
+            futs[GONE_POOL.submit(_gone, p_)] = p_
+    done, late = _wait(list(futs), timeout=GONE_WAIT if wait is None else wait)
+    for fu in done:
+        try:
+            out[futs[fu]] = bool(fu.result())
+        except Exception:   # noqa: BLE001  (a look that failed keeps the file, as _gone does for any other error)
+            out[futs[fu]] = False
+    for fu in late:
+        out[futs[fu]] = False
+        if not fu.cancel():   # it had started and is still waiting on its place: that place is slow
+            with _SLOW_LOCK:
+                _SLOW_ROOTS[_root(futs[fu])] = now + GONE_SLOW_S
+    return out
+
+
 def _as_line(con, x, path):
     """line x under another file's path (a copy or a version of it): that file's own id, name and opening text, so
     nothing on the line still points at the gone file. None when the index does not know the path"""
@@ -1718,13 +1789,16 @@ def _as_line(con, x, path):
     if not r:
         return None
     return {**x, "path": path, "fid": r[0], "name": r[1], "size": r[2], "snippet": (r[4] or "")[:160],
-            "date": dt.datetime.fromtimestamp(r[3]).strftime("%Y-%m-%d %H:%M") if r[3] else x.get("date")}
+            "date": fmt_time(r[3]) if r[3] else x.get("date")}
 
 
-def drop_gone(con, res, top=GONE_TOP):
+def drop_gone(con, res, top=GONE_TOP, gone=None):
     """files deleted or moved since they were indexed leave the answer at once (11/12: they were listed until the next
     index run, and opening one said 'moved or deleted'). A line whose file is gone gives its place to a copy or a version
-    still there; the copies and versions under a line lose the gone ones too. The index forgets them at its next run"""
+    still there; the copies and versions under a line lose the gone ones too. The index forgets them at its next run.
+    gone: gone_map() made before, outside the search lock (the engine does that); else it is made here"""
+    gm = gone_map(res, top) if gone is None else gone
+    _gone = lambda p: bool(p) and gm.get(p, False)   # noqa: E731  (a path not looked at is kept)
     rs = res.get("results") or []
     out, n = [], 0
     for i, x in enumerate(rs):
@@ -2327,7 +2401,11 @@ def personal():
     global _PM
     if _PM is None and os.environ.get("PERSONAL", "0") == "1":
         import personal as PMOD
-        _PM = PMOD.Memory(str(Path(os.environ.get("FINDR_DATA") or (Path.home() / ".findr")) / "personal_memory.jsonl"))
+        try:
+            _PM = PMOD.Memory(str(Path(os.environ.get("FINDR_DATA") or (Path.home() / ".findr")) / "personal_memory.jsonl"))
+        except OSError as e:   # unreadable (permissions, a locked file): searched without it this time, tried again next time
+            print(f"FINDR_PERSONAL off ({type(e).__name__})", file=sys.stderr, flush=True)
+            return None
     return _PM
 
 
@@ -2689,6 +2767,7 @@ ROUTE_NG = re.compile(r"그거\s*말고|그\s*전\s*버전|바로\s*전|맨\s*�
 
 EXPLORE_CORR = Path(os.environ.get("FINDR_DATA") or (Path.home() / ".findr")) / "explorer_corrections_live.json"   # kept on this PC only
 EXPLORE_CACHE = {}
+EXPLORE_LOCK = threading.Lock()   # one build at a time: each holds the vectors of every file (two tabs built two at once)
 
 
 def explore_corr():
@@ -2702,11 +2781,15 @@ def explore_corr():
 def explore_json(f):
     """the explorer's views of this index; built on CPU from stored vectors, cached for 10 minutes"""
     c = EXPLORE_CACHE.get("live")
-    if not c or time.time() - c[0] > 600:
-        import explorer
-        db = f.con.execute("PRAGMA database_list").fetchone()[2]
-        v = explorer.build(db, None, explore_corr())
-        c = EXPLORE_CACHE["live"] = (time.time(), json.dumps({**v, "src": "live", "srcs": []}, ensure_ascii=False).encode())
+    if c and time.time() - c[0] <= 600:
+        return c[1]
+    with EXPLORE_LOCK:   # a request that waited here takes the view the one before it built
+        c = EXPLORE_CACHE.get("live")
+        if not c or time.time() - c[0] > 600:
+            import explorer
+            db = f.con.execute("PRAGMA database_list").fetchone()[2]
+            v = explorer.build(db, None, explore_corr())
+            c = EXPLORE_CACHE["live"] = (time.time(), json.dumps({**v, "src": "live", "srcs": []}, ensure_ascii=False).encode())
     return c[1]
 
 
@@ -2814,6 +2897,8 @@ def _fail_blocked(h, now=None):
     """refuse this request before checking any password: ten wrong in ten minutes from one client, or FAIL_TUNNEL wrong
     through the tunnel from everyone together (a forged header per try dodges the first, never the second). A browser
     or the CLI on this PC itself is never held by the tunnel's limit, so an outsider cannot lock the owner out of it"""
+    if _local_request(h):   # this PC itself (no forwarding header): never held. The app, the indexer, MCP and the CLI
+        return False        # share 127.0.0.1, and one of them with an old key locked all of them out for 10 minutes
     now = time.time() if now is None else now
     with FAIL_LOCK:
         if TUNNEL_FAILS[0] and now - TUNNEL_FAILS[1] > FAIL_WINDOW:
@@ -2821,11 +2906,14 @@ def _fail_blocked(h, now=None):
         n_, t_ = FAILS.get(_rate_limit_key(h), (0, now))
         if now - t_ <= FAIL_WINDOW and n_ >= FAIL_PER_CLIENT:
             return True
-        return not _local_request(h) and TUNNEL_FAILS[0] >= FAIL_TUNNEL
+        return TUNNEL_FAILS[0] >= FAIL_TUNNEL
 
 
 def _fail_note(h, now=None):
-    """count one wrong password (header or cookie) against this client and, through a tunnel, against all of it"""
+    """count one wrong password (header or cookie) against this client and, through a tunnel, against all of it.
+    Loopback without a forwarding header is not counted: whoever runs there can read the password file anyway"""
+    if _local_request(h):
+        return
     now = time.time() if now is None else now
     who = _rate_limit_key(h)
     with FAIL_LOCK:
@@ -2836,10 +2924,78 @@ def _fail_note(h, now=None):
         if now - t_ > FAIL_WINDOW:
             n_, t_ = 0, now
         FAILS[who] = [n_ + 1, t_]
-        if not _local_request(h):
-            if not TUNNEL_FAILS[0]:
-                TUNNEL_FAILS[1] = now
-            TUNNEL_FAILS[0] += 1
+        if not TUNNEL_FAILS[0]:
+            TUNNEL_FAILS[1] = now
+        TUNNEL_FAILS[0] += 1
+
+
+FEEDBACK_MAX = 5_000_000   # bytes in feedback.jsonl before it is set aside
+FEEDBACK_KEEP = int(os.environ.get("FEEDBACK_KEEP") or 0)   # files set aside that are kept; 0 (the default): all of them.
+# The verdicts are the person's own record of right answers; removing old ones is their choice, not the engine's
+FEEDBACK_LOCK = threading.Lock()   # two clicks at once both renamed the full file: the second raised (500)
+
+
+def feedback_write(fbp, rec):
+    """one verdict line; a full file is set aside under a name of its own (feedback.<time>.jsonl) and only the newest
+    FEEDBACK_KEEP of those stay when it is set (by default every one is kept)"""
+    fbp = Path(fbp)
+    with FEEDBACK_LOCK:
+        try:
+            full = fbp.stat().st_size > FEEDBACK_MAX
+        except OSError:
+            full = False
+        if full:
+            stamp = f"{dt.datetime.now():%Y%m%d%H%M%S}"
+            for n_ in range(100):
+                to = fbp.with_name(f"feedback.{stamp}{'-' + str(n_) if n_ else ''}.jsonl")
+                if not to.exists():
+                    try:
+                        fbp.rename(to)
+                    except OSError:   # another process moved it first, or took the name meanwhile: write on
+                        pass
+                    break
+            old = sorted(fbp.parent.glob("feedback.2*.jsonl")) if FEEDBACK_KEEP > 0 else []
+            for x in old[:max(0, len(old) - FEEDBACK_KEEP)]:
+                try:
+                    x.unlink()
+                except OSError:
+                    pass
+        with open(fbp, "a", encoding="utf-8") as fo:
+            fo.write(json.dumps(rec, ensure_ascii=False) + chr(10))
+
+
+def read_or_make_password(pf):
+    """the page's key: read, or made when the file is missing or empty (an empty file made every request 401, for the
+    app, the indexer and MCP alike). Written whole: a temporary file beside it, then put in its place"""
+    pf = Path(pf)
+    pf.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        pw = pf.read_text(encoding="utf-8").strip()
+    except OSError:
+        pw = ""
+    if pw:
+        return pw
+    import secrets
+    tmp = pf.with_name(f".password.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fo:
+            fo.write(secrets.token_urlsafe(12)); fo.flush(); os.fsync(fo.fileno())
+        try:   # another process made one meanwhile: that one stays (both then use the same key)
+            got = pf.read_text(encoding="utf-8").strip()
+        except OSError:
+            got = ""
+        if got:
+            return got
+        os.replace(tmp, pf)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    try:
+        pf.chmod(0o600)
+    except OSError:
+        pass
+    return pf.read_text(encoding="utf-8").strip()
 
 
 def proc_memory():
@@ -2895,6 +3051,88 @@ def open_on_pc(path, reveal=False):
         subprocess.Popen(["xdg-open", str(Path(p).parent) if reveal else p])
 
 
+def client_gone(sock):
+    """the page gave up on this request (a newer question aborted it, or its 90 s ran out): the connection is closed from its
+    side. A question that waited its turn behind another one is then not searched for nobody (field, CPU laptop: every
+    earlier question was still searched, one after another, before the newest one)"""
+    import select
+    import socket
+    try:
+        readable, _, _ = select.select([sock], [], [], 0)
+        if not readable:
+            return False
+        return sock.recv(1, socket.MSG_PEEK) == b""   # a GET has no body: anything readable now is the close
+    except ConnectionError:   # reset by the page's abort
+        return True
+    except (OSError, ValueError):   # anything else: unsure, so the question is answered (never skipped by mistake)
+        return False
+
+
+def answer_errors(h, run):
+    """run one request; an error in it comes back as JSON the page can say, not a dropped connection that the page took for
+    a stopped engine ('could not connect', with an engine that was there). The traceback goes to the engine log"""
+    h._replied = False
+    try:
+        run()
+    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+        pass   # the page went away before the answer: nobody to tell
+    except Exception as e:   # noqa: BLE001
+        traceback.print_exc()
+        if not h._replied:
+            body = json.dumps({"error": M("검색 중 오류가 났습니다. 다시 시도해 주세요.", "Something went wrong during the search. Please try again."),
+                               "kind": "error", "detail": type(e).__name__}, ensure_ascii=False).encode()
+            try:
+                h.reply(500, body, "application/json; charset=utf-8")
+            except OSError:
+                pass
+
+
+def parent_check(pid=None):
+    """a test that says whether the app that started this engine (FINDR_PARENT) is still there, or None (no parent given).
+    On Windows by a handle opened now, so a new process given the same number later is not taken for the app"""
+    pid = int(pid if pid is not None else (os.environ.get("FINDR_PARENT") or 0) or 0)
+    if pid <= 0:
+        return None
+    if os.name == "nt":
+        import ctypes
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.OpenProcess.restype = ctypes.c_void_p
+        k.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        h = k.OpenProcess(0x00100000, False, pid)   # SYNCHRONIZE
+        if not h:
+            gone = ctypes.get_last_error() == 87   # ERROR_INVALID_PARAMETER: no such process
+            return (lambda: False) if gone else None
+        return lambda: k.WaitForSingleObject(h, 0) == 0x102   # WAIT_TIMEOUT: still running
+    def alive():
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+    return alive
+
+
+def watch_parent(stop, every=5.0, alive=None, hard_exit=None):
+    """the engine ends when the app that started it is gone (killed, crashed): it stayed with its models in memory and its
+    port, and the app started next could not start an engine of its own. `stop` ends the server the usual way, so the
+    helper servers are stopped too (atexit); if that does not finish, the process ends anyway 15 s later"""
+    alive = alive or parent_check()
+    if alive is None:
+        return None
+
+    def run():
+        while alive():
+            time.sleep(every)
+        print("FINDR_PARENT gone: the engine stops", flush=True)
+        t = threading.Timer(15, hard_exit or (lambda: os._exit(0))); t.daemon = True; t.start()
+        stop()
+    th = threading.Thread(target=run, daemon=True, name="findr-parent")
+    th.start()
+    return th
+
+
 def serve(f, port):
     _stage_timers()
     global GOV
@@ -2912,13 +3150,23 @@ def serve(f, port):
         print(f"FINDR_GOV off {type(e).__name__}", flush=True)
 
     class H(BaseHTTPRequestHandler):
+        def send_response(self, code, message=None):
+            self._replied = True   # an error after this point cannot be answered as JSON any more
+            super().send_response(code, message)
+
+        def do_GET(self):
+            answer_errors(self, self._get)
+
+        def do_POST(self):
+            answer_errors(self, self._post)
+
         def reply(self, code, body, ct):
             self.send_response(code); self.send_header("Content-Type", ct)
             for k_, v_ in SEC_HEADERS:
                 self.send_header(k_, v_)
             self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
 
-        def do_GET(self):
+        def _get(self):
             set_lang(parse_qs(urlparse(self.path).query).get("lang", [""])[0])   # every request sets it: Korean unless lang=en
             if urlparse(self.path).path == "/healthz":   # for the watchdog: says nothing but "ok"
                 return self.reply(200, b"ok", "text/plain")
@@ -2988,11 +3236,8 @@ def serve(f, port):
                 # open / reveal / copy: the person acted on a file without saying 'right' (most never press ✔)
                 if rec["verdict"] not in ("hit", "none", "reject", "open", "reveal", "copy"):
                     return self.reply(400, b'{"ok": false}', "application/json")
-                if fbp.exists() and fbp.stat().st_size > 5_000_000:   # set aside, keep learning (it used to refuse every click from then on)
-                    fbp.rename(fbp.with_name(f"feedback.{dt.datetime.now():%Y%m%d%H%M%S}.jsonl"))
                 rec["time"] = dt.datetime.now().isoformat(timespec="seconds")
-                with open(Path(os.environ.get("FINDR_DATA") or (Path.home() / ".findr")) / "feedback.jsonl", "a", encoding="utf-8") as fo:
-                    fo.write(json.dumps(rec, ensure_ascii=False) + chr(10))
+                feedback_write(fbp, rec)   # a full file is set aside, keep learning (it used to refuse every click from then on)
                 if personal() is not None and rec["verdict"] in ("hit", "reject") and rec["path"]:
                     with SEARCH_LOCK:
                         row = f.con.execute("SELECT id FROM files WHERE path=? OR path=?", (rec["path"], rec["path"].replace(chr(92), "/"))).fetchone()
@@ -3122,13 +3367,24 @@ def serve(f, port):
                         RESULTS.move_to_end(rkey)
                 if hit is not None:   # the same question again, nothing changed since: the same answer at once
                     res = json.loads(hit); res["cached"] = True
+                    gm_ = gone_map(res)   # the looks at the files themselves: outside the lock, with a deadline
                     with SEARCH_LOCK:   # a file deleted since the answer was kept leaves it here too
-                        res = drop_gone(f.con, res)
+                        res = drop_gone(f.con, res, gone=gm_)
                     res["ms"] = int((time.time() - t_req) * 1000)
                     return self.reply(200, json.dumps(res, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
                 _ST.d = {}
                 with SEARCH_LOCK:
                   _ST.d["lock_wait"] = time.time() - t_req
+                  if _ST.d["lock_wait"] >= 0.05 and client_gone(self.connection):   # waited its turn, and the page has gone on
+                      _ST.d = None
+                      return
+                  # the same question asked again while this one waited: the answer the first one just kept, not a second search
+                  with RESULTS_LOCK:
+                      hit = RESULTS.get(rkey) if rkey else None
+                  if hit is not None:
+                      res = drop_gone(f.con, json.loads(hit)); res["cached"] = True
+                      res["ms"] = int((time.time() - t_req) * 1000); _ST.d = None
+                      return self.reply(200, json.dumps(res, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
                   global EVAL_NOW
                   try:
                     pin = self.headers.get("X-Findr-Today")
@@ -3195,8 +3451,9 @@ def serve(f, port):
                 if res.get("results") and os.environ.get("KIND_GATE", "1") == "1":
                     res["results"] = format_first(q_, res["results"])
                     _mark(res, "format")
+                gm_ = gone_map(res)   # the looks at the files themselves: outside the lock, with a deadline
                 with SEARCH_LOCK:
-                    res = drop_gone(f.con, res)
+                    res = drop_gone(f.con, res, gone=gm_)
                 _mark(res, "gone")
                 # the page's '서버' time: the whole request, not the search alone (a Mac page showed 서버 3.4 s · 화면 7.1 s and
                 # the rest had no name: the index refresh check before the search and the steps after it were left out)
@@ -3236,7 +3493,7 @@ def serve(f, port):
                 body = (pg.read_text(encoding="utf-8") if pg.exists() else PAGE).encode(); ct = "text/html; charset=utf-8"
             self.reply(200, body, ct)
 
-        def do_POST(self):
+        def _post(self):
             if not self.authed():
                 return
             if self.headers.get("X-Findr") == "1" and urlparse(self.path).path == "/embed":
@@ -3347,13 +3604,10 @@ def serve(f, port):
         def log_message(self, *a):
             pass
     global PASSWORD
-    pf = Path(os.environ.get("FINDR_DATA") or (Path.home() / ".findr")) / ".password"; pf.parent.mkdir(parents=True, exist_ok=True)
-    if not pf.exists():
-        import secrets
-        pf.write_text(secrets.token_urlsafe(12)); pf.chmod(0o600)
-    PASSWORD = pf.read_text().strip()
+    PASSWORD = read_or_make_password(Path(os.environ.get("FINDR_DATA") or (Path.home() / ".findr")) / ".password")
     print(f"FINDR_SERVE http://localhost:{port}", flush=True)
     httpd = ThreadingHTTPServer(("127.0.0.1", port), H)
+    watch_parent(httpd.shutdown)
     if os.environ.get("FINDR_READY_LINE"):
         print(os.environ["FINDR_READY_LINE"], flush=True)
     if os.environ.get("FINDR_WARM", "1") == "1":   # the first question loaded the reranker and GPU kernels: 2.3 s instead of 0.2 s

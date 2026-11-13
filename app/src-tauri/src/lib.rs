@@ -214,7 +214,9 @@ fn idle_seconds() -> Option<u64> {
 static UPGRADING: Mutex<Option<Child>> = Mutex::new(None);
 
 fn stop_upgrade() {
-    if let Some(mut c) = UPGRADING.lock().unwrap().take() {
+    // out of the lock first: the kill waits on taskkill, and the upgrader's own loop takes the lock every 2 s
+    let taken = UPGRADING.lock().unwrap().take();
+    if let Some(mut c) = taken {
         kill_tree(c.id()); // with the index.py it started: killing the upgrade alone left that running
         let _ = c.kill();
         let _ = c.wait();
@@ -317,7 +319,7 @@ fn upgrade_state() -> String {
     }).to_string()
 }
 
-#[tauri::command]
+#[tauri::command(async)]   // turning it off stops a running upgrade: a taskkill, not on the window's thread
 fn set_upgrade(on: bool) -> Result<(), String> {
     let h = home();
     if on {
@@ -1025,18 +1027,29 @@ fn start_index(app: AppHandle, folders: Vec<String>, deep: Option<bool>) {
     });
 }
 
+/// one engine start at a time. A second start while the first was still waiting for its engine (about a minute on a CPU
+/// laptop: the 검색 menu pressed again, '검색으로 돌아가기' running the screen twice) found no engine yet and started another
+/// one beside it: two copies of the models in memory, and the copy stored last replaced the first without stopping it, so
+/// that one kept the port and its memory, even after the app had quit
+static STARTING: Mutex<()> = Mutex::new(());
+static WATCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// how long an engine may take to say it is up. Past this the start is given up and said, rather than a spinner for good
+const ENGINE_START_SECS: u64 = 180;
+
 /// start (or restart) the engine; returns the address that signs the window in
 #[tauri::command(async)]
-fn start_engine(engine: State<'_, Engine>, photo: bool) -> Result<String, String> {
+fn start_engine(app: AppHandle, engine: State<'_, Engine>, photo: bool) -> Result<String, String> {
+    let _turn = STARTING.lock().unwrap_or_else(|e| e.into_inner());   // a second start waits here, then finds this one's engine
     // the engine already answering with the same photo setting: back to search without a restart (every return from the
-    // settings screen, the 검색 menu and Ctrl+F reloaded all the models)
-    {
+    // settings screen, the 검색 menu and Ctrl+F reloaded all the models). Answering, not only running: a process that is
+    // still there but no longer answers (stuck, or swapping on a full PC) left the page waiting for good
+    let alive = {
         let mut g = engine.0.lock().unwrap();
-        let alive = g.as_mut().map(|c| matches!(c.try_wait(), Ok(None))).unwrap_or(false);
-        if alive && *ENGINE_PHOTO.lock().unwrap() == Some(photo) {
-            if let Ok(key) = std::fs::read_to_string(home().join(".password")) {
-                return Ok(format!("http://127.0.0.1:{}/auth?t={}", port(), key.trim()));
-            }
+        g.as_mut().map(|c| matches!(c.try_wait(), Ok(None))).unwrap_or(false)
+    };
+    if alive && *ENGINE_PHOTO.lock().unwrap() == Some(photo) && engine_answers() {
+        if let Ok(key) = std::fs::read_to_string(home().join(".password")) {
+            return Ok(format!("http://127.0.0.1:{}/auth?t={}", port(), key.trim()));
         }
     }
     stop(&engine);
@@ -1046,29 +1059,116 @@ fn start_engine(engine: State<'_, Engine>, photo: bool) -> Result<String, String
     if !photo {
         c.arg("--no-photo");
     }
-    let log = std::fs::File::create(home().join("logs").join("engine.log")).or_else(|_| {
-        let _ = std::fs::create_dir_all(home().join("logs"));
-        std::fs::File::create(home().join("logs").join("engine.log"))
-    }).map_err(|e| e.to_string())?;
+    // the engine ends itself when this app is gone (killed, crashed): it used to stay with its models in memory and its port,
+    // and the next start of the app could not start one of its own
+    c.env("FINDR_PARENT", std::process::id().to_string());
+    own_group(&mut c);
+    let logs = home().join("logs");
+    let _ = std::fs::create_dir_all(&logs);
+    // the last engine's log is kept: an engine that ended on its own said why there, and the restart overwrote it
+    let _ = std::fs::rename(logs.join("engine.log"), logs.join("engine.prev.log"));
+    let log = std::fs::File::create(logs.join("engine.log")).map_err(|e| e.to_string())?;
     let mut child = c.stdout(Stdio::piped()).stderr(log).stdin(Stdio::null()).spawn().map_err(|e| e.to_string())?;
-    let out = child.stdout.take().ok_or("no output")?;
-    let mut lines = BufReader::new(out).lines();
-    let mut ready = false;
-    for line in lines.by_ref().map_while(Result::ok) {
-        if line.starts_with("FINDR_APP_READY") {
-            ready = true;
-            break;
-        }
+    track(child.id());   // in runs.pid: an engine that a killed app left behind is stopped at the next start
+    let out = child.stdout.take();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    if let Some(out) = out {
+        // reads to the end, which also keeps the pipe drained after the ready line
+        thread::spawn(move || {
+            let mut tx = Some(tx);
+            for line in BufReader::new(out).lines().map_while(Result::ok) {
+                if line.starts_with("FINDR_APP_READY") {
+                    if let Some(t) = tx.take() {
+                        let _ = t.send(());
+                    }
+                }
+            }
+        });
     }
-    thread::spawn(move || for _ in lines.map_while(Result::ok) {}); // keep the pipe drained
-    *engine.0.lock().unwrap() = Some(child);
-    if !ready {
+    // an engine that ends before it is up drops the sender, so this returns at once; one that hangs, at the deadline
+    let wait = rx.recv_timeout(std::time::Duration::from_secs(ENGINE_START_SECS));
+    keep(&engine, child);
+    if let Err(e) = wait {
         stop(&engine);
-        return Err(l("검색 엔진이 시작되지 않았습니다. 데이터 폴더의 logs/engine.log를 확인해 주세요.", "The search engine did not start. Check logs/engine.log in the data folder."));
+        return Err(match e {
+            std::sync::mpsc::RecvTimeoutError::Timeout => l("검색 엔진이 3분 안에 켜지지 않았습니다. PC가 바쁘면 다른 프로그램을 몇 개 닫고 다시 시도해 주세요. 자세한 내용은 데이터 폴더의 logs/engine.log에 있습니다.",
+                                                             "The search engine did not start within 3 minutes. If the PC is busy, close a few other programs and try again. Details are in logs/engine.log in the data folder."),
+            std::sync::mpsc::RecvTimeoutError::Disconnected => l("검색 엔진이 시작되지 않았습니다. 데이터 폴더의 logs/engine.log를 확인해 주세요.", "The search engine did not start. Check logs/engine.log in the data folder."),
+        });
     }
     start_refresher();
+    watch_engine(app);
     let key = std::fs::read_to_string(home().join(".password")).map_err(|e| e.to_string())?;
     Ok(format!("http://127.0.0.1:{}/auth?t={}", port(), key.trim()))
+}
+
+/// the engine answers its /healthz (no sign-in, no search lock): two tries, since a restart costs a minute of warm-up and a
+/// busy engine can be slow to answer once
+fn engine_answers() -> bool {
+    use std::io::{Read, Write};
+    use std::time::Duration;
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port()));
+    for _ in 0..2 {
+        if let Ok(mut s) = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(3)) {
+            let _ = s.set_read_timeout(Some(Duration::from_secs(4)));
+            let _ = s.set_write_timeout(Some(Duration::from_secs(2)));
+            let mut buf = [0u8; 64];
+            if s.write_all(b"GET /healthz HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n").is_ok() {
+                if let Ok(n) = s.read(&mut buf) {
+                    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                    if head.starts_with("HTTP/") && head.split_whitespace().nth(1) == Some("200") {
+                        return true;
+                    }
+                }
+            }
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+    false
+}
+
+/// the engine now running. One already stored is ended, never dropped: a dropped Child keeps running, untracked
+fn keep(engine: &Engine, child: Child) {
+    let old = engine.0.lock().unwrap().replace(child);
+    if let Some(mut o) = old {
+        end_engine(&mut o);
+    }
+}
+
+/// an engine that ends on its own (the system stopped it for memory, a crash): the search page only said it could not
+/// connect and nothing started it again. Seen here within seconds; if the window is on the search page, it goes back to
+/// the app's search screen, which starts the engine again. Elsewhere (settings, indexing) the next search starts it
+fn watch_engine(app: AppHandle) {
+    if WATCHING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    thread::spawn(move || loop {
+        thread::sleep(std::time::Duration::from_secs(2));
+        let ended = {
+            let engine = app.state::<Engine>();
+            let mut g = engine.0.lock().unwrap();
+            match g.as_mut().map(|c| c.try_wait()) {
+                Some(Ok(Some(st))) => g.take().map(|c| (c.id(), st)),
+                _ => None,
+            }
+        };
+        let Some((pid, st)) = ended else { continue };
+        untrack(pid);
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(home().join("logs").join("engine.log")) {
+            use std::io::Write;
+            let _ = writeln!(f, "FINDR_APP engine ended on its own ({st}); started again from the search screen");
+        }
+        if on_search_page(&app) {
+            go_app(&app, "restart");
+        }
+    });
+}
+
+/// the window shows the engine's search page (not one of the app's own screens)
+fn on_search_page(app: &AppHandle) -> bool {
+    app.get_webview_window("main").and_then(|w| w.url().ok())
+        .map(|u| u.host_str() == Some("127.0.0.1") && u.port() == Some(port()))
+        .unwrap_or(false)
 }
 
 #[tauri::command(async)]
@@ -1078,31 +1178,59 @@ fn stop_engine(engine: State<'_, Engine>) -> Result<(), String> {
 }
 
 fn stop(engine: &Engine) {
-    if let Some(mut child) = engine.0.lock().unwrap().take() {
-        // the engine runs helper servers of its own: end the whole tree, gently where the system allows
-        #[cfg(windows)]
-        {
-            let _ = command("taskkill").args(["/PID", &child.id().to_string(), "/T", "/F"]).status();
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = Command::new("kill").args(["-TERM", &child.id().to_string()]).status();
-            for _ in 0..50 {
-                if let Ok(Some(_)) = child.try_wait() {
-                    return;
-                }
-                thread::sleep(std::time::Duration::from_millis(100));
-            }
-        }
-        let _ = child.kill();
-        let _ = child.wait();
+    let taken = engine.0.lock().unwrap().take();   // out of the lock first: the watcher and a start do not wait on the kill
+    if let Some(mut child) = taken {
+        end_engine(&mut child);
     }
 }
 
+fn end_engine(child: &mut Child) {
+    let pid = child.id();
+    // the engine runs helper servers of its own: end the whole tree, gently where the system allows
+    #[cfg(windows)]
+    {
+        let _ = command("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).status();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = Command::new("kill").args(["-TERM", &pid.to_string()]).status();
+        for _ in 0..50 {
+            if let Ok(Some(_)) = child.try_wait() {
+                untrack(pid);
+                return;
+            }
+            thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    untrack(pid);
+}
+
+/// the search page's '검색 엔진 다시 켜기' (no answer, or none for 90 s): back to the app's search screen, which stops the engine
+/// and starts it again. The page itself may only open files and come back here; it cannot start an engine
+#[tauri::command(async)]
+fn restart_search(app: AppHandle) {
+    go_app(&app, "restart");
+}
+
 /// open a found file (or show it in its folder). Programs and scripts are only shown, never run.
-#[tauri::command]
+/// Off the window's thread, in a thread of its own: the system's open waits for the program it hands the file to (seconds for
+/// an office program on a busy PC), and a file on a network drive that is gone waits on the network. On the window's thread
+/// the whole window stopped answering meanwhile (field, Windows: clicking a found file froze the window)
+#[tauri::command(async)]
 fn open_path(app: AppHandle, path: String, reveal: bool) -> Result<(), String> {
-    let p = PathBuf::from(&path);
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        #[cfg(windows)]
+        let _com = Com::init();   // the system's open can hand the file to shell extensions, which need COM on this thread
+        let _ = tx.send(open_now(&app, &path, reveal));
+    });
+    rx.recv().unwrap_or_else(|_| Err(l("열지 못했습니다.", "Could not open it.")))
+}
+
+fn open_now(app: &AppHandle, path: &str, reveal: bool) -> Result<(), String> {
+    let p = PathBuf::from(path);
     if !p.exists() {
         return Err(l("파일이 없습니다. 옮겨졌거나 지워졌을 수 있습니다.", "The file is not there. It may have been moved or deleted."));
     }
@@ -1112,6 +1240,27 @@ fn open_path(app: AppHandle, path: String, reveal: bool) -> Result<(), String> {
         app.opener().reveal_item_in_dir(&p).map_err(|e| e.to_string())
     } else {
         app.opener().open_path(path, None::<&str>).map_err(|e| e.to_string())
+    }
+}
+
+/// COM for the thread that opens a file, ended with it
+#[cfg(windows)]
+struct Com(bool);
+
+#[cfg(windows)]
+impl Com {
+    fn init() -> Self {
+        use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE};
+        Com(unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) }.is_ok())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Com {
+    fn drop(&mut self) {
+        if self.0 {
+            unsafe { windows::Win32::System::Com::CoUninitialize() };
+        }
     }
 }
 
@@ -1184,9 +1333,9 @@ fn uninstall_data(engine: State<'_, Engine>) -> Result<String, String> {
     Err(l(&format!("일부 파일을 지우지 못했습니다 ({last}). 앱을 닫은 뒤 이 폴더를 지워 주세요: {}", h.display()), &format!("Some files could not be deleted ({last}). Close the app, then delete this folder: {}", h.display())))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn quit_app(app: AppHandle) {
-    app.exit(0);
+    quit(&app);
 }
 
 // ---------- app ----------
@@ -1210,6 +1359,83 @@ fn go_app(app: &AppHandle, hash: &str) {
     }
 }
 
+/// quit from the menu or the settings screen: the engine, the upgrade and the runs are ended off the window's thread (each
+/// is a taskkill, the engine's gentle stop up to 5 s elsewhere), with the window hidden at once; on the window's thread
+/// the window hung on 'quit' meanwhile. Once: a second press while the first is ending things does nothing
+static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn quit(app: &AppHandle) {
+    if QUITTING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+    }
+    let app = app.clone();
+    thread::spawn(move || {
+        stop(&app.state::<Engine>());
+        stop_upgrade();
+        stop_runs();
+        app.exit(0);
+    });
+}
+
+/// the window's page process ended or stopped answering (out of memory, a crash): WebView2 leaves the window white and
+/// nothing drew it again (field, Windows, 16 GB laptop: only the findr window went white, the rest of the PC kept working).
+/// The page is drawn again through the app's search screen, which also starts the engine if it is gone. With the browser
+/// process itself gone the window cannot draw again, and the app starts anew. At most 3 times in 5 minutes: a page that
+/// fails again at once (memory still short) is not reloaded in a loop
+static RECOVERED: Mutex<Vec<std::time::Instant>> = Mutex::new(Vec::new());
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn recover_window(app: &AppHandle, browser_gone: bool) {
+    {
+        let mut g = RECOVERED.lock().unwrap();
+        g.retain(|t| t.elapsed().as_secs() < 300);
+        if g.len() >= 3 {
+            return;
+        }
+        g.push(std::time::Instant::now());
+    }
+    let app = app.clone();
+    thread::spawn(move || {   // outside WebView2's own event: the window is not navigated from inside its callback
+        thread::sleep(std::time::Duration::from_millis(500));
+        if browser_gone {
+            app.request_restart();
+        } else {
+            go_app(&app, "search");
+        }
+    });
+}
+
+#[cfg(windows)]
+fn watch_webview(app: &AppHandle) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        COREWEBVIEW2_PROCESS_FAILED_KIND, COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED, COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE,
+    };
+    use webview2_com::ProcessFailedEventHandler;
+    let Some(w) = app.get_webview_window("main") else { return };
+    let app = app.clone();
+    let _ = w.with_webview(move |wv| {
+        let Ok(core) = (unsafe { wv.controller().CoreWebView2() }) else { return };
+        let handler = ProcessFailedEventHandler::create(Box::new(move |_, args| {
+            let Some(args) = args else { return Ok(()) };
+            let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
+            unsafe { args.ProcessFailedKind(&mut kind)? };
+            // the GPU and helper processes come back by themselves; a frame of the page is not the page
+            if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED {
+                recover_window(&app, true);
+            } else if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED || kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE {
+                recover_window(&app, false);
+            }
+            Ok(())
+        }));
+        let mut token = 0i64;
+        let _ = unsafe { core.add_ProcessFailed(&handler, &mut token) };
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1231,18 +1457,20 @@ pub fn run() {
             }
             set_app_menu(app.handle())?;
             watch_lang(app.handle().clone());
+            #[cfg(windows)]
+            watch_webview(app.handle());
             Ok(())
         })
         .on_menu_event(|app, e| match e.id().as_ref() {
             "search" => go_app(app, "search"),
             "settings" => go_app(app, "settings"),
             "data" => { let _ = open_data_dir(app.clone()); }
-            "quit" => { stop(&app.state::<Engine>()); stop_upgrade(); stop_runs(); app.exit(0); }
+            "quit" => quit(app),
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             app_state, setup_runtime, setup_status, list_roots, start_index, start_engine, stop_engine, open_path, open_data_dir, save_folders, load_folders,
-            upgrade_state, set_upgrade, read_progress, set_pause, uninstall_data, quit_app, set_lang, saved_lang_choice
+            upgrade_state, set_upgrade, read_progress, set_pause, uninstall_data, quit_app, set_lang, saved_lang_choice, restart_search
         ])
         .build(tauri::generate_context!())
         .expect("findr 창을 여는 중 오류가 났습니다")
