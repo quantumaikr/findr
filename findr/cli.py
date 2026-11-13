@@ -585,6 +585,19 @@ def cmd_doctor(a):
         except Exception:
             ph = 0
         print(L(f"  ✓ 색인: 파일 {n:,}개, 의미 벡터 {v:,}개, 사진 벡터 {ph:,}개", f"  ✓ index: {n:,} files, {v:,} meaning vectors, {ph:,} photo vectors"))
+        # #66-10: what a deep run would still do, and when it helps
+        # (the pieces a first run leaves on purpose, past each file's opening FIRST_PIECES, and the unread rest of long files)
+        try:
+            sys.path.insert(0, str(paths.CORE)); import index as _ix
+            later = _ix.deep_left(c, FIRST_PIECES)
+        except Exception:   # noqa: BLE001  (an index from an older version: no pending column)
+            later = (0, 0)
+        if later[0]:
+            print(L(f"  ○ 깊은 계산 대기: 긴 문서 {later[1]:,}개의 뒷부분 약 {later[0]:,}조각은 아직 단어로만 찾습니다",
+                    f"  ○ waiting for the deep run: about {later[0]:,} later piece{'' if later[0] == 1 else 's'} of {later[1]:,} long "
+                    f"document{'' if later[1] == 1 else 's'} found by words only"))
+            print(L("    → 문서 뒷부분에만 있는 내용을 뜻으로 찾을 때 도움이 됩니다. 앱은 PC를 쓰지 않을 때 조금씩 하고, 지금 하려면  findr index --deep",
+                    "    → helps when what you remember is only deep inside a document. The app does it bit by bit while the PC is idle; to run it now:  findr index --deep"))
     else:
         print(L("  ○ 아직 색인 전입니다 → findr index", "  ○ not indexed yet → findr index"))
     return 0
