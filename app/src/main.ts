@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open as pickFolder } from '@tauri-apps/plugin-dialog'
 
-type AppState = { home: string; ready: boolean; indexed: boolean; gpu: string; version: string; folders: string[]; autotest: boolean; update: boolean }
+type AppState = { home: string; ready: boolean; indexed: boolean; gpu: string; version: string; folders: string[]; autotest: boolean; update: boolean; setup_running?: boolean }
 type Root = { order: number; label: string; path: string }
 type Line = { step: string; line: string }
 type Done = { ok: boolean; message: string }
@@ -38,6 +38,9 @@ async function route() {
   const h = location.hash.slice(1)
   // an update that could not finish (offline, a new dependency) keeps the installed engine usable for this session
   let later = false; try { later = sessionStorage.getItem('findr.updateLater') === '1' } catch { /* no storage */ }
+  // a setup is running (the menu loaded this page anew in the middle of it): back to its screen, whatever was asked.
+  // Before, this showed the welcome screen, and '준비 시작' there started a second setup beside the first (field, Windows)
+  if (s.setup_running) return setup(s)
   if (!s.ready && !(s.update && later)) return h === 'setup' || s.update ? setup(s) : welcome(s)   // a newer engine in the app: update without asking
   if (h === 'settings') return settings(s)
   if ((h === 'index' || h === 'deep') && s.folders.length) return indexing(s.folders, h === 'deep')
@@ -86,30 +89,40 @@ async function setup(s: AppState) {
     const li = document.getElementById('st-' + id); if (!li) return
     const st = li.querySelector('.state')!; st.className = 'state ' + cls; st.textContent = text
   }
-  unlisten.push(await listen<Line>('setup', e => {
-    const { step, line } = e.payload
+  const show = ({ step, line }: Line) => {
     if (step !== cur) { if (cur) mark(cur, 'ok', L('완료', 'Done')); cur = step; mark(step, 'run', L('진행 중', 'In progress')) }
     const li = document.getElementById('st-' + step)
     if (li) li.querySelector('.step-line')!.textContent = line
     log.push(line); if (log.length > 300) log.shift()
     document.getElementById('log')!.textContent = log.join('\n')
-  }))
-  unlisten.push(await listen<Done>('setup-done', e => {
-    if (e.payload.ok) {
+  }
+  unlisten.push(await listen<Line>('setup', e => show(e.payload)))
+  const finish = (d: Done) => {
+    if (d.ok) {
       if (cur) mark(cur, 'ok', L('완료', 'Done'))
       const to = keep ? 'search' : 'folders'
       if (location.hash === '#' + to) route(); else location.hash = to
       return
     }
     if (cur) mark(cur, 'fail', L('실패', 'Failed'))
-    document.getElementById('msg')!.innerHTML = `<div class="notice err">${esc(e.payload.message)}</div>
+    document.getElementById('msg')!.innerHTML = `<div class="notice err">${esc(d.message)}</div>
       <div class="actions"><button class="primary" id="retry">${L('다시 시도', 'Try again')}</button>${s.update ? `<button id="later">${L('지금은 이전 버전으로 검색', 'Search with the previous version for now')}</button>` : ''}</div>`
-    document.getElementById('retry')!.onclick = () => { route() }
+    // a new run from the setup screen itself (after a menu visit the address can be #search, which leads to the welcome screen)
+    document.getElementById('retry')!.onclick = () => { if (location.hash === '#setup') route(); else location.hash = 'setup' }
     document.getElementById('later')?.addEventListener('click', () => {
       try { sessionStorage.setItem('findr.updateLater', '1') } catch { /* no storage */ }
       location.hash = 'search'; route()
     })
-  }))
+  }
+  unlisten.push(await listen<Done>('setup-done', e => finish(e.payload)))
+  // joining a setup already running: what it said before this screen was drawn, then the rest as it comes; never a second one
+  let now: { running: boolean; lines: Line[]; done: Done | null } = { running: false, lines: [], done: null }
+  try { now = await invoke('setup_status') } catch { /* cannot ask: start as before */ }
+  if (now.running || (s.setup_running && now.done)) {
+    now.lines.forEach(show); if (!cur) { mark('vcrt', 'run', L('진행 중', 'In progress')); cur = 'vcrt' }
+    if (!now.running && now.done) finish(now.done)   // it ended while this screen was being drawn: its result, not a new run
+    return
+  }
   mark('vcrt', 'run', L('진행 중', 'In progress')); cur = 'vcrt'
   invoke('setup_runtime')
 }

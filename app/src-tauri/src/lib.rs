@@ -625,7 +625,7 @@ fn stream(app: &AppHandle, event: &str, step: &str, mut cmd: Command) -> bool {
     let mut child = match child {
         Ok(c) => c,
         Err(e) => {
-            let _ = app.emit(event, Line { step: step.into(), line: l(&format!("실행하지 못했습니다: {e}"), &format!("Could not run: {e}")) });
+            send(app, event, Line { step: step.into(), line: l(&format!("실행하지 못했습니다: {e}"), &format!("Could not run: {e}")) });
             return false;
         }
     };
@@ -639,7 +639,7 @@ fn stream(app: &AppHandle, event: &str, step: &str, mut cmd: Command) -> bool {
             for line in BufReader::new(r).lines().map_while(Result::ok) {
                 let line = line.trim().to_string();
                 if !line.is_empty() {
-                    let _ = app.emit(&event, Line { step: step.clone(), line });
+                    send(&app, &event, Line { step: step.clone(), line });
                 }
             }
         }));
@@ -656,6 +656,36 @@ fn stream(app: &AppHandle, event: &str, step: &str, mut cmd: Command) -> bool {
 struct Line {
     step: String,
     line: String,
+}
+
+// the first-run setup: one at a time, and what it has said so far. A screen drawn again in the middle of it (the menu's
+// '검색' or '폴더와 설정' loads the page anew) went back to the welcome screen, and '준비 시작' there started a second setup
+// beside the first: two installs into one environment, one deleting the engine files the other was installing from
+// (field, Windows). Now the screen joins the setup already running and shows what it said before.
+static SETUP_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SETUP_LOG: Mutex<Vec<Line>> = Mutex::new(Vec::new());
+static SETUP_LAST: Mutex<Option<Done>> = Mutex::new(None);   // how the last setup ended, for a screen drawn as it ended
+
+/// send a progress line to the window; a setup line is also kept, for a screen that joins later
+fn send(app: &AppHandle, event: &str, line: Line) {
+    if event == "setup" {
+        let mut g = SETUP_LOG.lock().unwrap();
+        g.push(line.clone());
+        if g.len() > 300 {
+            g.remove(0);
+        }
+    }
+    let _ = app.emit(event, line);
+}
+
+/// the setup now going, for a screen drawn in the middle of it: whether it runs and the lines it has sent
+#[tauri::command]
+fn setup_status() -> serde_json::Value {
+    serde_json::json!({
+        "running": SETUP_RUNNING.load(std::sync::atomic::Ordering::SeqCst),
+        "lines": SETUP_LOG.lock().unwrap().clone(),
+        "done": SETUP_LAST.lock().unwrap().clone(),
+    })
 }
 
 #[derive(Clone, Serialize)]
@@ -699,6 +729,7 @@ struct AppState {
     folders: Vec<String>,
     autotest: bool,
     update: bool,
+    setup_running: bool,
 }
 
 // commands that wait (a process, a file walk) run off the main thread: a plain command runs on it, and the window froze
@@ -717,15 +748,38 @@ fn app_state(app: AppHandle) -> AppState {
         folders: load_folders(),
         // development builds only: FINDR_AUTOTEST=1 walks through the screens by itself (automated screen tests)
         autotest: cfg!(debug_assertions) && std::env::var("FINDR_AUTOTEST").is_ok(),
+        setup_running: SETUP_RUNNING.load(std::sync::atomic::Ordering::SeqCst),
     }
 }
 
 /// first run: private Python environment -> PyTorch for this GPU -> the engine -> models. Progress goes out as `setup` events.
 #[tauri::command]
 fn setup_runtime(app: AppHandle) {
+    // one setup at a time: a second request while one runs only joins it (the screen asks setup_status for what it missed)
+    if SETUP_RUNNING.compare_exchange(false, true, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst).is_err() {
+        return;
+    }
+    SETUP_LOG.lock().unwrap().clear();
+    *SETUP_LAST.lock().unwrap() = None;
     thread::spawn(move || {
+        // also when the setup ends some other way (a panic): never left 'running' for good. Only then, though: after
+        // done() a '다시 시도' can start the next run before this thread is gone, and this one must not end that one's flag
+        let finished = std::cell::Cell::new(false);
+        struct Running<'a>(&'a std::cell::Cell<bool>);
+        impl Drop for Running<'_> {
+            fn drop(&mut self) {
+                if !self.0.get() {
+                    SETUP_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+        }
+        let _running = Running(&finished);
         let done = |ok: bool, message: &str| {
-            let _ = app.emit("setup-done", Done { ok, message: message.into() });
+            finished.set(true);
+            let d = Done { ok, message: message.into() };
+            *SETUP_LAST.lock().unwrap() = Some(d.clone());   // kept before 'running' ends: a screen never sees neither
+            SETUP_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+            let _ = app.emit("setup-done", d);
         };
         let _ = std::fs::create_dir_all(home());
         // 0. Windows: the Visual C++ runtime that Python 3.12 and PyTorch need (14.40 or later, #3)
@@ -739,7 +793,7 @@ fn setup_runtime(app: AppHandle) {
             return done(false, &l("파이썬 환경을 만들지 못했습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.", "Could not create the Python environment. Check the internet connection and try again."));
         }
         // 2. PyTorch for this PC
-        let _ = app.emit("setup", Line { step: "torch".into(), line: l("이 PC에 맞는 연산 라이브러리를 고르는 중", "Choosing the compute library for this PC") });
+        send(&app, "setup", Line { step: "torch".into(), line: l("이 PC에 맞는 연산 라이브러리를 고르는 중", "Choosing the compute library for this PC") });
         let mut c = command(uv());
         c.args(["pip", "install", "--python"]).arg(python()).args(["torch", "torchvision"]);
         match gpu() {
@@ -751,7 +805,7 @@ fn setup_runtime(app: AppHandle) {
             return done(false, &l("PyTorch를 설치하지 못했습니다. 인터넷 연결과 디스크 여유 공간을 확인해 주세요.", "Could not install PyTorch. Check the internet connection and the free disk space."));
         }
         // 3. the engine (copied out of the app first: the app folder can be read-only)
-        let _ = app.emit("setup", Line { step: "engine".into(), line: l("검색 엔진 파일을 준비하는 중", "Preparing the search engine files") });
+        send(&app, "setup", Line { step: "engine".into(), line: l("검색 엔진 파일을 준비하는 중", "Preparing the search engine files") });
         let src = match engine_source(&app) {
             Some(p) => p,
             None => return done(false, &l("앱 안에서 검색 엔진 파일을 찾지 못했습니다. 앱을 다시 설치해 주세요.", "The search engine files are missing from the app. Please install the app again.")),
@@ -779,7 +833,7 @@ fn setup_runtime(app: AppHandle) {
             return done(false, &l("검색 엔진을 설치하지 못했습니다.", "Could not install the search engine."));
         }
         // 4. models for this PC
-        let _ = app.emit("setup", Line { step: "models".into(), line: l("이 PC에 맞는 모델을 고르는 중", "Choosing the models for this PC") });
+        send(&app, "setup", Line { step: "models".into(), line: l("이 PC에 맞는 모델을 고르는 중", "Choosing the models for this PC") });
         let mut c = command(python());
         c.args(["-m", "findr", "setup"]);
         if !stream(&app, "setup", "models", c) {
@@ -806,7 +860,7 @@ fn engine_source(app: &AppHandle) -> Option<PathBuf> {
 /// Windows: Microsoft Visual C++ runtime 14.40+ (an older one breaks Python 3.12 and PyTorch). Installs the official
 /// redistributable when it is missing or old; Windows asks the person once for permission.
 fn ensure_vc_runtime(app: &AppHandle) -> Result<(), String> {
-    let say = |line: &str| { let _ = app.emit("setup", Line { step: "vcrt".into(), line: line.into() }); };
+    let say = |line: &str| { send(&app, "setup", Line { step: "vcrt".into(), line: line.into() }); };
     if !cfg!(windows) {
         say(&l("필요 없음", "Not needed"));
         return Ok(());
@@ -1149,7 +1203,7 @@ pub fn run() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
-            app_state, setup_runtime, list_roots, start_index, start_engine, stop_engine, open_path, open_data_dir, save_folders, load_folders,
+            app_state, setup_runtime, setup_status, list_roots, start_index, start_engine, stop_engine, open_path, open_data_dir, save_folders, load_folders,
             upgrade_state, set_upgrade, read_progress, set_pause, uninstall_data, quit_app, set_lang, saved_lang_choice
         ])
         .build(tauri::generate_context!())
