@@ -311,14 +311,30 @@ _FS = {}
 
 
 def _fs_in_range(con, a, b):
-    """files whose last-saved time (file system) falls in [a, b): ISO strings, local time"""
+    """files whose last-saved time (file system) falls in [a, b): ISO strings, local time. The bounds become numbers and
+    the stored times stay numbers: turning every file's time into a date raised on Windows for a time before 1970 (a
+    zeroed file time reads 1601), and one such file anywhere in the index failed every '지난주에 고친' question"""
     import bisect
     n = con.execute("SELECT count(*), max(mtime) FROM files").fetchone()
     if id(con) not in _FS or _FS[id(con)][0] != n:
-        rows = sorted((dt.datetime.fromtimestamp(m).isoformat(), f) for f, m in con.execute("SELECT id, mtime FROM files WHERE mtime IS NOT NULL"))
+        rows = []
+        for f, m in con.execute("SELECT id, mtime FROM files WHERE mtime IS NOT NULL"):
+            try:
+                rows.append((float(m), f))
+            except (TypeError, ValueError):
+                continue
+        rows.sort()
         _FS[id(con)] = (n, [r[0] for r in rows], [r[1] for r in rows])
     _, times, files = _FS[id(con)]
-    return set(files[bisect.bisect_left(times, a):bisect.bisect_left(times, b)])
+    return set(files[bisect.bisect_left(times, _ts(a, float("-inf"))):bisect.bisect_left(times, _ts(b, float("inf")))])
+
+
+def _ts(iso, default):
+    """an ISO date or time (local) as seconds; `default` when the system cannot say it (before 1970 on Windows)"""
+    try:
+        return dt.datetime.fromisoformat(iso).timestamp()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return default
 
 
 EVENT_KINDS = {"source", "action", "when", "activity"}

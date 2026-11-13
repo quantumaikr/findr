@@ -22,7 +22,7 @@ def test_page_feedback_and_order():
 
 
 def test_server_feedback_learning():
-    assert '[:4096 if k == "path" else MAX_Q]' in SRC and 'fbp.rename(fbp.with_name(f"feedback.' in SRC
+    assert '[:4096 if k == "path" else MAX_Q]' in SRC and "feedback_write(fbp, rec)" in SRC and "fbp.rename(to)" in SRC
     assert 'self.send_header("Location", "/learned")' in SRC
     assert '"skipped": "checker"' in SRC
 

@@ -53,13 +53,14 @@ def test_outsiders_cannot_lock_out_this_pc_or_each_other(monkeypatch):
     assert not search._fail_blocked(_h("::1"), now=1001)
 
 
-def test_a_local_client_still_has_its_own_ten_tries(monkeypatch):
+def test_this_pc_itself_is_never_held(monkeypatch):
+    """the app, the indexer, MCP and the CLI all arrive from 127.0.0.1: one of them with an old key must not lock the others
+    out (whoever runs on this PC can read the key file anyway); the tunnel keeps its limits above"""
     _fresh(monkeypatch)
-    for _ in range(search.FAIL_PER_CLIENT):
+    for _ in range(3 * search.FAIL_PER_CLIENT):
         search._fail_note(_h("127.0.0.1"), now=1000)
-    assert search._fail_blocked(_h("127.0.0.1"), now=1001)
-    assert not search._fail_blocked(_h("127.0.0.1"), now=1000 + 601)
-    assert search.TUNNEL_FAILS[0] == 0   # local tries never count against the tunnel
+    assert not search._fail_blocked(_h("127.0.0.1"), now=1001)
+    assert search.FAILS == {} and search.TUNNEL_FAILS[0] == 0   # local tries never count, against anyone
 
 
 def test_forged_keys_do_not_grow_without_bound(monkeypatch):
