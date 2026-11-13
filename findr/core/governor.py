@@ -211,13 +211,16 @@ class Governor(threading.Thread):
         if sig["os_speed_limit"] is not None and sig["os_speed_limit"] < 80:   # the OS says it is slowing the CPU down for heat
             p["heat"] = "slow"
         with self._lock:
+            entered_critical = p["memory"] == "critical" and self.press["memory"] != "critical"
             changed = p != self.press
             self.sig = {k: (round(v, 2) if isinstance(v, float) else v) for k, v in sig.items()}
             if changed:
                 self.press, self.since = p, time.time()
         if changed:
             self.log("FINDR_GOV " + " ".join(f"{k}={v}" for k, v in p.items()) + " | would: " + ("; ".join(self.would()) or "-"))
-            if p["memory"] == "critical" and self.act is not None:
+            # on entering critical memory only: a CPU or power change while memory stays critical is not a new reason
+            # (it acted again on a CI runner whose CPU load moved)
+            if entered_critical and self.act is not None:
                 try:
                     did = self.act("memory")
                     if did:
