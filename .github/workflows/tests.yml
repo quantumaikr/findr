@@ -41,12 +41,36 @@ jobs:
           fi
           uv pip install --python .venv -e . pytest
 
+      # Installing the Korean recognizer takes about 15 minutes on a runner, and all it adds is one 3.7 MB file
+      # (C:\Windows\OCR\ko-kr\MsOcrRes.orp). Kept in the Actions cache, copying it back takes under a second, and Windows OCR
+      # then offers Korean (checked on a fresh runner, 11-13). The folder belongs to TrustedInstaller, so this throwaway runner
+      # takes it first.
+      - name: Windows Korean text recognition files (cache)
+        if: runner.os == 'Windows'
+        id: ocr-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\ocr-ko
+          key: windows-ocr-ko-kr-v1
+
       - name: Windows Korean text recognition (as on Korean Windows; findr then uses Windows' own OCR)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Add-WindowsCapability -Online -Name "Language.OCR~~~ko-KR~0.0.1.0" | Out-Null
-          Get-WindowsCapability -Online -Name "Language.OCR~~~ko-KR*" | Select-Object Name, State
+          $keep = Join-Path $env:RUNNER_TEMP "ocr-ko"
+          if (Test-Path (Join-Path $keep "MsOcrRes.orp")) {
+            takeown /f C:\Windows\OCR /a | Out-Null
+            icacls C:\Windows\OCR /grant "*S-1-5-32-544:(OI)(CI)F" | Out-Null
+            Copy-Item $keep -Destination C:\Windows\OCR\ko-kr -Recurse
+            "Korean recognizer copied from the cache"
+          } else {
+            Add-WindowsCapability -Online -Name "Language.OCR~~~ko-KR~0.0.1.0" | Out-Null
+            Copy-Item C:\Windows\OCR\ko-kr -Destination $keep -Recurse
+            "Korean recognizer installed (kept for the next run)"
+          }
+          Get-ChildItem C:\Windows\OCR -Directory | Select-Object -ExpandProperty Name
+          # a copied file that Windows does not take must fail here, not turn the OCR tests into skips
+          .venv\Scripts\python.exe -c "from winrt.windows.globalization import Language; from winrt.windows.media.ocr import OcrEngine; import sys; ok = OcrEngine.is_language_supported(Language('ko')); print('Windows OCR Korean:', ok); sys.exit(0 if ok else 1)"
 
       - name: Model cache
         uses: actions/cache@v4
