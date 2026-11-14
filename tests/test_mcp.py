@@ -250,3 +250,19 @@ def test_deep_read_child_entry_prints_one_json_line(tmp_path):
     got = json.loads([x for x in out.stdout.splitlines() if x.startswith("{")][-1])
     assert got["text"] == "hello child"
 
+
+
+def test_excerpt_place_maps_into_read_file_text(mcp_mod, tmp_path):
+    """review: excerpt_start counts inside one stored piece; excerpt_offset is the same place in read_file's text"""
+    con = sqlite3.connect(str(tmp_path / "index.db"))
+    con.execute("INSERT INTO files VALUES(30,'/d/long.txt','long.txt','.txt',1,1700000000,1)")
+    pieces = ["first piece of text", "", "second piece here", "third piece with the target word"]
+    for n, t in enumerate(pieces):
+        con.execute("INSERT INTO chunks VALUES(?,30,?,?)", (300 + n, n, t))
+    con.commit(); con.close()
+    ro = mcp_mod._db()
+    start = pieces[3].index("target")
+    got = mcp_mod._excerpt_place(ro, 303, start)
+    text = mcp_mod.read_file("/d/long.txt", 20000)["text"]
+    assert got["excerpt_chunk"] == 3 and text[got["excerpt_offset"]:].startswith("target")
+    assert mcp_mod._excerpt_place(ro, None, 0) == {}

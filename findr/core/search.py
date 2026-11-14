@@ -1571,7 +1571,7 @@ class Finder:
             hits = sum(1 for w in words if len(w) >= 2 and w.lower() in nl)
             sc *= 1 + 0.4 * min(hits, 3)
             if path not in best or sc > best[path][0]:
-                best[path] = (sc, ctext, name, ext, size, mtime, tr, fid)
+                best[path] = (sc, ctext, name, ext, size, mtime, tr, fid, cid)
         res, seen = [], set()
         for path, v in sorted(best.items(), key=lambda x: -x[1][0]):   # copies (same name, same text) shown once
             key = (v[2], (v[1] or "")[:200])
@@ -1582,7 +1582,7 @@ class Finder:
                 break
         out = [{"path": winpath(path), "name": v[2], "size": v[4], "date": fmt_time(v[5]),
                 "kind": {1: "문서·코드", 2: "라이브러리", 3: "이름만"}.get(v[6], ""), "snippet": snip_at(v[1], words)[0], "snippet_start": snip_at(v[1], words)[1],
-                "score": round(v[0] * 1000, 2), "fid": v[7]}
+                "score": round(v[0] * 1000, 2), "fid": v[7], "chunk_id": v[8]}   # snippet_start counts inside chunk chunk_id
                for path, v in res]
         # say so when nothing is close in meaning and no words matched (the answer may be outside the indexed folders)
         weak = top_sim < (JWEAK if p.get("jenc") else WEAK) and not lex
@@ -1883,11 +1883,11 @@ def gone_map(res, top=GONE_TOP, wait=None, now=None):
 def _as_line(con, x, path):
     """line x under another file's path (a copy or a version of it): that file's own id, name and opening text, so
     nothing on the line still points at the gone file. None when the index does not know the path"""
-    r = con.execute("SELECT f.id, f.name, f.size, f.mtime, c.text FROM files f LEFT JOIN chunks c ON c.file=f.id AND c.n=0 "
+    r = con.execute("SELECT f.id, f.name, f.size, f.mtime, c.text, c.id FROM files f LEFT JOIN chunks c ON c.file=f.id AND c.n=0 "
                     "WHERE f.path=?", (_local(path),)).fetchone()
     if not r:
         return None
-    return {**x, "path": path, "fid": r[0], "name": r[1], "size": r[2], "snippet": (r[4] or "")[:160], "snippet_start": 0,
+    return {**x, "path": path, "fid": r[0], "name": r[1], "size": r[2], "snippet": (r[4] or "")[:160], "snippet_start": 0, "chunk_id": r[5],
             "date": fmt_time(r[3]) if r[3] else x.get("date")}
 
 

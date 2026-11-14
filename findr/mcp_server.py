@@ -106,11 +106,32 @@ def _engine_search(query, limit, ask=None):
         if more is not None:
             return more
     out = []
+    con = _db() if any(x.get("chunk_id") is not None for x in kept[:limit]) else None
     for x in kept[:limit]:
         out.append({"name": x.get("name"), "path": x.get("path"), "modified": x.get("date"),
                     "chance": round(x["prob"], 2) if x.get("prob") is not None else None,
-                    "excerpt": (x.get("snippet") or "")[:300], "excerpt_start": x.get("snippet_start")})
+                    "excerpt": (x.get("snippet") or "")[:300], "excerpt_start": x.get("snippet_start"),
+                    **_excerpt_place(con, x.get("chunk_id"), x.get("snippet_start"))})
+    if con is not None:
+        con.close()
     return {"results": out, "note": r.get("note") or "", "engine": "full"}
+
+
+def _excerpt_place(con, cid, start):
+    """{'excerpt_chunk': n, 'excerpt_offset': o}: excerpt_start counts from the start of one stored piece of the file (chunk
+    n); excerpt_offset is the same place in read_file's text (the pieces in order, joined by a line break), so
+    read_file(path, max_chars > excerpt_offset + len(excerpt)) holds it. {} when the engine did not say which piece"""
+    if con is None or cid is None or start is None:
+        return {}
+    try:
+        r = con.execute("SELECT file, n FROM chunks WHERE id=?", (int(cid),)).fetchone()
+        if not r or r[1] < 0:
+            return {}
+        before = con.execute("SELECT coalesce(sum(length(text) + 1), 0) FROM chunks WHERE file=? AND n>=0 AND n<? AND text<>''",
+                             (r[0], r[1])).fetchone()[0]
+        return {"excerpt_chunk": r[1], "excerpt_offset": before + int(start)}
+    except (sqlite3.Error, ValueError, TypeError):
+        return {}
 
 
 @functools.lru_cache(maxsize=65536)
@@ -351,6 +372,8 @@ def search_files(query: str, limit: int = 8, kind: str = "", since: str = "", un
     when, who sent it, which version ('the draft before the final'). Korean and English. Returns the likely files, best
     first, with 'chance' (0-1) that each is the one meant, where it is, when it was modified, and a short excerpt.
     A note says when nothing is a sure match. Ask the person before opening or using a file they did not mean.
+    excerpt_start is where the excerpt begins inside one stored piece of the file (excerpt_chunk, counted from 0);
+    excerpt_offset is the same place in read_file's text (read_file with max_chars past it shows the passage).
     Optional filters: kind (pdf, word, hwp, slides, sheet, image, text, audio, video, or extensions like '.key';
     several with commas; or a kind of document: 회의록/minutes, 계약서/contract, 견적서/invoice, 보고서/report,
     계획서/proposal, 신청서/application, 공문/notice, 규정/manual, 명단/list, 양식/form, 증명서/certificate,
