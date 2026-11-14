@@ -85,15 +85,20 @@ def _engine_up():
     return True
 
 
-def _engine_search(query, limit, ask=None):
+ENGINE_ASK = 50   # results asked of the engine for every search, whatever the limit (its most)
+
+
+def _engine_search(query, limit):
     """results from the running engine, or None when it is not up. Results in the data folder or a FINDR_MCP_DENY folder
-    are left out; when some were, the engine is asked once more for a few more, so the answer still holds `limit`"""
+    are left out. The engine is always asked for ENGINE_ASK results, never more when some were left out: how many it was
+    asked for (and its cut of a short list) would otherwise depend on the files left out (red-team 0.2.24: a word only
+    hidden files held most came back as 'nothing matched')"""
     if not _engine_up():
         return None
     op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     import base64
     k = _key()   # the page's password: as the app's cookie and as HTTP Basic (any user name), whichever the engine takes
-    req = urllib.request.Request(f"{ENGINE}/api?" + urllib.parse.urlencode({"q": query, "k": ask or limit, **({"lang": "en"} if lang() == "en" else {})}),
+    req = urllib.request.Request(f"{ENGINE}/api?" + urllib.parse.urlencode({"q": query, "k": max(ENGINE_ASK, limit), **({"lang": "en"} if lang() == "en" else {})}),
                                  headers={"Cookie": f"findr_t={k}", "Authorization": "Basic " + base64.b64encode(f"findr:{k}".encode()).decode()})
     try:
         r = json.loads(op.open(req, timeout=60).read())
@@ -101,15 +106,9 @@ def _engine_search(query, limit, ask=None):
         return None
     got, roots = r.get("results") or [], _deny_roots()
     con = _db()
-    kept = [x for x in got if not _denied(x.get("path"), roots) and _tier_ok(con, x.get("path"))]
-    if len(kept) < len(got) and len(kept) < limit and ask is None and len(got) >= limit:
-        more = _engine_search(query, limit, ask=min(50, limit + 2 * (len(got) - len(kept)) + 5))
-        if more is not None:
-            if con is not None:
-                con.close()
-            return more
-    kept = kept[:limit]
-    probs = _reprob(kept, r.get("p_none"), bool(r.get("note")))
+    kept = [x for x in got if not _denied(x.get("path"), roots) and _tier_ok(con, x.get("path"))][:limit]
+    # the engine's p_none and note are computed over its whole list, files left out here included: neither is used
+    probs = _reprob(kept)
     out = []
     for x, pr in zip(kept, probs):
         out.append({"name": x.get("name"), "path": x.get("path"), "modified": x.get("date"),
@@ -118,7 +117,7 @@ def _engine_search(query, limit, ask=None):
                     **_excerpt_place(con, x.get("chunk_id"), x.get("snippet_start"))})
     if con is not None:
         con.close()
-    return {"results": out, "note": _note(out, r.get("note")), "engine": "full"}
+    return {"results": out, "note": _note(out, probs), "engine": "full"}
 
 
 def _tier_ok(con, p):
@@ -137,27 +136,34 @@ NOTE_NONE = "Nothing matched. Try other words, or list_folder to look around."
 NOTE_UNSURE = "No file clearly matches; these are the closest, most likely first."
 
 
-def _note(out, engine_note):
-    """the note from what is shown, never from what was left out: the engine's own note can say whether a word is in some
-    file anywhere in the index, a file in the data folder or a deny folder included (an existence oracle). Only its gist
-    is kept, in fixed words"""
+SURE = 0.5   # the best shown file's chance below this: the note says no file clearly matches
+
+
+def _note(out, probs):
+    """the note from what is shown only, never from the engine: its note and its p_none are computed over its whole list, a
+    file in the data folder or a deny folder included (whether a word is in some file anywhere, how sure the best of all is:
+    existence oracles, red-team 11/14). Fixed words, from the shown files' own chances"""
     if not out:
         return NOTE_NONE
-    return NOTE_UNSURE if engine_note else ""
+    ps = [p for p in probs if p is not None]
+    return NOTE_UNSURE if ps and max(ps) < SURE else ""
 
 
 _CALIB = [None]
+P_NONE = 0.5   # the calibration's 'no file is meant' input, fixed: the engine's own value is computed over its whole list
 
 
-def _reprob(kept, p_none, noted):
-    """each shown file's chance, from the files shown only (the engine's odds depend on the rank and the top score of its whole
-    list, files left out here included): the engine's calibration (search.add_probs) on the kept list. The engine's chances
-    when it gave no scores or the calibration is not on this PC"""
+def _reprob(kept):
+    """each shown file's chance, from the files shown only: the engine's calibration (search.add_probs) on the kept list,
+    with the list-wide inputs (p_none, the engine's note) fixed, since the engine computed them over files left out here
+    too. A photo keeps its own odds (its photo model's, of that photo alone). None when the engine gave no scores or the
+    calibration is not on this PC: the engine's own chances came from the whole list"""
     import math
-    eng = [x.get("prob") for x in kept]
+    photo = [x.get("photo_p") for x in kept]
     ce = [x.get("ce") for x in kept]
-    if not kept or any(c is None for c in ce) or any(x.get("photo_p") is not None for x in kept):
-        return eng
+    none = list(photo)
+    if not kept or all(c is None for c in ce):
+        return none
     if _CALIB[0] is None:
         try:
             f = os.environ.get("CALIB_P") or str(paths.MODELS / "gate" / "calibP.json")
@@ -167,13 +173,15 @@ def _reprob(kept, p_none, noted):
             _CALIB[0] = []
     w = _CALIB[0]
     if not w:
-        return eng
+        return none
+    ce = [c if c is not None else -1.0 for c in ce]   # as the engine takes a file it gave no score
     top = max(ce); second = sorted(ce, reverse=True)[1] if len(ce) > 1 else -1.0
-    pn = p_none if p_none is not None else 0.5
     out = []
     for i, c in enumerate(ce):
+        if photo[i] is not None:
+            out.append(photo[i]); continue
         pos = i + 1
-        f = [1.0, c, c - top, math.log(pos), 1.0 if pos == 1 else 0.0, (top - second) if pos == 1 else 0.0, pn, 1.0 if noted else 0.0, 0.0]
+        f = [1.0, c, c - top, math.log(pos), 1.0 if pos == 1 else 0.0, (top - second) if pos == 1 else 0.0, P_NONE, 0.0, 0.0]
         z = sum(a * b for a, b in zip(w, f))
         out.append(1 / (1 + math.exp(-z)))
     return out
@@ -235,8 +243,101 @@ def _canon(p):
 
 
 class _Roots(set):
-    """the deny folders' canonical texts, and .ids: the same folders by (st_dev, st_ino)"""
+    """the deny folders' canonical texts, .ids: the same folders by (st_dev, st_ino), and .dirs: the folders as given"""
     ids = {}
+    dirs = ()
+
+
+HARDLINK_SCAN = 100_000   # files under the data folder and deny folders looked at for hard links, per tool call
+_LINKED = {}   # tuple(deny folders) -> (set of (st_dev, st_ino) of their files, complete?): emptied at each tool call (_db)
+
+
+def _files_under(dirs):
+    """(st_dev, st_ino) of every file under these folders (links not followed), and whether all were seen (HARDLINK_SCAN)"""
+    key = tuple(dirs)
+    if key in _LINKED:
+        return _LINKED[key]
+    ids, n, whole = set(), 0, True
+    for d in dirs:
+        for dp, _, fns in os.walk(d):
+            for fn in fns:
+                n += 1
+                if n > HARDLINK_SCAN:
+                    whole = False
+                    break
+                try:
+                    st = os.lstat(os.path.join(dp, fn))
+                except OSError:
+                    continue
+                if st.st_ino:
+                    ids.add((st.st_dev, st.st_ino))
+            if not whole:
+                break
+        if not whole:
+            break
+    _LINKED[key] = (ids, whole)
+    return ids, whole
+
+
+def _hard_linked(p, roots):
+    """True for a file with more than one name (a hard link) that is one of the files under the data folder or a deny folder:
+    its other name says nothing of that (red-team 0.2.24: data/visible/x.txt hard-linked to a denied file). When those
+    folders hold more than HARDLINK_SCAN files, every hard-linked file is taken as one of them"""
+    try:
+        st = os.stat(p)
+    except (OSError, ValueError):
+        return False
+    if st.st_nlink <= 1 or not st.st_ino or not getattr(roots, "dirs", ()):
+        return False
+    ids, whole = _files_under(roots.dirs)
+    return (st.st_dev, st.st_ino) in ids or not whole
+
+
+_WARNED = set()
+
+
+def _warn(entry, why):
+    """once per entry and reason, on stderr (stdout is the MCP protocol)"""
+    import sys
+    if (entry, why) not in _WARNED:
+        _WARNED.add((entry, why))
+        print(f"findr mcp: FINDR_MCP_DENY entry {entry!r} {why}", file=sys.stderr, flush=True)
+
+
+def _deny_entries(raw):
+    """the folders a FINDR_MCP_DENY value names, each warned about once when it looks wrong. Fail-safe: a relative entry is
+    left out with a warning (the MCP server's working folder is whatever the AI app started it in, so it would name some
+    other folder; nothing is denied in its place); a file: URL is taken as the path it names, a %-encoded entry is denied
+    as written and decoded (denying more never shows more); an entry that does not exist (yet) is kept and warned about"""
+    from .core import samepath
+    out = []
+    for d in samepath.split_list(raw or ""):
+        e = d.strip()
+        if e.lower().startswith("file:"):
+            try:
+                u = urllib.parse.urlparse(e)
+                path = urllib.request.url2pathname(u.path)
+                e2 = ("//" + u.netloc + path) if u.netloc and u.netloc.lower() != "localhost" else path
+            except Exception:   # noqa: BLE001
+                e2 = ""
+            _warn(d, f"is a URL; taken as {e2!r}" if e2 else "is a URL that could not be read; nothing denied for it")
+            if not e2:
+                continue
+            e = e2
+        cands = [e]
+        if re.search(r"%[0-9A-Fa-f]{2}", e):
+            dec = urllib.parse.unquote(e)
+            _warn(d, f"looks %-encoded; denied as written and as {dec!r}")
+            cands.append(dec)
+        x = os.path.expanduser(cands[0])
+        winlike = bool(re.match(r"^[A-Za-z]:[\\/]|^[\\/]{2}[^\\/]", x))
+        if not (os.path.isabs(x) or winlike):
+            _warn(d, "is not an absolute path; it is ignored (give the full path of the folder)")
+            continue
+        if not any(os.path.exists(os.path.expanduser(c)) for c in cands) and (os.name == "nt" or not winlike):
+            _warn(d, "does not exist on this PC (kept: it is denied once it does)")   # (a Windows path elsewhere: an index copied over)
+        out += cands
+    return out
 
 
 def _deny_roots():
@@ -244,12 +345,13 @@ def _deny_roots():
     OS), each in every form the index may hold it (C:\\ and /mnt/c/), and by identity"""
     from .core import samepath
     out, dirs = _Roots(), []
-    for d in [str(paths.HOME), *samepath.split_list(os.environ.get("FINDR_MCP_DENY", ""))]:
+    for d in [str(paths.HOME), *_deny_entries(os.environ.get("FINDR_MCP_DENY", ""))]:
         if d.strip():
             forms = _path_forms(d.strip())
             out |= {_canon(f) for f in forms}
             dirs += [os.path.expanduser(f) for f in forms if os.path.isabs(os.path.expanduser(f))]
     out.ids = samepath.ids_of(dirs)
+    out.dirs = tuple(dict.fromkeys(d for d in dirs if os.path.isdir(d)))
     return out
 
 
@@ -285,6 +387,8 @@ def _denied(p, roots=None):
     from .core import samepath
     if getattr(roots, "ids", None) and os.path.isabs(str(p)) and samepath.under(str(p), roots.ids) is not None:
         return True   # the same folder under a spelling text cannot tell (a hard link, a bind mount, a firmlink, case)
+    if os.path.isabs(str(p)) and _hard_linked(str(p), roots):
+        return True   # the same file under another name (a hard link)
     return _secret(p)
 
 
@@ -294,6 +398,7 @@ def _db():
     con = sqlite3.connect(f"file:{paths.DB}?mode=ro", uri=True, timeout=10)
     con.create_function("nfc", 1, lambda s: unicodedata.normalize("NFC", s) if s else s, deterministic=True)
     _real_dir.cache_clear()
+    _LINKED.clear()
     from .core import samepath
     samepath.clear()
     roots = _deny_roots()
@@ -365,6 +470,17 @@ def _day(mt):
         return ""
 
 
+FTS_CAND = 2000   # pieces matching any word that the index search ranks itself
+
+
+def _piece_score(words, name, text):
+    """(words of the query in this piece or its name, how often in all): from the piece alone"""
+    import math
+    hay = unicodedata.normalize("NFC", f"{name or ''}\n{text or ''}").casefold()
+    counts = [hay.count(w.casefold()) for w in words if len(w) >= 3]
+    return (sum(1 for c in counts if c), round(sum(math.log1p(c) for c in counts), 6))
+
+
 def _index_search(query, limit, exts=None, folder=""):
     """names and words straight from the index (the engine is not running, or inside a filter the engine's list missed)"""
     con = _db()
@@ -388,8 +504,12 @@ def _index_search(query, limit, exts=None, folder=""):
     try:   # words inside documents (3-letter index)
         fq = " OR ".join('"' + w.replace('"', "") + '"' for w in words if len(w) >= 3)
         if fq:
-            rows += con.execute("""SELECT f.id, f.path, f.name, f.mtime FROM fts JOIN chunks c ON c.id = fts.rowid JOIN files f ON f.id = c.file
-                                   WHERE fts MATCH ? AND f.tier IN (1,3) AND NOT denied(f.path) ORDER BY rank LIMIT ?""", (fq, limit * 3)).fetchall()   # as the name search: no library or secret files
+            # ranked here, by each shown piece alone (how many of the words it holds, then how often), not by the word
+            # index's bm25: its word rarity counts every row, a deny folder's included, so the order of the shown files
+            # would tell what a hidden file holds (red-team 0.2.24). Newest pieces first when more than FTS_CAND match
+            got = con.execute("""SELECT f.id, f.path, f.name, f.mtime, c.text FROM fts JOIN chunks c ON c.id = fts.rowid JOIN files f ON f.id = c.file
+                                 WHERE fts MATCH ? AND f.tier IN (1,3) AND NOT denied(f.path) ORDER BY fts.rowid DESC LIMIT ?""", (fq, FTS_CAND)).fetchall()   # as the name search: no library or secret files
+            rows += [r[:4] for r in sorted(got, key=lambda r: (_piece_score(words, r[2], r[4]), r[3] or 0), reverse=True)][: limit * 3]
     except sqlite3.OperationalError:
         pass
     import datetime
@@ -696,10 +816,13 @@ def file_relations(path: str, terms: int = 10) -> dict:
     f = dict(v.get("file") or {})
     if con is not None:
         try:
-            words = relations.terms(con, fid, max(1, min(int(terms or 10), 30)))
+            roots = _deny_roots()
+            import hashlib
+            vkey = "v" + hashlib.sha1("\n".join(sorted(roots)).encode()).hexdigest()[:12]
+            # word rarity from the files these tools may show only (not the data folder, a deny folder or a secret file)
+            words = relations.terms(con, fid, max(1, min(int(terms or 10), 30)), visible=lambda p2: not _denied(p2, roots), vkey=vkey)
             words = [w for w in words if _mask(w) == w]   # a key-like word of an index from before a masking rule
             sig = relations.content_sig(con, fid)
-            roots = _deny_roots()
             same = [{"name": c["name"], "path": c["path"], "modified": _day(c["mtime"]), "file_id": c["id"], "_fid": c["fid"]}
                     for c in relations.copies(con, fid, keep=lambda p2: not _denied(p2, roots))]
             if same:   # the very same bytes belong to the family too (members already in another family stay there)

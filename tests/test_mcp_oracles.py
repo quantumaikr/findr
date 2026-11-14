@@ -63,3 +63,27 @@ def test_engine_results_kept_secret_by_the_index_leave(pc, monkeypatch):
                                           {"name": "notes.txt", "path": f"{pc.docs}/notes.txt", "prob": 0.5}], "note": ""})
     assert [x["name"] for x in pc.search_files("password")["results"]] == ["notes.txt"]
     assert pc.search_files("password", kind="sheet")["results"] == []
+
+
+def test_engine_p_none_and_note_never_reach_the_answer(pc, monkeypatch):
+    """the engine's p_none and note are computed over its whole list: a denied match changes them. The answer must be the
+    same whether or not a hidden file matched (0.2.24 red-team: chances and note moved with p_none)"""
+    ok = {"name": "notes.txt", "path": f"{pc.docs}/notes.txt", "prob": 0.31, "ce": 0.2, "snippet": "alpha plan"}
+    hidden = {"name": "deny_plan.txt", "path": f"{pc.deny}/deny_plan.txt", "prob": 0.9, "ce": 0.95, "snippet": "zebracorn"}
+    _engine(pc, monkeypatch, {"results": [hidden, dict(ok)], "p_none": 0.02, "note": ""})
+    a = pc.search_files("zebracorn plan", limit=3)
+    _engine(pc, monkeypatch, {"results": [dict(ok, prob=0.05)], "p_none": 0.97, "note": "'zebracorn' is not in any file."})
+    b = pc.search_files("zebracorn plan", limit=3)
+    assert a == b, (a, b)
+    assert a["results"][0]["chance"] is not None
+
+
+def test_no_scores_no_chance_from_the_engine(pc, monkeypatch):
+    """without scores the engine's own chances (from its whole list) are not passed on"""
+    hidden = {"name": "deny_plan.txt", "path": f"{pc.deny}/deny_plan.txt", "prob": 0.9}
+    ok = {"name": "notes.txt", "path": f"{pc.docs}/notes.txt", "prob": 0.4}
+    _engine(pc, monkeypatch, {"results": [hidden, dict(ok)], "p_none": 0.1, "note": "x"})
+    a = pc.search_files("quillplan", limit=3)
+    _engine(pc, monkeypatch, {"results": [dict(ok, prob=0.8)], "p_none": 0.9, "note": ""})
+    b = pc.search_files("quillplan", limit=3)
+    assert a == b and a["results"][0]["chance"] is None, (a, b)

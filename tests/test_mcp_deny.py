@@ -114,7 +114,8 @@ def test_windows_paths_on_any_pc(pc, monkeypatch):
 
 
 def test_engine_results_are_filtered_too(pc, monkeypatch):
-    """with the engine running: its answer passes through the same check, and a few more are asked when some left"""
+    """with the engine running: its answer passes through the same check. The engine is asked for the same number of
+    results every time (red-team 0.2.24: asking for more when some were left out told that some were)"""
     asked = []
     docs, data = pc.docs, pc.data
 
@@ -133,7 +134,7 @@ def test_engine_results_are_filtered_too(pc, monkeypatch):
     monkeypatch.setattr(pc.urllib.request, "build_opener", lambda *a: Op())
     r = pc.search_files("plan", limit=3)
     assert r["engine"] == "full" and _paths(r) == [f"{docs}/b.docx", f"{docs}/d.docx", f"{docs}/e.docx"], r
-    assert asked[0] == 3 and len(asked) == 2 and asked[1] > 3
+    assert asked == [pc.ENGINE_ASK]
 
 
 def test_deny_list_is_read_at_each_call(pc, monkeypatch):
