@@ -854,7 +854,8 @@ def _main():
                                   (s, nfc(p.name), real_ext(p), st.st_size, st.st_mtime, tr, 1 if tr in (1, 2) else 0))
                 fid = cur.lastrowid   # name and folder searchable at once; content comes in its wave
                 cid = con.execute("INSERT INTO chunks(file,n,text) VALUES(?,?,?)", (fid, 0, "")).lastrowid
-                con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(p.name), nfc(s[len(root.as_posix()):]), ""))
+                if tr != 0:   # a secret file is not in the word index at all (fts_no_secrets)
+                    con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(p.name), nfc(s[len(root.as_posix()):]), ""))
                 if s not in known:
                     fresh.append((fid, s, st.st_size, st.st_mtime, real_ext(p), tr, root))
                 new += 1
@@ -876,6 +877,7 @@ def _main():
     for s, kn in lost:
         if kn[2] not in reused:
             drop(con, kn[2])
+    fts_no_secrets(con)
     con.commit()
     if reused:
         print(f"FINDR_MOVED {len(reused)} files moved or renamed: their text was kept, only their vectors are made again", flush=True)
@@ -895,6 +897,7 @@ def _main():
     for k, root in enumerate(roots):   # stage 2: content, the folders people look in first
         progress("content", k, len(roots)); read_wave(con, root, a)
     remask(con)
+    fts_no_secrets(con)
     if not a.no_embed:   # stage 3: meaning (each file's opening pieces first)
         print("FINDR_STAGE meaning", flush=True); embed(con, a.model)
     if os.environ.get("FINDR_OCR", "1") != "0":   # stage 4: text in scans and screenshots
@@ -1343,7 +1346,8 @@ def read_wave(con, root, a):
         rel = s[len(root.as_posix()):]
         for n, c in enumerate(cs):
             cid = con.execute("INSERT INTO chunks(file,n,text) VALUES(?,?,?)", (fid, n, c)).lastrowid
-            con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(p.name), nfc(rel), nfc(c)))
+            if not cred:   # a secret file is not in the word index at all (fts_no_secrets)
+                con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(p.name), nfc(rel), nfc(c)))
         part = not cred and first and tr == 1 and ext not in DATA and (len(txt) >= GIST - 64 or (ext not in RICH and _size(s) > GIST))   # cut at the gist
         # (plain text is read by bytes: Korean takes 3 per character, so the file size tells): the deep run reads the rest
         con.execute("UPDATE files SET pending=? WHERE id=?", (2 if part else 0, fid))
@@ -1661,6 +1665,16 @@ def ocr_wave(con, root, first_pages=None, deep_pages=None):
           f"{copied} copies of files already read, {time.time() - t0:.0f}s", flush=True)
 
 
+def fts_no_secrets(con):
+    """secret files (tier 0) out of the word index (fts): they are never shown, and their rows still counted in its ranking
+    statistics (bm25: how rare a word is), which a search that leaves them out could be ordered by. Rows an older index
+    keeps for them (their name and folder) leave here; new ones are never written"""
+    n = con.execute("DELETE FROM fts WHERE rowid IN (SELECT c.id FROM chunks c JOIN files f ON f.id = c.file WHERE f.tier = 0)").rowcount
+    if n > 0:
+        print(f"FINDR_FTS_SECRET {n} rows of secret files left the word index", flush=True)
+    return n
+
+
 def remask(con):
     """every run: any stored chunk that still holds a key-like value is masked, re-indexed and re-embedded.
     Triggers note every chunk whose text is written (inserted, or filled in place by a later stage); only those are looked at,
@@ -1678,9 +1692,10 @@ def remask(con):
     rows = con.execute(f"SELECT c.id, c.file, c.text FROM {src} WHERE {w}", [f"%{h}%" for h in KEYLIKE_HINTS]).fetchall()
     for cid, fid, txt in rows:
         if txt and KEYLIKE.search(txt):
-            t = mask(txt); name, path = con.execute("SELECT name, path FROM files WHERE id=?", (fid,)).fetchone()
+            t = mask(txt); name, path, tr = con.execute("SELECT name, path, tier FROM files WHERE id=?", (fid,)).fetchone()
             con.execute("DELETE FROM fts WHERE rowid=?", (cid,))
-            con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(name), nfc(path), t))
+            if tr != 0:
+                con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(name), nfc(path), t))
             con.execute("UPDATE chunks SET text=?, emb=NULL WHERE id=?", (t, cid)); hit += 1
     con.execute("DELETE FROM mask_todo")   # (the masking above re-noted its own rows: already clean)
     con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('mask_pattern', ?)", (pat,))

@@ -375,6 +375,17 @@ def _day(mt):
         return ""
 
 
+FTS_CAND = 2000   # pieces matching any word that the index search ranks itself
+
+
+def _piece_score(words, name, text):
+    """(words of the query in this piece or its name, how often in all): from the piece alone"""
+    import math
+    hay = unicodedata.normalize("NFC", f"{name or ''}\n{text or ''}").casefold()
+    counts = [hay.count(w.casefold()) for w in words if len(w) >= 3]
+    return (sum(1 for c in counts if c), round(sum(math.log1p(c) for c in counts), 6))
+
+
 def _index_search(query, limit, exts=None, folder=""):
     """names and words straight from the index (the engine is not running, or inside a filter the engine's list missed)"""
     con = _db()
@@ -398,8 +409,12 @@ def _index_search(query, limit, exts=None, folder=""):
     try:   # words inside documents (3-letter index)
         fq = " OR ".join('"' + w.replace('"', "") + '"' for w in words if len(w) >= 3)
         if fq:
-            rows += con.execute("""SELECT f.id, f.path, f.name, f.mtime FROM fts JOIN chunks c ON c.id = fts.rowid JOIN files f ON f.id = c.file
-                                   WHERE fts MATCH ? AND f.tier IN (1,3) AND NOT denied(f.path) ORDER BY rank LIMIT ?""", (fq, limit * 3)).fetchall()   # as the name search: no library or secret files
+            # ranked here, by each shown piece alone (how many of the words it holds, then how often), not by the word
+            # index's bm25: its word rarity counts every row, a deny folder's included, so the order of the shown files
+            # would tell what a hidden file holds (red-team 0.2.24). Newest pieces first when more than FTS_CAND match
+            got = con.execute("""SELECT f.id, f.path, f.name, f.mtime, c.text FROM fts JOIN chunks c ON c.id = fts.rowid JOIN files f ON f.id = c.file
+                                 WHERE fts MATCH ? AND f.tier IN (1,3) AND NOT denied(f.path) ORDER BY fts.rowid DESC LIMIT ?""", (fq, FTS_CAND)).fetchall()   # as the name search: no library or secret files
+            rows += [r[:4] for r in sorted(got, key=lambda r: (_piece_score(words, r[2], r[4]), r[3] or 0), reverse=True)][: limit * 3]
     except sqlite3.OperationalError:
         pass
     import datetime
@@ -706,10 +721,13 @@ def file_relations(path: str, terms: int = 10) -> dict:
     f = dict(v.get("file") or {})
     if con is not None:
         try:
-            words = relations.terms(con, fid, max(1, min(int(terms or 10), 30)))
+            roots = _deny_roots()
+            import hashlib
+            vkey = "v" + hashlib.sha1("\n".join(sorted(roots)).encode()).hexdigest()[:12]
+            # word rarity from the files these tools may show only (not the data folder, a deny folder or a secret file)
+            words = relations.terms(con, fid, max(1, min(int(terms or 10), 30)), visible=lambda p2: not _denied(p2, roots), vkey=vkey)
             words = [w for w in words if _mask(w) == w]   # a key-like word of an index from before a masking rule
             sig = relations.content_sig(con, fid)
-            roots = _deny_roots()
             same = [{"name": c["name"], "path": c["path"], "modified": _day(c["mtime"]), "file_id": c["id"], "_fid": c["fid"]}
                     for c in relations.copies(con, fid, keep=lambda p2: not _denied(p2, roots))]
             if same:   # the very same bytes belong to the family too (members already in another family stay there)

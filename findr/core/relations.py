@@ -84,16 +84,25 @@ def tokens(text):
     return out
 
 
-def _df(con):
-    """(number of chunks sampled, {term: chunks holding it}) over an even sample of the index, kept until it grows"""
+def _df(con, visible=None, vkey=""):
+    """(number of chunks sampled, {term: chunks holding it}) over an even sample of the index, kept until it grows. Only
+    chunks of files that can be shown count (tier > 0, and `visible(path)` when given: the MCP tools leave out the data
+    folder and FINDR_MCP_DENY folders). A word's rarity counted over hidden files would tell, through the order of a shown
+    file's terms, that a hidden file holds it (red-team 0.2.24)"""
     top = con.execute("SELECT max(id) FROM chunks").fetchone()[0] or 0
     db = (con.execute("PRAGMA database_list").fetchone() or [0, 0, ""])[2]
-    key = (db, top // 50)
+    key = (db, top // 50, vkey)
     if key in _cache:
         return _cache[key]
     step = max(1, top // SAMPLE)
-    n, df = 0, {}
-    for (t,) in con.execute("SELECT text FROM chunks WHERE n>=0 AND text<>'' AND id % ? = 0 LIMIT ?", (step, SAMPLE)):
+    n, df, ok = 0, {}, {}
+    for (t, path) in con.execute("SELECT c.text, f.path FROM chunks c JOIN files f ON f.id = c.file WHERE c.n>=0 AND c.text<>'' "
+                                 "AND f.tier > 0 AND c.id % ? = 0 LIMIT ?", (step, SAMPLE)):
+        if visible is not None:
+            if path not in ok:
+                ok[path] = bool(visible(path))
+            if not ok[path]:
+                continue
         n += 1
         for w in set(tokens(t[:3000])):
             df[w] = df.get(w, 0) + 1
@@ -102,13 +111,15 @@ def _df(con):
     return n, df
 
 
-def terms(con, fid, k=TERMS_K):
-    """the file's characteristic words, best first: tf (log) x idf, the idf from a sample of the whole index. Computed from
-    the chunk text findr already stores and kept in file_terms until the file changes. [] for a file with no text yet"""
+def terms(con, fid, k=TERMS_K, visible=None, vkey=""):
+    """the file's characteristic words, best first: tf (log) x idf, the idf from a sample of the files that can be shown
+    (see _df; `vkey` names the `visible` rule, so a changed deny list is not served terms ranked under the old one).
+    Computed from the chunk text findr already stores and kept in file_terms until the file changes. [] for a file with no
+    text yet"""
     row = con.execute("SELECT size, mtime FROM files WHERE id=?", (fid,)).fetchone()
     if not row:
         return []
-    stamp = f"{row[0]}|{row[1]}|{k}"
+    stamp = f"{row[0]}|{row[1]}|{k}" + (f"|{vkey}" if vkey else "")
     w = _schema(con)
     if w:
         c = con.execute("SELECT stamp, terms FROM file_terms WHERE file=?", (fid,)).fetchone()
@@ -125,7 +136,7 @@ def terms(con, fid, k=TERMS_K):
         tf[x] = tf.get(x, 0) + 1
     out = []
     if tf:
-        N, df = _df(con)
+        N, df = _df(con, visible, vkey)
         long_ = sum(tf.values()) > 60   # a long text: a word seen once is noise
         sc = {x: (1 + math.log(c)) * (math.log((N + 1) / (df.get(x, 0) + 1)) + 1) for x, c in tf.items() if c > 1 or not long_}
         out = [x for x, _ in sorted(sc.items(), key=lambda kv: (-kv[1], kv[0]))[:k]]
