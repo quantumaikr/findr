@@ -177,7 +177,7 @@ P1 = "Gor" + "illa88zzQx"
 MASKED = [
     "은행 비밀번호: " + P1, "공유기 암호 = " + P1, "패스워드：" + P1, "비번=" + P1,
     "password: correct horse " + P1, '{"password": "x' + P1 + '"}', '{"pwd": "' + P1[:3] + '"}', "token: " + P1[:2],
-    "[db]\npasswd = " + P1, "client_secret: '" + P1 + "'", "<password>" + P1 + "</password>", "<api_key>" + P1 + "</api_key>",
+    "[db]\npasswd = " + P1, "DB_PASS=" + P1, "smtp.pass: " + P1, "client_secret: '" + P1 + "'", "<password>" + P1 + "</password>", "<api_key>" + P1 + "</api_key>",
     "<Key>Password</Key><Value>" + P1 + "</Value>",
     "DefaultEndpointsProtocol=https;AccountName=fakeacct;AccountKey=" + P1 + "==;EndpointSuffix=core.windows.net",
     "SharedAccessSignature=sv=2020&" + P1, "https://acct.blob.example/c?sv=2020-01-01&sig=" + P1 + "%3D&se=1",
@@ -208,7 +208,7 @@ def test_base64_pem_and_twilio():
 
 def test_labels_keep_prose_and_code():
     for t in ("The password policy requires 12 characters.", "if password == expected:", "암호화 방식: AES", "max_tokens = 4096",
-              "sig figures", "author: kim " + "0123456789abcdef" * 2):
+              "sig figures", "author: kim " + "0123456789abcdef" * 2, "pass: 12A", "bypass = true"):
         assert index.mask(t) == t, t
 
 

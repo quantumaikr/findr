@@ -16,7 +16,7 @@ EXAMPLES = ["sk-" + "a" * 24, "sk-ant-" + "b" * 24, "AKIA" + "A" * 16, "gh" + "p
             "<Key>Password</Key><Value>z</Value>", "AccountKey=" + "z" * 8, "SharedAccessSignature=sv=1", "x?sig=" + "z" * 8,
             "npm" + "_" + "z" * 36, "S" + "G." + "z" * 20 + "." + "z" * 20, "GOC" + "SPX-" + "z" * 24, "ya" + "29." + "z" * 24,
             "https://hooks.slack.com/services/T0/B0/zz", "twilio SK" + "0a" * 16, "auth token " + "0a" * 16,
-            "LS0tLS1CRUdJTi" + "z" * 20, "-----BEGIN RSA PRIVATE\nKEY-----\nabc", "-----begin private key-----\nabc"]
+            "LS0tLS1CRUdJTi" + "z" * 20, "-----BEGIN RSA PRIVATE\nKEY-----\nabc", "-----begin private key-----\nabc", "DB_PASS=z"]
 
 
 def _db():

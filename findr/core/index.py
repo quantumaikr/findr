@@ -75,9 +75,10 @@ _SECOND_EXT = re.compile(r"^(.+\.[^.]+)\.(txt|text|bak|old|orig|backup|copy|down
 # '.key' is both a cryptographic key and an Apple Keynote deck: Keynote is a ZIP, a key file is not (see is_secret)
 # values that look like keys are masked inside indexed text (a key pasted into a note or log never reaches the index)
 # the name of a setting that holds a secret, with words before it (AWS_SECRET_ACCESS_KEY, client_secret, DB_PASSWORD) and
-# at most two after it (DB_PASSWORD_PROD); 'tokenizer' or 'max_tokens' is not one
-_KV_NAME = (r"(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[_.\-]){0,4}(?i:api[_-]?key|secret(?:[_-]?access)?(?:[_-]?key)?|password|passwd|passphrase|pwd"
-            r"|token|private[_-]?key)(?:[_.\-][A-Za-z0-9]+){0,2}(?![A-Za-z0-9])")
+# at most two after it (DB_PASSWORD_PROD); 'tokenizer' or 'max_tokens' is not one. 'pass' only after a word (DB_PASS,
+# SMTP_PASS): 'pass: 12A' alone is a boarding pass
+_KV_NAME = (r"(?<![A-Za-z0-9])(?:(?:[A-Za-z0-9]+[_.\-]){0,4}(?i:api[_-]?key|secret(?:[_-]?access)?(?:[_-]?key)?|password|passwd|passphrase"
+            r"|pwd|token|private[_-]?key)|(?:[A-Za-z0-9]+[_.\-]){1,4}(?i:pass))(?:[_.\-][A-Za-z0-9]+){0,2}(?![A-Za-z0-9])")
 # PEM / PGP private key: to its END line; with none (a note cut short), to the end of the text or to the first blank line
 # that is not followed by more key lines (a PGP block has one blank line after its headers). Any case, any spacing, and its
 # header split over two lines ('-----BEGIN RSA PRIVATE\nKEY-----')
@@ -123,7 +124,7 @@ _KEEP = ("url", "lq", "ls", "lu", "lx", "lk", "hook", "az", "sig", "tw")
 KEYLIKE_HINTS = ("sk-", "akia", "gh_", "hf_", "xox", "aiza", "private", "api", "secret", "password", "passwd", "token",
                  "github_pat", "glpat", "k_live", "k_test", "private-lines", "bearer", "eyj", "://", "pwd", "private_key", "privatekey",
                  "-----", "ls0tls1crudjti", "npm_", "sg.", "gocspx-", "ya29.", "hooks.slack.com", "accountkey", "sharedaccess",
-                 "sig=", "twilio", "auth", "비밀번호", "패스워드", "비번", "암호", "passphrase")
+                 "sig=", "twilio", "auth", "비밀번호", "패스워드", "비번", "암호", "pass")
 
 
 def _mask_one(m):
