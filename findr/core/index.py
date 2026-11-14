@@ -33,7 +33,7 @@ DOC = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".hwp", ".doc", ".ppt", ".xls
 AUD = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".wma", ".ogg"}   # transcribed locally by stt_cache.py (faster-whisper)
 OLD = {".hwp", ".doc", ".ppt", ".xls"}   # old binary formats: converted locally by LibreOffice (+ H2Orestart for hwp), cached
 SECRET = re.compile(r"^(\.env(\..*)?|\.envrc|\.netrc|_netrc|\.pgpass|pgpass\.conf|\.npmrc|\.pypirc|\.git-credentials|kubeconfig(\.ya?ml)?"
-                    r"|id_(rsa|dsa|ecdsa|ed25519)(_sk)?(\.pub)?|credentials(\.json|\.ya?ml|\.txt|\.csv)?|.*_credentials\.csv|.*_accesskeys\.csv"
+                    r"|id_(rsa|dsa|ecdsa|ed25519).*|credentials(\.json|\.ya?ml|\.txt|\.csv)?|.*_credentials\.csv|.*_accesskeys\.csv"
                     r"|secrets?\.(json|ya?ml|toml|txt|env)|.*\.(pem|pfx|p12|kdbx|kdb|keystore|jks|ppk|1pux|1pif)"
                     r"|\.(bash|zsh|sh|python|psql|mysql|node_repl|lesshst)_?history|\.history|ConsoleHost_history\.txt"   # shell histories hold typed tokens
                     r"|(sign|km)(Cert\.der|Pri\.key)"   # a Korean joint certificate (공동인증서): the certificate and its private key
@@ -268,11 +268,20 @@ def secret_text(name, text):
     return bool((exts & CRED_EXTS and cred_header(text[:4096])) or (exts & PM_EXTS and pm_export(text)))
 
 
+# characters a name can hold that show as nothing: '.env\u200b' read as '.env' to the eye and passed the name rules
+# (red-team 0.2.24). Zero-width space / joiners, BOM, word joiner, soft hyphen and other format characters are dropped
+_INVISIBLE = re.compile("[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f"
+                        "\u3164\ufe00-\ufe0f\ufeff\uffa0]")
+# every Unicode space (no-break, ideographic U+3000, ...) as a plain one, so a trailing one is dropped like ' '
+_SPACES = re.compile(r"\s")
+
+
 def name_forms(name):
     """the forms of a file name the secret rules are tried on: NFC and case-folded, with trailing spaces and dots dropped
     (Windows ignores them: '.env ' is '.env'), backup endings, a second extension ('passwords.csv.txt') and copy markers
     ('Copy of logins.csv', 'logins 2.csv', '비밀번호 - 복사본.csv') taken off"""
-    n = nfc(str(name or "")).casefold()
+    n = _INVISIBLE.sub("", nfc(str(name or ""))).casefold()
+    n = _SPACES.sub(" ", n)
     n = n.rstrip(" .") or n
     forms, todo = [], [n]
     while todo and len(forms) < 24:

@@ -217,3 +217,15 @@ def test_mask_stays_fast_on_large_text():
     big = ("평범한 회의 메모 password policy token bucket auth flow sig figures https://example.com/a@b " * 20000)
     t0 = time.time(); index.mask(big)
     assert time.time() - t0 < 10
+
+
+# ---------------------------------------------------------------- 8. near-miss secret names
+@pytest.mark.parametrize("name", [".env​", "​.env", ".env﻿", ".e‍nv", ".env⁠", ".env　", ".env ",
+                                  "secrets​.json", "id_rsa.txt", "id_ed25519-old", "id_ecdsa_backup", "id_dsa (1)", "id_rsa.pub"])
+def test_invisible_characters_and_key_name_suffixes(name):
+    assert index.secret_name(index.Path(name)), name
+
+
+def test_ordinary_names_stay_readable():
+    for name in ("envelope.txt", "identity.md", "id_card.pdf", "rsa_notes.md", "my env notes.txt"):
+        assert not index.secret_name(index.Path(name)), name
