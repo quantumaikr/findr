@@ -2250,12 +2250,71 @@ def ce_scores(q, res, d=None, nosumm=None, top=None):
     top: score only the first `top`; the rest keep their first-stage order below them"""
     d = d or os.environ.get("CE_DIR", str(Path(os.environ.get("FINDR_MODELS") or (Path.home() / ".findr" / "models")) / "rank"))
     nosumm = bool(os.environ.get("CE_NOSUMM")) if nosumm is None else nosumm
-    if d not in CE:
-        with _CE_LOCK:   # the warm-up loads it outside the search lock: a question at the same moment must not load a second copy
-            if d not in CE:
-                _ce_load(d)
-    tok, m = CE[d]
+    _CE_USED[0] = time.time()
+    with _CE_LOCK:   # the warm-up loads it outside the search lock: a question at the same moment must not load a second copy
+        if d not in CE:   # (also after an idle unload: loaded again here)
+            _ce_load(d)
+        tok, m = CE[d]
     return _ce_score(q, res, d, tok, m, nosumm, top)
+
+
+_CE_USED = [0.0]   # when the reranker was last asked
+IDLE_UNLOAD_MIN = 10   # minutes without a question before the reranker is let go on a PC with 12 GB or less: an 8 GB laptop's
+# engine held 2.1 GB idle, 0.8 GB without it (#198); the next question loads it again (a few seconds on a CPU)
+SMALL_RAM_GB = 12.5    # a PC sold as 12 GB reports a little less
+
+
+def idle_unload_minutes():
+    """FINDR_IDLE_UNLOAD minutes without a question before the reranker is let go (0: never); not set: IDLE_UNLOAD_MIN on a
+    PC with 12 GB or less, never on larger ones"""
+    v = os.environ.get("FINDR_IDLE_UNLOAD", "")
+    try:
+        if v != "":
+            return max(0.0, float(v))
+    except ValueError:
+        pass
+    try:
+        from governor import ram_total_gb
+        ram = ram_total_gb()
+    except Exception:   # noqa: BLE001
+        ram = None
+    return float(IDLE_UNLOAD_MIN) if ram and ram < SMALL_RAM_GB else 0.0
+
+
+def idle_unload(f=None, now=None, minutes=None):
+    """let go of the reranker (and the second lane's model) after `minutes` without a question; True when it did. They load
+    again at the next question that needs them. A question in progress keeps its own reference until it is done"""
+    minutes = idle_unload_minutes() if minutes is None else minutes
+    now = time.time() if now is None else now
+    if minutes <= 0 or not _CE_USED[0] or now - _CE_USED[0] < minutes * 60:
+        return False
+    with _CE_LOCK:
+        if not CE or now - _CE_USED[0] < minutes * 60:
+            return False
+        CE.clear()
+    if f is not None and getattr(f, "_l2enc", None) is not None:
+        f._l2enc = None   # loaded again by lane2_enc when a question needs it
+    try:
+        from governor import give_back
+        give_back()
+    except Exception:   # noqa: BLE001
+        pass
+    print(f"FINDR_IDLE_UNLOAD reranker let go after {minutes:g} min without a question", flush=True)
+    return True
+
+
+def idle_watch(f, every=30.0):
+    """the engine's idle unload, looked at every `every` seconds (a thread; nothing when it is off)"""
+    if idle_unload_minutes() <= 0:
+        return
+    def run():
+        while True:
+            time.sleep(every)
+            try:
+                idle_unload(f())
+            except Exception as e:   # noqa: BLE001
+                print(f"FINDR_IDLE_UNLOAD failed {type(e).__name__}", flush=True)
+    threading.Thread(target=run, daemon=True, name="findr-idle").start()
 
 
 MPS_FP16_RAM_GB = 15.5   # an Apple GPU with less shared memory than this holds the reranker in 16 bits
@@ -3347,7 +3406,38 @@ def watch_parent(stop, every=5.0, alive=None, hard_exit=None):
     return th
 
 
+STARTED = time.time()   # this engine's start: /healthz says it, so the app can tell the engine it started from an older one
+LOADED = threading.Event()   # the index and the models are in: requests other than /healthz, /ready and /progress wait for it
+LOAD_WAIT = 600   # a request waits this long for the load at most (a slow PC's first start loads for a minute or more)
+STARTING_FILE = "engine_starting.json"   # cli._mark_starting: an indexer waits for an engine that says it is starting
+
+
+def _version():
+    try:
+        from findr import __version__
+        return __version__
+    except Exception:   # noqa: BLE001  (the engine run on its own, outside the package)
+        return ""
+
+
+def health():
+    """what /healthz says besides 'ok' (as headers, so the body stays 'ok' for the watchdogs that read it)"""
+    return {"version": _version(), "started": round(STARTED, 3), "pid": os.getpid(), "loaded": LOADED.is_set(), "ready": READY.is_set()}
+
+
+def _starting_done():
+    try:
+        (Path(os.environ.get("FINDR_DATA") or (Path.home() / ".findr")) / STARTING_FILE).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def serve(f, port):
+    """f: the Finder, or a function that makes it. With a function the port opens first and the index and the models load
+    behind it (LOADED); a request that needs them waits"""
+    make = f if callable(f) and not hasattr(f, "search") else None
+    if make is None:
+        LOADED.set()
     _stage_timers()
     try:   # a cap on the engine's threads from the start (engine_threads): one logical core stays with the person
         n = engine_threads()
@@ -3388,8 +3478,17 @@ def serve(f, port):
 
         def _get(self):
             set_lang(parse_qs(urlparse(self.path).query).get("lang", [""])[0])   # every request sets it: Korean unless lang=en
-            if urlparse(self.path).path == "/healthz":   # for the watchdog: says nothing but "ok"
-                return self.reply(200, b"ok", "text/plain")
+            if urlparse(self.path).path == "/healthz":   # for the watchdog: "ok", with this engine's version and start
+                if parse_qs(urlparse(self.path).query).get("json"):
+                    return self.reply(200, json.dumps({"ok": True, **health()}).encode(), "application/json")
+                h_ = health()
+                self.send_response(200); self.send_header("Content-Type", "text/plain")
+                for k_, v_ in (("X-Findr-Version", h_["version"]), ("X-Findr-Started", h_["started"]), ("X-Findr-Pid", h_["pid"]),
+                               ("X-Findr-Loaded", int(h_["loaded"]))):
+                    self.send_header(k_, str(v_))
+                for k_, v_ in SEC_HEADERS:
+                    self.send_header(k_, v_)
+                self.send_header("Content-Length", "2"); self.end_headers(); self.wfile.write(b"ok"); return
             if urlparse(self.path).path == "/ready":   # 'answers' is not 'ready' (#68): the page says so while the engine warms up
                 return self.reply(200, json.dumps({"ready": READY.is_set()}).encode(), "application/json")
             if urlparse(self.path).path == "/canopen":   # the page shows 열기 / 폴더 only in a browser on this PC
@@ -3435,7 +3534,8 @@ def serve(f, port):
                     self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Cache-Control", "no-store")
                     self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
                 self.send_response(401); self.end_headers(); return
-            if not self.authed():
+            # the page itself shows at once and says the engine is getting ready (/ready); what needs the index waits
+            if not self.authed() or (urlparse(self.path).path not in ("/", "/index.html") and not self.loaded()):
                 return
             try:
                 self.route()
@@ -3713,8 +3813,16 @@ def serve(f, port):
                 body = (pg.read_text(encoding="utf-8") if pg.exists() else PAGE).encode(); ct = "text/html; charset=utf-8"
             self.reply(200, body, ct)
 
+        def loaded(self):
+            """the index and the models are in; else wait for them (the port opens before they load), or say 503"""
+            if LOADED.wait(LOAD_WAIT) and make_err[0] is None:
+                return True
+            self.reply(503, json.dumps({"error": M("검색 엔진을 준비하는 중입니다. 잠시 후 다시 시도해 주세요.", "The search engine is getting ready. Please try again in a moment."),
+                                        "results": []}, ensure_ascii=False).encode(), "application/json; charset=utf-8")
+            return False
+
         def _post(self):
-            if not self.authed():
+            if not self.authed() or not self.loaded():
                 return
             if self.headers.get("X-Findr") == "1" and urlparse(self.path).path == "/embed":
                 # document vectors for the indexer, from the encoder this engine already holds: one copy of the model on the
@@ -3841,6 +3949,33 @@ def serve(f, port):
     watch_parent(httpd.shutdown)
     if os.environ.get("FINDR_READY_LINE"):
         print(os.environ["FINDR_READY_LINE"], flush=True)
+    make_err = [None]
+
+    def load():
+        """the index and the models, behind the open port; a load that fails ends the engine as it did before the port"""
+        nonlocal f
+        t = time.time()
+        try:
+            f = make()
+        except BaseException as e:   # noqa: BLE001
+            make_err[0] = e
+            traceback.print_exc()
+            LOADED.set()
+            threading.Thread(target=httpd.shutdown, daemon=True).start()
+            return
+        finally:
+            _starting_done()
+        print(f"FINDR_LOADED {time.time() - t:.1f}s", flush=True)
+        LOADED.set()
+        start_warm()
+        idle_watch(lambda: f)
+
+    def start_warm():
+        if os.environ.get("FINDR_WARM", "1") != "1":
+            READY.set()
+            return
+        threading.Thread(target=warm, daemon=True).start()
+
     if os.environ.get("FINDR_WARM", "1") == "1":   # the first question loaded the reranker and GPU kernels: 2.3 s instead of 0.2 s
         def warm():
             try:
@@ -3861,13 +3996,18 @@ def serve(f, port):
                 print(f"FINDR_WARM failed {type(e).__name__}", flush=True)
             finally:
                 READY.set()
-        threading.Thread(target=warm, daemon=True).start()
+    if make is not None:
+        threading.Thread(target=load, daemon=True, name="findr-load").start()
     else:
-        READY.set()
+        _starting_done()
+        start_warm()
+        idle_watch(lambda: f)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:   # Ctrl+C: one line, not a traceback (#67); the helper servers stop with the process
         print("검색 화면을 껐습니다.", flush=True)
+    if make_err[0] is not None:
+        raise make_err[0]
 
 
 def main():

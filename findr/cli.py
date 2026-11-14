@@ -172,8 +172,32 @@ def _check_runtime():
     return ""
 
 
+ENC_LINE = "FINDR_ENCODER_CHOSEN "
+
+
+def _encoder_apart():
+    """_encoder() in a short-lived process of its own: choosing loads torch (models.gpu), and `findr index` then held it
+    (about 0.4 GB) for the whole run while its indexer child did the work (#198). What the child prints (a download, the
+    Apple GPU check) is passed on; its last line is the choice. The child failing: chosen here, as before"""
+    code = f"import sys; from findr import cli; e = cli._encoder(); sys.stdout.flush(); print({ENC_LINE!r} + e, flush=True)"
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(x for x in (str(Path(__file__).resolve().parent.parent), os.environ.get("PYTHONPATH")) if x)}
+    try:
+        p = subprocess.run([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", env=env, timeout=3600)
+        got = ""
+        for ln in (p.stdout or "").splitlines():
+            if ln.startswith(ENC_LINE):
+                got = ln[len(ENC_LINE):].strip()
+            else:
+                print(ln, flush=True)
+        if p.returncode == 0 and got:
+            return got
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return _encoder()
+
+
 def cmd_index(a):
-    enc = _encoder()
+    enc = _encoder_apart()
     env = {**os.environ}
     if not a.deep:
         env.setdefault("FINDR_FIRST_PIECES", str(FIRST_PIECES))
@@ -405,6 +429,7 @@ def cmd_serve(a):
         print(L("아직 색인이 없습니다. 먼저:  findr index", "No index yet. First:  findr index")); return 1
     import signal
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # a polite stop still ends the helper servers (atexit)
+    _mark_starting(a.port)
     dev, gb, _ = models.plan()
     ls = models.llama_server()
     side = []
@@ -434,7 +459,6 @@ def cmd_serve(a):
     os.environ.setdefault("FINDR_ENCODER", _encoder())   # the planned encoder, for an index still being built (#9)
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     import search
-    f = search.Finder(str(a.db))
     if photo_url:   # photos get their meaning vectors in the background, newest first; search works meanwhile
         def photos():
             import sqlite3
@@ -458,8 +482,24 @@ def cmd_serve(a):
         print(L(f"  함께 켜진 기능: {', '.join(side) or '기본 검색만'}   |  끝내려면 Ctrl+C", f"  Also running: {', '.join(side_en) or 'basic search only'}   |  Ctrl+C to quit"))
     if not a.no_browser and not a.app:
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()
-    search.serve(f, a.port)
+    # the port opens first and the models load behind it: an engine restarted after a forced stop answered only once
+    # torch and every model were in (16-24 s, #198). Questions asked meanwhile wait for the load; /ready says when
+    search.serve(lambda: search.Finder(str(a.db)), a.port)
     return 0
+
+
+STARTING_FILE = "engine_starting.json"   # index.STARTING_FILE: the indexer waits for an engine that says it is starting
+
+
+def _mark_starting(port):
+    """say in the data folder that an engine is starting (removed once its models are in, or when it ends): an indexer
+    started meanwhile waits for it instead of loading its own copy of the model (index.EngineEncoder.connect)"""
+    f = Path(os.environ.get("FINDR_DATA") or paths.HOME) / STARTING_FILE
+    try:
+        f.write_text(json.dumps({"pid": os.getpid(), "port": port, "t": time.time()}), encoding="utf-8")
+        atexit.register(lambda: f.unlink(missing_ok=True))
+    except OSError:
+        pass
 
 
 def cmd_mcp(a):

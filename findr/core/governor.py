@@ -58,6 +58,41 @@ def profile(dev=None, gpu_gb=None):
             "gpu_gb": round(gpu_gb, 1)}
 
 
+def ram_total_gb():
+    """this PC's memory in GB (None when it cannot be read)"""
+    ps = _psutil()
+    try:
+        return ps.virtual_memory().total / 2**30 if ps else None
+    except Exception:   # noqa: BLE001
+        return None
+
+
+def give_back():
+    """hand memory a dropped model held back to the system now: the models hold reference cycles (only the collector frees
+    them), and the C allocator keeps freed pages otherwise. e5-small on a Mac CPU (11-14): 1,254 MB held, 1,254 after the
+    last reference went, 942 after the collector, 733 after the allocator's relief. Every step is best effort"""
+    import gc
+    gc.collect()
+    t = sys.modules.get("torch")
+    try:
+        if t is not None and t.cuda.is_available():
+            t.cuda.empty_cache()
+        if t is not None and getattr(t.backends, "mps", None) is not None and t.backends.mps.is_available():
+            t.mps.empty_cache()
+    except Exception:   # noqa: BLE001
+        pass
+    import ctypes
+    try:
+        if sys.platform.startswith("linux"):
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        elif sys.platform == "darwin":
+            ctypes.CDLL("/usr/lib/libSystem.B.dylib").malloc_zone_pressure_relief(None, 0)
+        elif os.name == "nt":
+            ctypes.CDLL("ucrtbase")._heapmin()
+    except (OSError, AttributeError):
+        pass
+
+
 def mem_available_gb():
     """memory that can still be had now, inside a container's limit as well (WSL services, Docker, the low-memory test)"""
     ps = _psutil()

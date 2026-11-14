@@ -196,9 +196,50 @@ def measure(model):
             "gpu_max_s": round(gpu_max, 4), "diff": round(diff, 4), "probe_s": round(probe_s, 4)}
 
 
+BUSY_FREE_GB = 2.0    # the measurement takes 0.75 GB for 41 s (8 GB laptop, #198): not with less than this free
+BUSY_LOOK = 60       # seconds between looks while the PC is busy
+BUSY_MAX = 6 * 3600  # still busy after this long: not measured in this run (the next start tries again)
+
+
+def _free_gb():
+    try:
+        from governor import mem_available_gb
+        return mem_available_gb()
+    except Exception:   # noqa: BLE001
+        return None
+
+
+def indexing():
+    """an indexer of this data folder is running (its progress.json is not 'done', recent, and its process is alive)"""
+    try:
+        p = json.loads((data_dir() / "progress.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(p, dict) or not p.get("stage") or p.get("stage") == "done" or time.time() - float(p.get("t") or 0) > 900:
+        return False
+    try:
+        import psutil
+        return psutil.pid_exists(int(p.get("pid") or 0))
+    except ImportError:
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def busy():
+    """why the measurement waits now ('' when it need not): indexing runs, or memory is short"""
+    if indexing():
+        return "indexing"
+    free = _free_gb()
+    if free is not None and free < BUSY_FREE_GB:
+        return f"{free:.1f} GB free"
+    return ""
+
+
 def check(model, wait=False):
     """measure in a separate process and keep the verdict. With wait=False it runs in the background (the engine goes on on
-    the CPU); returns the verdict when waited for"""
+    the CPU), and only once the PC is not busy (busy): while indexing ran or memory was short it took 0.75 GB for 41 s on
+    an 8 GB laptop (#198). Returns the verdict when waited for"""
     if not available() or decided(model) is not None:
         return None
     cmd = [sys.executable, str(Path(__file__).resolve()), "measure", str(model)]
@@ -222,10 +263,24 @@ def check(model, wait=False):
         print(f"FINDR_DML {r['use']} ({r['why']})", flush=True)
         return r
 
+    def later():
+        t0, said = time.time(), False
+        while True:
+            why = busy()
+            if not why:
+                return run()
+            if time.time() - t0 >= BUSY_MAX:
+                print(f"FINDR_DML not measured in this run ({why}): the next start tries again", flush=True)
+                return None
+            if not said:
+                said = True
+                print(f"FINDR_DML measurement waits ({why})", flush=True)
+            time.sleep(BUSY_LOOK)
+
     if wait:
         return run()
     import threading
-    threading.Thread(target=run, daemon=True, name="findr-dml-check").start()
+    threading.Thread(target=later, daemon=True, name="findr-dml-check").start()
     return None
 
 
