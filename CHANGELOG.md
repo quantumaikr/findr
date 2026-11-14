@@ -12,6 +12,8 @@
 - 스캔 PDF: 깊은 읽기는 앞 3쪽이 아니라 `FINDR_DEEP_READ_PAGES`(기본 200쪽)·`FINDR_DEEP_READ_SECONDS`(기본 180초)까지 OCR하고, `ocr: {pages_read, pages_total}`로 몇 쪽 중 몇 쪽을 읽었는지 알림. 색인은 그대로 한도를 지키며 깊은 계산의 쪽 수만 `FINDR_OCR_DEEP_PAGES`(기본 50)로 바꿀 수 있음
 - HEIC: 깊은 읽기에서 OCR. pillow-heif(findr 의존성)가 없으면 macOS는 sips로 바꿔 읽고, 둘 다 없으면 설치 안내를 돌려 줌
 - docx 쪽수: `docProps/app.xml`의 `<Pages>`를 `pages`로, 없으면 글자 수로 어림해 `pages_estimated: true`로 표시
+## 이번 판 (미출시)
+- 파일 사이의 관계(#203): MCP 도구 `file_relations`와 `findr relations 경로`(JSON)가 (1) 파일별 본문의 특징 낱말(이미 읽어 둔 글의 tf-idf, 조사를 뗀 낱말), (2) 안정적인 파일 id와 버전 묶음 id, (3) 경로로 찾는 같은 내용 사본(sha1)을 돌려줌. 파일 id는 다시 색인하거나 그 자리에서 고치거나 옮기거나 이름을 바꿔도 같고, 사본은 새 id를 가짐. 버전 묶음 id는 `versions`가 보여 주는 묶음(비슷한 파일 제외)을 따름. `versions`의 결과에는 `file_id`·`family_id`가 더해졌을 뿐 기존 항목은 그대로. 색인 파일은 표 3개(`file_uid`, `file_uid_gone`, `file_terms`)를 처음 쓸 때 만들어 그 자리에서 올라가며 다시 읽지 않음
 
 ## 0.2.23 (2026-11-13)
 0.2.22는 Windows 설치 파일을 만들지 못해 배포하지 않았고, 그 내용을 모두 이 판에 담았습니다.

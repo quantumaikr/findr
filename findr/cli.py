@@ -509,6 +509,14 @@ def cmd_mcp(a):
     return 0
 
 
+def cmd_relations(a):
+    """what ties one indexed file to others, as JSON: characteristic words, stable file id, version-family id, same-content copies"""
+    from .mcp_server import file_relations
+    r = file_relations(os.path.abspath(os.path.expanduser(a.path)) if os.path.exists(os.path.expanduser(a.path)) else a.path, a.terms)
+    print(json.dumps(r, ensure_ascii=False))
+    return 1 if "error" in r else 0
+
+
 def _ask_engine(q, k):
     """the search engine already running for this data folder answers: the same path, numbers and speed as the page, and no
     second copy of the models in memory (#66, #67, #68: ask took 14-29 s and ranked differently). None when it is not up,
@@ -779,6 +787,9 @@ def main(argv=None):
     s.set_defaults(fn=cmd_serve)
     s = sub.add_parser("roots", help=L("PC 전체 색인 때 볼 폴더 목록 (JSON)", "the folders a whole-PC index covers (JSON)")); s.set_defaults(fn=cmd_roots)
     s = sub.add_parser("mcp", help=L("AI 도구(Claude 등)에 findr 연결: MCP 서버 (stdio)", "connect findr to AI tools (Claude and others): MCP server (stdio)")); s.set_defaults(fn=cmd_mcp)
+    s = sub.add_parser("relations", help=L("파일 하나의 관계 (JSON): 특징 낱말, 안정적인 파일 id, 버전 묶음 id, 같은 내용 사본",
+                                           "how one file relates to others (JSON): characteristic words, stable file id, version-family id, same-content copies"))
+    s.add_argument("path"); s.add_argument("--terms", type=int, default=10); s.set_defaults(fn=cmd_relations)
     s = sub.add_parser("ask", help=L("터미널에서 찾기 (검색 화면이 켜져 있으면 그 엔진에 물음)", "search from the terminal (asks the running engine when the search page is open)")); s.add_argument("query", nargs="+")
     s.add_argument("-k", type=int, default=5)
     s.add_argument("--local", action="store_true", help=L("켜진 엔진을 쓰지 않고 모델을 직접 불러오기", "load the models here instead of asking the running engine")); s.set_defaults(fn=cmd_ask)
