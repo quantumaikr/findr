@@ -668,6 +668,8 @@ def progress(stage, done, total, **kw):
             st[stage] = "now"
     p = {"stage": stage, "done": done, "total": total, "t": time.time(), "pid": os.getpid(), "started": _P["started"],
          "stages": st, "files": _P.get("files"), "paused": _P.get("paused", False), **kw}
+    if _P.get("memwait"):   # waiting for memory (memory_wait): the reason the numbers stand still
+        p["memwait"] = _P["memwait"]
     try:
         f = Path(d, "progress.json"); tmp = f.with_suffix(".tmp")
         tmp.write_text(json.dumps(p), encoding="utf-8"); os.replace(tmp, f)   # a reader never sees half a file
@@ -697,8 +699,15 @@ def tick(stage, done, total, every=0.7, **kw):
 
 MEM_LOW_GB = 0.8     # free memory below this: the indexer lets go of what it can and waits (the engine and the person first)
 MEM_BACK_GB = 2.0    # ... and goes on once this much is free again
+# on 12 GB or less, 2 GB free never came back while the engine ran: an 8 GB laptop has about 1.5 GB free with the engine up
+# (cli._lane2), and the meaning stage waited at 0% for about 4 minutes, going on only when the engine stopped (#198)
+MEM_BACK_SMALL_GB = 1.2
+SMALL_RAM_GB = 12.5  # a PC sold as 12 GB reports a little less
 MEM_WAIT_MAX = 900   # never waits longer than this at a time: memory another program keeps forever does not stop indexing
-_RELEASE = []        # what the indexer can let go of under memory pressure (its own encoder); taken up again when needed
+MEM_WAIT_LIGHT = 120  # ... and not this long when the indexer held no model: its waiting frees nothing of its own
+MEM_BEAT = 30        # a waiting indexer says so in progress.json this often (the page drops a line older than 15 minutes)
+_RELEASE = []        # what the indexer can let go of under memory pressure (its own encoder); taken up again when needed.
+# Each returns True when it let go of something it held
 
 
 def mem_free_gb():
@@ -710,27 +719,61 @@ def mem_free_gb():
         return None
 
 
+def ram_gb():
+    """this PC's memory in GB (None when it cannot be read)"""
+    try:
+        from governor import ram_total_gb
+        return ram_total_gb()
+    except Exception:   # noqa: BLE001
+        return None
+
+
+def mem_back_gb():
+    """free memory at which a waiting indexer goes on: FINDR_MEM_BACK_GB, else 1.2 GB on PCs with 12 GB or less, else 2 GB.
+    Never at or below MEM_LOW_GB (it would stop again at once)"""
+    try:
+        v = float(os.environ.get("FINDR_MEM_BACK_GB") or 0)
+    except ValueError:
+        v = 0
+    if v <= 0:
+        ram = ram_gb()
+        v = MEM_BACK_SMALL_GB if ram and ram < SMALL_RAM_GB else MEM_BACK_GB
+    return max(v, MEM_LOW_GB + 0.1)
+
+
 def memory_wait():
     """when the PC is nearly out of memory: let go of the indexer's own model, and wait until memory is back. Holding alone
     frees nothing (a held process keeps what it holds, measured in a 3 GB limit); letting go of the model does, and not
-    reading more files keeps the indexer from pushing the PC into paging while the person works (field, 16 GB laptop)"""
+    reading more files keeps the indexer from pushing the PC into paging while the person works (field, 16 GB laptop).
+    The wait is in progress.json (memwait), so the app and the page can say why indexing does not move"""
     free = mem_free_gb()
     if free is None or free >= MEM_LOW_GB:
         return
+    held = False
     for f in list(_RELEASE):
         try:
-            f()
+            held = bool(f()) or held
         except Exception:   # noqa: BLE001
             pass
     import gc
     gc.collect()
-    print(f"FINDR_MEMWAIT {free:.1f} GB free: indexing waits for memory", flush=True)
-    t0 = time.time()
-    while time.time() - t0 < MEM_WAIT_MAX:
-        time.sleep(5)
-        free = mem_free_gb()
-        if free is None or free >= MEM_BACK_GB:
-            break
+    back = mem_back_gb()
+    most = MEM_WAIT_MAX if held else MEM_WAIT_LIGHT
+    print(f"FINDR_MEMWAIT {free:.1f} GB free: indexing waits for memory (until {back:.1f} GB, at most {most}s)", flush=True)
+    t0 = beat = time.time()
+    _P["memwait"] = {"free_gb": round(free, 2), "back_gb": round(back, 2), "since": t0, "max_s": most}
+    _repeat_progress()
+    try:
+        while time.time() - t0 < most:
+            time.sleep(5)
+            free = mem_free_gb()
+            if free is None or free >= back:
+                break
+            if time.time() - beat >= MEM_BEAT:
+                beat = time.time(); _P["memwait"]["free_gb"] = round(free, 2); _repeat_progress()
+    finally:
+        _P.pop("memwait", None)
+        _repeat_progress()
     print(f"FINDR_MEMBACK {free if free is not None else 0:.1f} GB free after {time.time() - t0:.0f}s", flush=True)
 
 
@@ -836,7 +879,7 @@ def _repeat_progress():
         last = json.loads(Path(d, "progress.json").read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         last = {"stage": "names", "done": 0, "total": 0}
-    kw = {k: v for k, v in last.items() if k not in ("stage", "done", "total", "t", "pid", "started", "stages", "files", "paused")}
+    kw = {k: v for k, v in last.items() if k not in ("stage", "done", "total", "t", "pid", "started", "stages", "files", "paused", "memwait")}
     progress(last.get("stage", "names"), last.get("done", 0), last.get("total", 0), **kw)
 
 
@@ -1810,20 +1853,39 @@ class EngineEncoder:
                     "Content-Type": "application/json"}
 
     @classmethod
-    def connect(cls, name):
+    def connect(cls, name, wait=None):
+        """the engine, or None. An engine still starting (engine_starting) is waited for, up to embed_wait() seconds: the
+        indexer that gave up at once loaded its own copy of the model next to the engine's (0.7-1.1 GB, #198)"""
         if os.environ.get("FINDR_EMBED_VIA", "auto") == "local" or not name:
             return None
+        import urllib.error
         d = os.environ.get("FINDR_DATA")
-        try:
-            pw = Path(d, ".password").read_text().strip() if d else ""
-        except OSError:
-            return None
-        e = cls(f"http://127.0.0.1:{os.environ.get('FINDR_APP_PORT') or 8096}", pw, name)
-        try:
-            e.vectors(["준비"])
-            return e
-        except Exception:   # noqa: BLE001  (no engine, another encoder, an old engine without /embed)
-            return None
+        port = int(os.environ.get("FINDR_APP_PORT") or 8096)
+        wait, explicit = (embed_wait() if wait is None else wait), bool(os.environ.get("FINDR_EMBED_WAIT")) or wait is not None
+        t0, said = time.time(), False
+        while True:
+            try:
+                pw = Path(d, ".password").read_text().strip() if d else ""
+            except OSError:
+                pw = None   # a first start makes the password file
+            if pw is not None:
+                e = cls(f"http://127.0.0.1:{port}", pw, name)
+                try:
+                    e.vectors(["준비"])
+                    if said:
+                        print(f"FINDR_EMBED_WAIT the engine is up after {time.time() - t0:.0f}s", flush=True)
+                    return e
+                except urllib.error.HTTPError as x:   # it answered: another encoder (409), an old engine without /embed
+                    if x.code != 503:
+                        return None
+                except Exception:   # noqa: BLE001  (no engine yet)
+                    pass
+            if time.time() - t0 >= wait or not (explicit or engine_starting(port)):
+                return None
+            if not said:
+                said = True
+                print(f"FINDR_EMBED_WAIT the engine is starting: waiting up to {wait:.0f}s instead of loading a second copy", flush=True)
+            time.sleep(EMBED_WAIT_STEP)
 
     def vectors(self, texts):
         import base64
@@ -1838,6 +1900,44 @@ class EngineEncoder:
             r = json.loads(urllib.request.urlopen(req, timeout=300).read())
             out.append(np.frombuffer(base64.b64decode(r["vecs"]), np.float16).reshape(-1, r["dim"]))
         return np.concatenate(out) if out else np.zeros((0, 1), np.float16)
+
+
+EMBED_WAIT_START = 180   # seconds a starting engine is waited for: a forced restart came back in 16-24 s (#198); a slow PC's
+# first start loads torch and the models for a minute or more
+EMBED_WAIT_STEP = 2
+STARTING_FILE = "engine_starting.json"   # written by `findr serve` at its start, removed once its models are loaded
+
+
+def embed_wait():
+    """seconds to wait for the engine: FINDR_EMBED_WAIT (0: never), else EMBED_WAIT_START, used only while an engine says it
+    is starting"""
+    try:
+        return max(0.0, float(os.environ.get("FINDR_EMBED_WAIT") or EMBED_WAIT_START))
+    except ValueError:
+        return float(EMBED_WAIT_START)
+
+
+def engine_starting(port=None, now=None):
+    """an engine of this data folder is starting: its mark is there, recent, for this port, and its process is alive"""
+    d = os.environ.get("FINDR_DATA")
+    if not d:
+        return False
+    try:
+        m = json.loads(Path(d, STARTING_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    now = time.time() if now is None else now
+    if not isinstance(m, dict) or now - float(m.get("t") or 0) > max(EMBED_WAIT_START, embed_wait()) + 60:
+        return False   # an engine that died while starting left its mark behind
+    if port is not None and m.get("port") and int(m["port"]) != int(port):
+        return False
+    try:
+        import psutil
+        return psutil.pid_exists(int(m.get("pid") or 0))
+    except ImportError:
+        return True
+    except (ValueError, TypeError):
+        return False
 
 
 def _meta_encoder(con):
@@ -1909,8 +2009,14 @@ def embed(con, model, names_only=False):
         if eng is not None:
             try:
                 return eng.vectors(texts)
-            except Exception as e:   # noqa: BLE001  (the engine stopped or was restarted): carry on with our own copy
-                print(f"FINDR_EMBED engine gone ({type(e).__name__}): this run computes its own vectors", flush=True); eng = None
+            except Exception as e:   # noqa: BLE001  (the engine stopped or was restarted): one that comes back is waited
+                eng = EngineEncoder.connect(name)   # for (engine_starting); else carry on with our own copy
+                if eng is not None:
+                    try:
+                        return eng.vectors(texts)
+                    except Exception:   # noqa: BLE001
+                        eng = None
+                print(f"FINDR_EMBED engine gone ({type(e).__name__}): this run computes its own vectors", flush=True)
         if enc is None:
             enc = local()
         import torch
@@ -1924,13 +2030,27 @@ def embed(con, model, names_only=False):
 
     def let_go():
         nonlocal enc
-        enc = None   # vecs() loads it again when the next batch needs it
+        held, enc = enc is not None, None   # vecs() loads it again when the next batch needs it
+        return held
 
     if eng is None:
         enc = local()
     _RELEASE.append(let_go)
+    try:
+        _embed_batches(con, groups, n_rows, later, name, names_only, eng, vecs)
+    finally:
+        # the model goes with the stage: the names stage's copy stayed through reading every file's content (0.9 GB on an
+        # 8 GB laptop, #198); the next stage loads it again only when it has pieces to embed
+        if let_go in _RELEASE:
+            _RELEASE.remove(let_go)
+        if let_go():
+            from governor import give_back
+            give_back()
+
+
+def _embed_batches(con, groups, n_rows, later, name, names_only, eng, vecs):
     print(f"FINDR_EMBED_VIA {'engine' if eng is not None else 'local'} ({name})", flush=True)
-    uniq = list(groups.values()); del groups   # [chunk ids with one input], in the order above
+    uniq = list(groups.values()); groups.clear()   # [chunk ids with one input], in the order above
     t0 = last = time.time(); warned = False
     stage = "namevec" if names_only else "meaning"
     progress(stage, 0, len(uniq))   # the stage shows at once, not after its first batch
@@ -1954,8 +2074,6 @@ def embed(con, model, names_only=False):
                 print("FINDR_SLOW 이 PC에서는 큰 모델이 느립니다. 작은 모델로 바꾸면 훨씬 빨라집니다:  findr setup --lite", flush=True)
     con.commit(); print(f"FINDR_EMBED {n_rows} chunks {time.time() - t0:.0f}s (computed {len(uniq)}, identical skipped {n_rows - len(uniq)}"
                         + (f", later pieces left for a deep run {later})" if later else ")"))
-    if let_go in _RELEASE:
-        _RELEASE.remove(let_go)
 
 
 def user_idle_seconds():

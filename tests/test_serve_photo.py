@@ -26,6 +26,7 @@ def _run(monkeypatch, tmp_path, alive):
     monkeypatch.setattr(models, "have", lambda f: f == "kanana-2-v-decide-3b-2611")
     monkeypatch.setattr(paths, "MODELS", tmp_path / "models")
     monkeypatch.setattr(paths, "LOGS", tmp_path)
+    monkeypatch.setenv("FINDR_DATA", str(tmp_path))   # the engine's starting mark goes here, not in the real data folder
     monkeypatch.setattr(cli, "_start", lambda name, cmd, log, env=None: _Proc(alive))
     monkeypatch.setattr(cli, "_wait", lambda *a, **k: pytest.fail("serve waited for the photo server"))
     monkeypatch.setattr(cli.time, "sleep", lambda s: None)
@@ -37,7 +38,7 @@ def _run(monkeypatch, tmp_path, alive):
 
     monkeypatch.setattr(cli, "_engine_env", engine_env)
     with pytest.raises(_Stop):
-        cli.cmd_serve(types.SimpleNamespace(db=db, no_llm=True, no_photo=False))
+        cli.cmd_serve(types.SimpleNamespace(db=db, no_llm=True, no_photo=False, port=8096))
     return got["photo_url"]
 
 
