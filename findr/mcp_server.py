@@ -374,12 +374,60 @@ def _secret(p):
         return False
 
 
-def _denied(p, roots=None):
-    """True for a path in or under the data folder or a FINDR_MCP_DENY folder ('..' cannot step out of the check), or a file
-    the secret rules mark"""
+_VIA = {}   # the index's rows read through a link: their path (_via_key) -> the path the link led to then (index.via_column)
+
+
+def _via_key(p):
+    return _norm(p).casefold()
+
+
+def _load_via(con):
+    """_VIA from the index, at each tool call (an index from before the column: none known)"""
+    _VIA.clear()
+    try:
+        for p, v in con.execute("SELECT path, via FROM files WHERE via IS NOT NULL"):
+            _VIA[_via_key(p)] = v
+    except sqlite3.Error:
+        pass
+
+
+def _under(child, parent):
+    c, d = _canon(child), _canon(parent)
+    return c == d or c.startswith(d.rstrip("/") + "/")
+
+
+def _link_hidden(p, roots):
+    """a row the index read through a link (red-team 0.2.26: a link into a deny folder, replaced by a plain file after
+    indexing, kept serving the denied file's text): never shown unless the path is still that very link, it leads where
+    it led when read, and that is inside the link's own folder and allowed (not the data folder, a deny folder or a secret
+    file). The simple safe rule: its stored text is the target's, so the target must be one the tools may show"""
+    for f in _path_forms(str(p)):
+        via = _VIA.get(_via_key(f))
+        if via is None:
+            continue
+        try:
+            if not os.path.islink(f):
+                return True   # no longer a link (replaced, removed): the stored text is another file's
+            from .core import samepath
+            now = samepath.unfirm(os.path.realpath(f))
+        except (OSError, ValueError):
+            return True
+        if _canon(now) != _canon(via):
+            return True   # leads elsewhere now
+        if not _under(via, os.path.dirname(os.path.abspath(f))):
+            return True   # leads out of its own folder
+        return _denied(via, roots, links=False)
+    return False
+
+
+def _denied(p, roots=None, links=True):
+    """True for a path in or under the data folder or a FINDR_MCP_DENY folder ('..' cannot step out of the check), a file
+    the secret rules mark, or a row read through a link that may not be shown (_link_hidden)"""
     if not p:
         return False
     roots = _deny_roots() if roots is None else roots
+    if links and _VIA and _link_hidden(p, roots):
+        return True
     for f in _path_forms(str(p)):
         c = _canon(f)
         if any(c == r or c.startswith(r.rstrip("/") + "/") for r in roots):
@@ -402,6 +450,7 @@ def _db():
     from .core import samepath
     samepath.clear()
     roots = _deny_roots()
+    _load_via(con)
     con.create_function("denied", 1, lambda s: 1 if _denied(s, roots) else 0, deterministic=True)
     return con
 

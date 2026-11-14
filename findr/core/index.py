@@ -1026,6 +1026,16 @@ WAL_LIMIT = 64 * 2 ** 20   # bytes the write-ahead file keeps after a checkpoint
 _RUN = {"con": None}
 
 
+def via_column(con):
+    """files.via: for a file read through a link (a symbolic link the walk met as a file), the path it led to then (links
+    resolved), NULL for any other file. Added to an older index here; its links are read again at the next walk, which
+    notes their targets (a row whose link is already gone cannot be told). The AI tools (mcp_server) never serve such a row's stored text unless
+    the path is still that same link and it leads inside its own folder, outside the deny folders (red-team 0.2.26: a link
+    into a deny folder, replaced by a plain file after indexing, kept serving the denied file's text)"""
+    if "via" not in [r[1] for r in con.execute("PRAGMA table_info(files)")]:
+        con.execute("ALTER TABLE files ADD COLUMN via TEXT")
+
+
 def wal_trim(con):
     """after a large write: move the write-ahead file into the index and cut it to nothing (best effort: a reader in the
     middle of a question keeps its part until the next time)"""
@@ -1124,6 +1134,7 @@ def _main():
         con.execute("ALTER TABLE files ADD COLUMN pending INT DEFAULT 0")
     if "emb2" not in [r[1] for r in con.execute("PRAGMA table_info(chunks)")]:   # the larger model's vectors, filled in idle time
         con.execute("ALTER TABLE chunks ADD COLUMN emb2 BLOB")
+    via_column(con)
     con.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
     if not con.execute("SELECT 1 FROM meta WHERE key='nfc'").fetchone():   # an index made before NFC: moved once (#12)
         start = int((con.execute("SELECT value FROM meta WHERE key='nfc_upto'").fetchone() or ["0"])[0])   # an interrupted move goes on from here
@@ -1280,6 +1291,7 @@ def _main():
         seen, t0, new = set(), time.time(), 0
         pre = root.as_posix().rstrip("/") + "/"   # several roots share one db: only this root's files can be "gone"
         known = {r[0]: (r[1], r[2], r[3], r[4]) for r in con.execute("SELECT path,size,mtime,id,tier FROM files WHERE path LIKE ? ESCAPE '\\'", (like_pre(pre),))}
+        known_via = dict(con.execute("SELECT path, via FROM files WHERE via IS NOT NULL AND path LIKE ? ESCAPE '\\'", (like_pre(pre),)).fetchall())
         unread = []   # folders the walk could not open: counted, never silent
         for dpl, dns, fns in os.walk(_long(str(root)), onerror=unread.append):
             dp = _short(dpl)
@@ -1328,8 +1340,9 @@ def _main():
                     continue
                 seen.add(s)
                 tick("names", k, len(roots), scanned=scanned + len(seen), folder=_short(dpl)[len(str(root)):].lstrip("/\\")[:80] or root.name)
+                via = None   # a link: where it leads, kept with the row (what was read is that file's text)
                 if os.path.islink(os.path.join(dpl, fn)):   # a link: where it leads decides too
-                    t_ = samepath.unfirm(os.path.realpath(os.path.join(dpl, fn)))
+                    t_ = via = samepath.unfirm(os.path.realpath(os.path.join(dpl, fn)))
                     if samepath.under(t_, excl_ids, follow=False) or left_out(key(Path(t_).as_posix())):
                         continue   # into findr's own folders: not the person's file
                 tr = tier(p)
@@ -1339,14 +1352,15 @@ def _main():
                     tr = tier(p, sniff=True)   # found secret by its first line when read: still so unless that changed
                 if tr in (1, 2) and cloud_only(st):
                     tr = 3   # OneDrive 'online-only': reading it would download it; found by name until it is on the PC
-                if s in known and known[s][0] == st.st_size and abs(known[s][1] - st.st_mtime) < 1 and known[s][3] == tr:
+                if s in known and known[s][0] == st.st_size and abs(known[s][1] - st.st_mtime) < 1 and known[s][3] == tr \
+                        and known_via.get(s) == via:   # (a link made a file, or led elsewhere, is read again)
                     continue   # unchanged (a changed tier rule re-reads the file; compared with the stored tier, so an
                     # online-only file is no longer dropped and added again on every run)
                 if s in known:   # changed: drop old rows
                     fid = known[s][2]
                     drop(con, fid)
-                cur = con.execute("INSERT INTO files(path,name,ext,size,mtime,tier,pending) VALUES(?,?,?,?,?,?,?)",
-                                  (s, nfc(p.name), real_ext(p), st.st_size, st.st_mtime, tr, 1 if tr in (1, 2) else 0))
+                cur = con.execute("INSERT INTO files(path,name,ext,size,mtime,tier,pending,via) VALUES(?,?,?,?,?,?,?,?)",
+                                  (s, nfc(p.name), real_ext(p), st.st_size, st.st_mtime, tr, 1 if tr in (1, 2) else 0, via))
                 fid = cur.lastrowid   # name and folder searchable at once; content comes in its wave
                 cid = con.execute("INSERT INTO chunks(file,n,text) VALUES(?,?,?)", (fid, 0, "")).lastrowid
                 if tr != 0:   # a secret file is not in the word index at all (fts_no_secrets)
@@ -2613,9 +2627,17 @@ def reuse_moved(con, fresh, lost):
         (ofid, otr), (nfid, s, _, _, _, ntr, root) = o[0], n[0]
         if otr != ntr:
             continue   # a different tier now (a library folder, online-only): read as the new file it is
+        try:   # a link's target goes with it (via_column)
+            nvia = (con.execute("SELECT via FROM files WHERE id=?", (nfid,)).fetchone() or [None])[0]
+        except sqlite3.OperationalError:
+            nvia = None
         drop(con, nfid)   # the row the walk just added for it
         name, rel = nfc(Path(s).name), nfc(s[len(root.as_posix()):])
         con.execute("UPDATE files SET path=?, name=? WHERE id=?", (s, name, ofid))
+        try:
+            con.execute("UPDATE files SET via=? WHERE id=?", (nvia, ofid))
+        except sqlite3.OperationalError:
+            pass
         for cid, text in con.execute("SELECT id, text FROM chunks WHERE file=? AND n>=0", (ofid,)).fetchall():
             con.execute("DELETE FROM fts WHERE rowid=?", (cid,))
             con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, name, rel, nfc(text or "")))

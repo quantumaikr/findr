@@ -147,6 +147,65 @@ def test_office_text_is_bounded(tmp_path):
     assert 0 < len(t) <= 5000
 
 
+# ---------------------------------------------------------------- 4. a link's stored text after the link is gone
+def _index(root, home):
+    env = {**os.environ, "FINDR_OCR": "0", "FINDR_ORIGIN": "0", "FINDR_HOME": str(home), "FINDR_DATA": str(home)}
+    r = subprocess.run([sys.executable, str(Path(index.__file__)), "--root", str(root), "--db", str(home / "index.db"), "--no-embed"],
+                       env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+    assert r.returncode == 0, r.stderr[-800:]
+
+
+@pytest.fixture
+def linked(tmp_path, monkeypatch):
+    root = tmp_path / "corpus"; home = tmp_path / "home"
+    (root / "deny").mkdir(parents=True); (root / "visible").mkdir(); home.mkdir()
+    (root / "deny" / "hidden.txt").write_text("quarterly zebraomega report " + V + "\n", encoding="utf-8")
+    (root / "visible" / "near.txt").write_text("nearby walrusfig notes\n", encoding="utf-8")
+    try:
+        (root / "visible" / "linked.txt").symlink_to(root / "deny" / "hidden.txt")
+        (root / "visible" / "inside.txt").symlink_to(root / "visible" / "near.txt")
+    except (OSError, NotImplementedError):
+        pytest.skip("links cannot be made here (Windows without the right)")
+    _index(root, home)
+    monkeypatch.setenv("FINDR_HOME", str(home)); monkeypatch.setenv("FINDR_APP_PORT", "9"); monkeypatch.setenv("FINDR_PORT", "9")
+    monkeypatch.setenv("FINDR_MCP_DENY", str(root / "deny"))
+    import findr.paths
+    importlib.reload(findr.paths)
+    m = importlib.reload(importlib.import_module("findr.mcp_server"))
+    return root, home, m
+
+
+def test_index_notes_where_a_link_led(linked):
+    root, home, m = linked
+    con = sqlite3.connect(home / "index.db")
+    via = dict(con.execute("SELECT name, via FROM files"))
+    assert via["near.txt"] is None and via["linked.txt"] and Path(via["linked.txt"]).name == "hidden.txt"
+
+
+def test_link_replaced_after_indexing_serves_nothing(linked):
+    root, home, m = linked
+    link = root / "visible" / "linked.txt"
+    assert "error" in m.read_file(link.as_posix())   # a link into a deny folder: denied as before
+    link.unlink(); link.write_text("plain visible text\n", encoding="utf-8")   # now a plain file, the index not run again
+    r = m.read_file(link.as_posix())
+    assert "error" in r and V not in str(r)
+    found = m.search_files("zebraomega quarterly", 5)
+    assert V not in str(found) and not any(x["name"] == "linked.txt" for x in found["results"]), found
+    assert not any(x["name"] == "linked.txt" for x in m.list_folder((root / "visible").as_posix())["files"])
+    _index(root, home)   # read again: the plain file's own text
+    m._VIA.clear()
+    assert "plain visible text" in m.read_file(link.as_posix())["text"]
+
+
+def test_link_inside_its_folder_is_still_read(linked):
+    root, home, m = linked
+    r = m.read_file((root / "visible" / "inside.txt").as_posix())
+    assert "walrusfig" in r.get("text", ""), r
+    (root / "visible" / "inside.txt").unlink()
+    (root / "visible" / "inside.txt").symlink_to(root / "visible" / "linked.txt")   # retargeted: stale until read again
+    assert "error" in m.read_file((root / "visible" / "inside.txt").as_posix())
+
+
 # ---------------------------------------------------------------- 5. a YAML block under a long label line
 def test_block_under_a_long_comment_and_a_lone_next_line():
     y = "db:\n  password: |   # " + "c" * 5000 + "\n    " + V + "\n  host: x\n"
@@ -227,3 +286,18 @@ def test_remask_looks_at_text_the_hints_cannot_see(capsys):
     assert V not in "".join(t for (t,) in con.execute("SELECT text FROM chunks"))
 
 
+def test_indexer_keeps_none_of_them(tmp_path):
+    root = tmp_path / "docs"; root.mkdir(); home = tmp_path / "home"; home.mkdir()
+    files = {"accounts.csv": "Site [URL],Username,Password\nbank.example,alice," + V + "a\n",
+             "Makefile": "DB_PASSWORD := " + V + "b\n", "main.go": 'package main\nvar dbPassword string = "' + V + 'c"\n',
+             "notes.txt": "pаssword: " + V + "d\n", "page.html": "<p>password&#58; " + V + "e</p>",
+             "app.yml": "db:\n  password: |   # " + "c" * 400 + "\n    " + V + "f\n"}
+    for n, t in files.items():
+        (root / n).write_text(t, encoding="utf-8")
+    _docx(root / "split.docx", f"<w:p>{_run('Pass')}{_run('word: ' + V + 'g')}</w:p>")
+    _index(root, home)
+    con = sqlite3.connect(home / "index.db")
+    stored = "\n".join(t or "" for (t,) in con.execute("SELECT text FROM chunks"))
+    assert V not in stored, stored
+    tiers = dict(con.execute("SELECT name, tier FROM files"))
+    assert tiers["accounts.csv"] == 0 and tiers["split.docx"] == 1 and tiers["notes.txt"] == 1, tiers
