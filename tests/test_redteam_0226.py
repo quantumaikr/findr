@@ -147,6 +147,15 @@ def test_office_text_is_bounded(tmp_path):
     assert 0 < len(t) <= 5000
 
 
+# ---------------------------------------------------------------- 5. a YAML block under a long label line
+def test_block_under_a_long_comment_and_a_lone_next_line():
+    y = "db:\n  password: |   # " + "c" * 5000 + "\n    " + V + "\n  host: x\n"
+    out = index.mask(y)
+    assert V not in out and "host: x" in out
+    assert V not in index.mask("filler\nclient_secret:\n" + V + "\nnext: line\n")
+    assert index.mask("secrets:\nother_key: 1\n") == "secrets:\nother_key: 1\n"   # a key, not a value
+
+
 # ---------------------------------------------------------------- 6. labels spelled to pass, HTML
 @pytest.mark.parametrize("label", ["pаssword", "ｐａｓｓｗｏｒｄ", "PASS​WORD",
                                    "pass­word", "pаss‍wоrd", "\U0001d429\U0001d41a\U0001d42c\U0001d42c\U0001d430\U0001d428\U0001d42b\U0001d41d",

@@ -305,6 +305,7 @@ def mask(text):
 # line ('password:\n    ...'), a '\' line continuation, and TOML / Python triple-quoted strings (red-team 0.2.25)
 _TRIPLE = re.compile(r"(?P<h>" + _LABEL + _SEP + r"""[ \t]*(?P<q>"{3}|'{3}))(?P<v>[\s\S]{0,20000}?)(?=(?P=q)|\Z)""")
 _TRIPLE_HINT = re.compile(r"""[:=][ \t]*(?:"{3}|'{3})""")
+_LONE_VALUE = re.compile(r"[ \t]*[^\s:=#<>\[\]{}|\-][^\s:=]{3,}")   # one word, not a key ('x:'), a list item or a heading
 _BLOCK_END = set(":=：|>\\+-0123456789")   # how a label line that leaves its value to the next lines ends
 _BLOCK_HEAD = re.compile(r"(?P<ind>[ \t]*)(?:-[ \t]+)?['\"]?" + _LABEL + r"""['"]?[ \t]*(?:::=|:=|\?\?=|\?=|\+=|\|\|=|[:=])[ \t]*(?P<k>[|>][+\-0-9]*|\\)?[ \t]*(?:#.*)?\r?$""")
 
@@ -325,7 +326,9 @@ def _block_mask(text):
     lines, i, hit = text.split("\n"), 0, False
     while i < len(lines) - 1:
         e = lines[i].rstrip()
-        m = _BLOCK_HEAD.match(lines[i]) if e and len(e) < 300 and (e[-1] in _BLOCK_END or "#" in e) else None
+        # any length (red-team 0.2.26: a 300-character comment after 'password: |' passed): the head is matched from the
+        # line's start and the comment after it read once, so a long line costs its length, as the rest of mask does
+        m = _BLOCK_HEAD.match(lines[i]) if e and (e[-1] in _BLOCK_END or "#" in e) else None
         if not m:
             i += 1
             continue
@@ -347,6 +350,10 @@ def _block_mask(text):
                         break
                     lines[j] = ln[:lead] + _HIDE * len(ln.rstrip("\r")[lead:]) + ("\r" if ln.endswith("\r") else ""); hit = True
                 j += 1
+            nxt = lines[i + 1].rstrip("\r") if j == i + 1 else ""
+            if not m.group("k") and _LONE_VALUE.fullmatch(nxt):   # 'client_secret:' and the value alone on the next line,
+                lines[i + 1] = _HIDE * len(nxt) + lines[i + 1][len(nxt):]; hit = True   # not indented (red-team 0.2.26)
+                j = i + 2
         i = j
     return "\n".join(lines) if hit else text
 
@@ -809,7 +816,7 @@ def _stale_block(text):
     """text an older findr stored with a secret's label at a line's end (or its '|' masked) and indented lines under it"""
     lines = text.split("\n")
     return any((_BLOCK_HEAD.match(a) or _STALE_HEAD.match(a)) and b[:1] in (" ", "\t") and b.strip() and b.strip() != "[가림]"
-               for a, b in zip(lines, lines[1:]) if len(a) < 300)
+               for a, b in zip(lines, lines[1:]))
 
 
 def reread_for_new_readers(con):
