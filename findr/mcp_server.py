@@ -85,15 +85,20 @@ def _engine_up():
     return True
 
 
-def _engine_search(query, limit, ask=None):
+ENGINE_ASK = 50   # results asked of the engine for every search, whatever the limit (its most)
+
+
+def _engine_search(query, limit):
     """results from the running engine, or None when it is not up. Results in the data folder or a FINDR_MCP_DENY folder
-    are left out; when some were, the engine is asked once more for a few more, so the answer still holds `limit`"""
+    are left out. The engine is always asked for ENGINE_ASK results, never more when some were left out: how many it was
+    asked for (and its cut of a short list) would otherwise depend on the files left out (red-team 0.2.24: a word only
+    hidden files held most came back as 'nothing matched')"""
     if not _engine_up():
         return None
     op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     import base64
     k = _key()   # the page's password: as the app's cookie and as HTTP Basic (any user name), whichever the engine takes
-    req = urllib.request.Request(f"{ENGINE}/api?" + urllib.parse.urlencode({"q": query, "k": ask or limit, **({"lang": "en"} if lang() == "en" else {})}),
+    req = urllib.request.Request(f"{ENGINE}/api?" + urllib.parse.urlencode({"q": query, "k": max(ENGINE_ASK, limit), **({"lang": "en"} if lang() == "en" else {})}),
                                  headers={"Cookie": f"findr_t={k}", "Authorization": "Basic " + base64.b64encode(f"findr:{k}".encode()).decode()})
     try:
         r = json.loads(op.open(req, timeout=60).read())
@@ -101,14 +106,7 @@ def _engine_search(query, limit, ask=None):
         return None
     got, roots = r.get("results") or [], _deny_roots()
     con = _db()
-    kept = [x for x in got if not _denied(x.get("path"), roots) and _tier_ok(con, x.get("path"))]
-    if len(kept) < len(got) and len(kept) < limit and ask is None and len(got) >= limit:
-        more = _engine_search(query, limit, ask=min(50, limit + 2 * (len(got) - len(kept)) + 5))
-        if more is not None:
-            if con is not None:
-                con.close()
-            return more
-    kept = kept[:limit]
+    kept = [x for x in got if not _denied(x.get("path"), roots) and _tier_ok(con, x.get("path"))][:limit]
     # the engine's p_none and note are computed over its whole list, files left out here included: neither is used
     probs = _reprob(kept)
     out = []

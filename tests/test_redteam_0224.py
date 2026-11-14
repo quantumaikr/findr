@@ -298,3 +298,22 @@ def test_deny_entries_warn_once_and_fail_safe(tmp_path, monkeypatch, capsys):
     assert m._denied(str(deny / "plan.txt"))
     monkeypatch.setenv("FINDR_MCP_DENY", Path(deny).as_uri())
     assert m._denied(str(deny / "plan.txt"))
+
+
+def test_engine_short_list_of_hidden_files_still_shows_the_visible_ones(tmp_path, monkeypatch):
+    """the engine cut its list short (2 of k=3), all hidden: the visible matches further down must still come back"""
+    deny = tmp_path / "denyme"; deny.mkdir()
+    m, data = _mcp(tmp_path, monkeypatch, deny)
+    _index(data, [(tmp_path / "docs" / "beta.txt", "zorblax", 1)])
+
+    class Op:
+        def open(self, req, timeout=0):
+            k = int(dict(x.split("=", 1) for x in req.full_url.split("?", 1)[1].split("&"))["k"])
+            res = [{"name": f"z{i}.txt", "path": (deny / f"z{i}.txt").as_posix(), "ce": 0.7} for i in range(2)]
+            if k > 3:
+                res.append({"name": "beta.txt", "path": (tmp_path / "docs" / "beta.txt").as_posix(), "ce": 0.4})
+            return io.BytesIO(json.dumps({"results": res, "note": ""}).encode())
+    import io
+    monkeypatch.setattr(m, "_engine_up", lambda: True)
+    monkeypatch.setattr(m.urllib.request, "build_opener", lambda *a: Op())
+    assert [x["name"] for x in m.search_files("zorblax", limit=3)["results"]] == ["beta.txt"]
