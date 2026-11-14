@@ -134,3 +134,96 @@ def test_new_readers_requeue_empty_files_once(tmp_path):
     assert index.reread_for_new_readers(con) == 2                     # the empty .xls and the empty .hwp
     assert dict(con.execute("SELECT id, pending FROM files")) == {1: 1, 2: 0, 3: 1, 4: 0}
     assert index.reread_for_new_readers(con) == 0                     # once per reader version
+
+
+# --- mail (#202): all messages below are invented and built in tmp ---------------------------------------------------------
+
+def _mail(subject="주간 점검", body="본문", **hdr):
+    m = EmailMessage()
+    m["Subject"] = subject; m["From"] = "a@example.com"; m["To"] = "b@example.com"
+    for k, v in hdr.items():
+        m[k.replace("_", "-")] = v
+    m.set_content(body)
+    return m
+
+
+def test_mail_korean_charset_labels_read_as_cp949(tmp_path):
+    for label in ("euc-kr", "ks_c_5601-1987", "ks_c_5601", "x-windows-949"):
+        subj = "=?%s?B?%s?=" % (label, __import__("base64").b64encode("똠방 점검".encode("cp949")).decode())
+        raw = (f"Subject: {subj}\r\nFrom: a@example.com\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset={label}\r\n"
+               f"Content-Transfer-Encoding: 8bit\r\n\r\n").encode() + "똠 본문".encode("cp949")
+        p = tmp_path / "k.eml"; p.write_bytes(raw)
+        t = index.extract(p, index.MAXREAD)
+        assert "똠방 점검" in t and "똠 본문" in t, label
+
+
+def test_mail_thread_headers(tmp_path):
+    m = _mail(Message_ID="<m2@example.com>", In_Reply_To="<m1@example.com>", References="<m0@example.com> <m1@example.com>")
+    p = tmp_path / "t.eml"; p.write_bytes(bytes(m))
+    t = index.extract(p, index.MAXREAD)
+    assert "Message-ID: <m2@example.com>" in t and "In-Reply-To: <m1@example.com>" in t
+    assert "References: <m0@example.com> <m1@example.com>" in t
+
+
+def test_mail_attachment_text_is_indexed_with_caps(tmp_path, monkeypatch):
+    m = _mail()
+    m.add_attachment("납품 일정표 별첨내용".encode("utf-8"), maintype="text", subtype="plain", filename="일정.txt")
+    m.add_attachment(b"MZ-binary", maintype="application", subtype="octet-stream", filename="tool.exe")
+    p = tmp_path / "a.eml"; p.write_bytes(bytes(m))
+    t = index.extract(p, index.MAXREAD)
+    assert "별첨내용" in t and "일정.txt" in t and "tool.exe" in t
+    monkeypatch.setattr(moretext, "MAIL_ATTACH_BYTES", 4)   # size cap: named only
+    assert "별첨내용" not in index.extract(p, index.MAXREAD)
+    monkeypatch.setattr(moretext, "MAIL_ATTACH_BYTES", 10_000)
+    monkeypatch.setattr(moretext, "MAIL_MAX_ATTACH", 0)     # count cap
+    assert "별첨내용" not in index.extract(p, index.MAXREAD)
+
+
+def test_emlx(tmp_path):
+    body = bytes(_mail("애플 메일 제목", "emlx 본문 내용", Message_ID="<x1@example.com>"))
+    plist = b'<?xml version="1.0"?><plist><dict><key>flags</key><integer>8590195713</integer></dict></plist>'
+    p = tmp_path / "12.emlx"; p.write_bytes(str(len(body)).encode() + b"\n" + body + plist)
+    t = index.extract(p, index.MAXREAD)
+    assert "애플 메일 제목" in t and "emlx 본문 내용" in t and "<x1@example.com>" in t and "flags" not in t
+
+
+def test_mbox_plain_and_apple_export_folder(tmp_path):
+    def env(m):
+        return b"From a@example.com Sat Nov 14 10:00:00 2026\n" + bytes(m).replace(b"\r\n", b"\n") + b"\n"
+    data = env(_mail("첫째 메일", "첫 본문")) + env(_mail("둘째 메일", "줄\nFrom 시작 줄\n끝"))
+    p = tmp_path / "받은편지함.mbox"; p.write_bytes(data)
+    t = index.extract(p, index.MAXREAD)
+    assert "첫째 메일" in t and "둘째 메일" in t and "첫 본문" in t
+    d = tmp_path / "내보내기.mbox"; d.mkdir()
+    (d / "mbox").write_bytes(data)
+    t = index.extract(d / "mbox", index.MAXREAD)
+    assert "첫째 메일" in t and "둘째 메일" in t
+    assert index.tier(p) == 1
+
+
+def test_mail_hostile_nesting_falls_back_to_name_only(tmp_path):
+    depth = 1200
+    lines = ["Subject: x", "MIME-Version: 1.0"]
+    for i in range(depth):
+        lines += [f'Content-Type: multipart/mixed; boundary="b{i}"', "", f"--b{i}"]
+        if i == 0:
+            continue
+    raw = ("\n".join(lines) + "\n\nhello\n").encode()
+    p = tmp_path / "deep.eml"; p.write_bytes(raw)
+    assert index.extract(p, index.MAXREAD) == ""
+    assert moretext.eml_text(p) is None
+    # wide: many parts is capped, not fatal
+    m = _mail()
+    for i in range(moretext.MAIL_MAX_PARTS + 50):
+        m.add_attachment(b"x", maintype="application", subtype="octet-stream", filename=f"f{i}.bin")
+    p2 = tmp_path / "wide.eml"; p2.write_bytes(bytes(m))
+    assert "본문" in index.extract(p2, index.MAXREAD)
+
+
+def test_mail_recursion_error_is_caught(tmp_path, monkeypatch):
+    import email
+    p = tmp_path / "r.eml"; p.write_bytes(bytes(_mail()))
+    def boom(*a, **k):
+        raise RecursionError
+    monkeypatch.setattr(email, "message_from_bytes", boom)
+    assert index.extract(p, index.MAXREAD) == ""
