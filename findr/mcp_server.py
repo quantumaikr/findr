@@ -109,7 +109,8 @@ def _engine_search(query, limit, ask=None):
                 con.close()
             return more
     kept = kept[:limit]
-    probs = _reprob(kept, r.get("p_none"), bool(r.get("note")))
+    # the engine's p_none and note are computed over its whole list, files left out here included: neither is used
+    probs = _reprob(kept)
     out = []
     for x, pr in zip(kept, probs):
         out.append({"name": x.get("name"), "path": x.get("path"), "modified": x.get("date"),
@@ -118,7 +119,7 @@ def _engine_search(query, limit, ask=None):
                     **_excerpt_place(con, x.get("chunk_id"), x.get("snippet_start"))})
     if con is not None:
         con.close()
-    return {"results": out, "note": _note(out, r.get("note")), "engine": "full"}
+    return {"results": out, "note": _note(out, probs), "engine": "full"}
 
 
 def _tier_ok(con, p):
@@ -137,27 +138,34 @@ NOTE_NONE = "Nothing matched. Try other words, or list_folder to look around."
 NOTE_UNSURE = "No file clearly matches; these are the closest, most likely first."
 
 
-def _note(out, engine_note):
-    """the note from what is shown, never from what was left out: the engine's own note can say whether a word is in some
-    file anywhere in the index, a file in the data folder or a deny folder included (an existence oracle). Only its gist
-    is kept, in fixed words"""
+SURE = 0.5   # the best shown file's chance below this: the note says no file clearly matches
+
+
+def _note(out, probs):
+    """the note from what is shown only, never from the engine: its note and its p_none are computed over its whole list, a
+    file in the data folder or a deny folder included (whether a word is in some file anywhere, how sure the best of all is:
+    existence oracles, red-team 11/14). Fixed words, from the shown files' own chances"""
     if not out:
         return NOTE_NONE
-    return NOTE_UNSURE if engine_note else ""
+    ps = [p for p in probs if p is not None]
+    return NOTE_UNSURE if ps and max(ps) < SURE else ""
 
 
 _CALIB = [None]
+P_NONE = 0.5   # the calibration's 'no file is meant' input, fixed: the engine's own value is computed over its whole list
 
 
-def _reprob(kept, p_none, noted):
-    """each shown file's chance, from the files shown only (the engine's odds depend on the rank and the top score of its whole
-    list, files left out here included): the engine's calibration (search.add_probs) on the kept list. The engine's chances
-    when it gave no scores or the calibration is not on this PC"""
+def _reprob(kept):
+    """each shown file's chance, from the files shown only: the engine's calibration (search.add_probs) on the kept list,
+    with the list-wide inputs (p_none, the engine's note) fixed, since the engine computed them over files left out here
+    too. A photo keeps its own odds (its photo model's, of that photo alone). None when the engine gave no scores or the
+    calibration is not on this PC: the engine's own chances came from the whole list"""
     import math
-    eng = [x.get("prob") for x in kept]
+    photo = [x.get("photo_p") for x in kept]
     ce = [x.get("ce") for x in kept]
-    if not kept or any(c is None for c in ce) or any(x.get("photo_p") is not None for x in kept):
-        return eng
+    none = list(photo)
+    if not kept or all(c is None for c in ce):
+        return none
     if _CALIB[0] is None:
         try:
             f = os.environ.get("CALIB_P") or str(paths.MODELS / "gate" / "calibP.json")
@@ -167,13 +175,15 @@ def _reprob(kept, p_none, noted):
             _CALIB[0] = []
     w = _CALIB[0]
     if not w:
-        return eng
+        return none
+    ce = [c if c is not None else -1.0 for c in ce]   # as the engine takes a file it gave no score
     top = max(ce); second = sorted(ce, reverse=True)[1] if len(ce) > 1 else -1.0
-    pn = p_none if p_none is not None else 0.5
     out = []
     for i, c in enumerate(ce):
+        if photo[i] is not None:
+            out.append(photo[i]); continue
         pos = i + 1
-        f = [1.0, c, c - top, math.log(pos), 1.0 if pos == 1 else 0.0, (top - second) if pos == 1 else 0.0, pn, 1.0 if noted else 0.0, 0.0]
+        f = [1.0, c, c - top, math.log(pos), 1.0 if pos == 1 else 0.0, (top - second) if pos == 1 else 0.0, P_NONE, 0.0, 0.0]
         z = sum(a * b for a, b in zip(w, f))
         out.append(1 / (1 + math.exp(-z)))
     return out
