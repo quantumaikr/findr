@@ -153,6 +153,27 @@ def test_yaml_siblings_stay():
     assert index.mask(text) == "db:\n  password: |\n    [가림]\n  host: db.example\n"
 
 
+# ---------------------------------------------------------------- 5. text decoding
+@pytest.mark.parametrize("enc,bom", [("utf-32-le", b"\xff\xfe\x00\x00"), ("utf-32-be", b"\x00\x00\xfe\xff"),
+                                     ("utf-16-le", b"\xff\xfe"), ("utf-16-be", b"\xfe\xff"),
+                                     ("utf-16-le", b""), ("utf-16-be", b""), ("utf-32-le", b""), ("utf-32-be", b"")])
+def test_wide_text_is_decoded(tmp_path, enc, bom):
+    text = "password: " + P1 + "\nurl,username,password\nhttps://z.example,eve," + P1 + "\n"
+    raw = bom + text.encode(enc)
+    assert index._decode_text(raw) == text
+    p = tmp_path / "notes.txt"
+    p.write_bytes(raw)
+    assert index.extract(p, 100000) == text
+    assert index.is_secret(p)   # its credential header is seen
+    assert P1 not in index.mask(index.extract(p, 100000))
+
+
+def test_binary_with_zero_bytes_is_still_binary(tmp_path):
+    p = tmp_path / "blob.txt"
+    p.write_bytes(bytes(range(256)) * 8)
+    assert index.extract(p, 100000) == ""
+
+
 # ---------------------------------------------------------------- 3. terms from masked text
 def test_file_relations_terms_never_hold_a_masked_value(tmp_path, monkeypatch):
     data = tmp_path / "data"; data.mkdir()
@@ -187,6 +208,7 @@ def test_indexer_keeps_none_of_them(tmp_path):
              "wp.php.txt": "define('DB_PASSWORD', '" + P1 + "e');\n"}
     for n, t in files.items():
         (root / n).write_text(t, encoding="utf-8")
+    (root / "wide.txt").write_bytes(b"\xff\xfe\x00\x00" + ("password: " + P1 + "f\n").encode("utf-32-le"))
     env = {**os.environ, "FINDR_OCR": "0", "FINDR_ORIGIN": "0", "FINDR_HOME": str(home), "FINDR_DATA": str(home)}
     db = home / "index.db"
     r = subprocess.run([sys.executable, str(Path(index.__file__)), "--root", str(root), "--db", str(db), "--no-embed"],

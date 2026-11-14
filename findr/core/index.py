@@ -423,8 +423,7 @@ _PM_WHO = re.compile(r"(?i)\"(?:username|user|login|email|uri|uris|url|hostname|
 def pm_export(head):
     """True when text (or bytes) is a password manager's export by its content"""
     if isinstance(head, (bytes, bytearray)):
-        b = bytes(head[:65536])
-        head = b.decode("utf-16", "replace") if b[:2] in (b"\xff\xfe", b"\xfe\xff") else _decode_text(b)
+        head = _decode_text(bytes(head[:65536]))
     t = (head or "")[:65536]
     return bool(_PM_KEEPASS.search(t)) or (bool(_PM_PW.search(t)) and bool(_PM_WHO.search(t)))
 
@@ -619,7 +618,7 @@ def extract(p: Path, limit):
         if ext in (".docx", ".xlsx", ".pptx", ".hwpx"):
             return ooxml_text(p, limit)
         raw = open(p, "rb").read(limit)
-        if b"\x00" in raw[:4096] and raw[:2] not in (b"\xff\xfe", b"\xfe\xff"):   # binary, unless UTF-16 text with its BOM
+        if b"\x00" in raw[:4096] and not wide_encoding(raw):   # binary, unless UTF-16 / UTF-32 text
             return ""
         t = _decode_text(raw)   # Korean Notepad files are often 'ANSI' (cp949) or '유니코드' (UTF-16)
         if ext in (".html", ".htm"):
@@ -717,14 +716,46 @@ def _hangul_like(t: str) -> bool:
     return bool(na) and sum("가" <= c <= "힣" for c in na) >= 0.6 * len(na)
 
 
+def wide_encoding(b: bytes):
+    """'utf-32-le' / 'utf-32-be' / 'utf-16-le' / 'utf-16-be' for text written in two or four bytes a character: by its
+    BOM (UTF-32's before UTF-16's: FF FE 00 00 starts both), or without one by where its zero bytes fall (ASCII-heavy
+    text: the high bytes of most characters are zero). None for anything else. Red-team 0.2.25: a UTF-32 file decoded as
+    UTF-16 kept a zero between letters, and neither the masking nor the header rules saw 'password' in it"""
+    if b[:4] == b"\xff\xfe\x00\x00":
+        return "utf-32-le"
+    if b[:4] == b"\x00\x00\xfe\xff":
+        return "utf-32-be"
+    if b[:2] == b"\xff\xfe":
+        return "utf-16-le"
+    if b[:2] == b"\xfe\xff":
+        return "utf-16-be"
+    s = b[:4096]
+    n = len(s) - len(s) % 4
+    if n < 8 or b"\x00" not in s:
+        return None
+    z = [sum(1 for i in range(k, n, 4) if s[i] == 0) / (n // 4) for k in range(4)]
+    if z[1] > 0.9 and z[2] > 0.9 and z[3] > 0.9 and z[0] < 0.1:
+        return "utf-32-le"
+    if z[0] > 0.9 and z[1] > 0.9 and z[2] > 0.9 and z[3] < 0.1:
+        return "utf-32-be"
+    odd, even = (z[1] + z[3]) / 2, (z[0] + z[2]) / 2
+    if odd > 0.6 and even < 0.05:
+        return "utf-16-le"
+    if even > 0.6 and odd < 0.05:
+        return "utf-16-be"
+    return None
+
+
 def _decode_text(b: bytes) -> str:
     """text of unknown encoding, as Notepad and converters write it: UTF-16 with a BOM ('유니코드'), UTF-8 (with or without
     BOM), else this PC's code page ('ANSI'), else Korean cp949 when it reads as Korean, else UTF-8 dropping bad bytes.
     b may be cut at a read limit: a character cut in half at the end does not count as a wrong guess"""
     import codecs
     import locale
-    if b[:2] in (b"\xff\xfe", b"\xfe\xff"):
-        return b.decode("utf-16", "ignore")
+    wide = wide_encoding(b)
+    if wide:
+        t = b.decode(wide, "ignore").lstrip("﻿")
+        return t.replace("\x00", "") if t.count("\x00") > 0.2 * max(1, len(t)) else t
     if b[:3] == codecs.BOM_UTF8:
         b = b[3:]
     sys_enc = (locale.getpreferredencoding(False) or "utf-8").lower()
