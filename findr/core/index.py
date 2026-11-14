@@ -147,7 +147,7 @@ _KEEP = ("url", "lq", "ld", "lx", "lk", "la", "le", "ab", "cu", "mp", "lo", "hoo
 # a fixed piece of text every KEYLIKE match contains: SQLite LIKE (ASCII case-insensitive, '_' any one character) keeps only the
 # chunks that may hold one, so the regex runs on a few rows instead of all of them (a run with no change scanned 920k chunks
 # in Python for 58 s, #67). Keep in step with KEYLIKE: tests/test_mask_prefilter.py checks every alternative is covered
-MASK_RULES = 3   # raised when mask() learns a rule outside KEYLIKE (_block_mask, _table_mask): remask then looks at every chunk
+MASK_RULES = 4   # raised when mask() learns a rule outside KEYLIKE (_block_mask, _table_mask, match_copy): remask then looks at every chunk
 KEYLIKE_HINTS = ("sk-", "akia", "gh_", "hf_", "xox", "aiza", "private", "api", "secret", "password", "passwd", "token",
                  "github_pat", "glpat", "k_live", "k_test", "private-lines", "bearer", "eyj", "://", "pwd", "private_key", "privatekey",
                  "-----", "ls0tls1crudjti", "npm_", "sg.", "gocspx-", "ya29.", "hooks.slack.com", "accountkey", "sharedaccess",
@@ -155,22 +155,143 @@ KEYLIKE_HINTS = ("sk-", "akia", "gh_", "hf_", "xox", "aiza", "private", "api", "
                  "xapp-", "shp", "v1_", "credential", "pin")
 
 
+_HIDE = "\ue000"   # what mask's rules write over a value (one per character), turned into [가림] at the end
+_HIDE_RUN = re.compile(_HIDE + "+")
+
+
 def _mask_one(m):
-    return next((m.group(k) for k in _KEEP if m.group(k)), "") + "[가림]"
+    keep = next((m.group(k) for k in _KEEP if m.group(k)), "")
+    return keep + _HIDE * (m.end() - m.start() - len(keep))
+
+
+# The text the rules look at (red-team 0.2.26): labels spelled to pass them, 'pаssword' with a Cyrillic 'а', fullwidth
+# 'ｐａｓｓｗｏｒｄ：', 'PASS\u200bWORD' with a zero-width space, 'pass\u00adword' with a soft hyphen, 'password&#58;' with an
+# HTML entity. A copy is made in which compatibility characters are NFKC'd one by one (fullwidth to ASCII, mathematical
+# letters, ligatures, odd spaces), invisible characters dropped, entities decoded, and Cyrillic / Greek letters that look
+# like Latin ones read as those inside a word that is otherwise Latin (or made of such letters only). The rules run on the
+# copy; what they hide there is hidden in the original text, mapped back character by character, so the text shown keeps
+# its own letters (a Russian word stays Russian)
+_INVIS_MATCH = "\u00ad\u180e\u200b-\u200f\u2060-\u2064\ufeff"
+_COMPAT = ("\u00a0\u2000-\u200a\u2024-\u2026\u202f\u205f\u2100-\u218f\u2460-\u24ff\u3000\u3200-\u33ff\ufb00-\ufb4f"
+           "\ufe10-\ufe6f\uff01-\uffef\U0001d400-\U0001d7ff\ue000")
+# Cyrillic а е о р с х у і ѕ ј к м н т в (and capitals), Greek capitals and α ο ρ ι κ ν υ χ ε τ: the Latin letter each looks like
+_LOOKALIKE = dict(zip("\u0430\u0435\u043e\u0440\u0441\u0445\u0443\u0456\u0455\u0458\u043a\u043c\u043d\u0442\u0432"
+                      "\u0410\u0415\u041e\u0420\u0421\u0425\u0423\u0406\u0405\u0408\u041a\u041c\u041d\u0422\u0412"
+                      "\u0391\u0392\u0395\u0397\u0399\u039a\u039c\u039d\u039f\u03a1\u03a4\u03a7\u03a5\u0396"
+                      "\u03b1\u03bf\u03c1\u03b9\u03ba\u03bd\u03c5\u03c7\u03b5\u03c4",
+                      "aeopcxyisjkmhtb" "AEOPCXYISJKMHTB" "ABEHIKMNOPTXYZ" "aopikvuxet"))
+_ODD = re.compile("[" + _INVIS_MATCH + _COMPAT + "]|&(?:#[0-9]{1,7};?|#[xX][0-9A-Fa-f]{1,6};?|[A-Za-z][A-Za-z0-9]{1,31};)")
+_LOOK = re.compile("[" + "".join(_LOOKALIKE) + "]")
+_WORDCH = re.compile(r"[\w" + _INVIS_MATCH + "]")
+
+
+def _odd_char(c):
+    if c == _HIDE:
+        return "\ufffd"
+    if c.startswith("&"):
+        import html
+        return html.unescape(c)
+    if re.match("[" + _INVIS_MATCH + "]", c):
+        return ""
+    k = unicodedata.normalize("NFKC", c)
+    return k if k else c
+
+
+def match_copy(text):
+    """(copy, pieces): the text the masking and credential rules look at (above), and for each changed place (start, end,
+    replacement) in the original; pieces is None when the copy is the text itself"""
+    if text.isascii() and "&" not in text:
+        return text, None
+    rep = {}
+    for m in _ODD.finditer(text):
+        r = _odd_char(m.group(0))
+        if r != m.group(0):
+            rep[m.start()] = (m.end(), r)
+    done = -1
+    for m in _LOOK.finditer(text):
+        if m.start() < done:
+            continue
+        a = m.start()
+        while a > 0 and _WORDCH.match(text, a - 1):
+            a -= 1
+        b = m.end()
+        while b < len(text) and _WORDCH.match(text, b):
+            b += 1
+        done = b
+        w = text[a:b]
+        ok = all(ch.isascii() or ch in _LOOKALIKE or not ch.isalpha() or (rep.get(a + i, (0, ch))[1].isascii())
+                 for i, ch in enumerate(w))
+        if ok:
+            for i, ch in enumerate(w):
+                if ch in _LOOKALIKE:
+                    rep[a + i] = (a + i + 1, _LOOKALIKE[ch])
+    if not rep:
+        return text, None
+    pieces = [(k, e, r) for k, (e, r) in sorted(rep.items())]
+    out, at = [], 0
+    for k, e, r in pieces:
+        out += [text[at:k], r]; at = e
+    out.append(text[at:])
+    return "".join(out), pieces
+
+
+def _hide_back(text, pieces, hidden):
+    """the original text with what `hidden` (the copy, its masked characters _HIDE) hides replaced by [가림]"""
+    import bisect
+    # copy offsets of each piece: (copy start, copy end, original start, original end), changed places and the text between
+    segs, c, at = [], 0, 0
+    for k, e, r in pieces:
+        if k > at:
+            segs.append((c, c + k - at, at, k, True)); c += k - at
+        segs.append((c, c + len(r), k, e, False)); c += len(r); at = e
+    if at < len(text):
+        segs.append((c, c + len(text) - at, at, len(text), True))
+    starts = [x[0] for x in segs]
+
+    def orig(pos, end):
+        i = bisect.bisect_right(starts, pos) - 1
+        while i > 0 and segs[i][1] == segs[i][0]:   # a dropped character holds no copy position
+            i -= 1
+        cs, ce, os_, oe, same = segs[i]
+        if same:
+            return os_ + (pos - cs) + (1 if end else 0)
+        return oe if end else os_
+
+    spans = []
+    for m in _HIDE_RUN.finditer(hidden):
+        a, b = orig(m.start(), False), orig(m.end() - 1, True)
+        if spans and a <= spans[-1][1]:
+            spans[-1] = (spans[-1][0], max(spans[-1][1], b))
+        else:
+            spans.append((a, b))
+    out, at = [], 0
+    for a, b in spans:
+        out += [text[at:a], "[가림]"]; at = b
+    out.append(text[at:])
+    return "".join(out)
 
 
 def mask(text):
     """values that look like keys, passwords and tokens replaced by [가림]: what the index stores and every text findr
     returns (read_file, excerpts, the search page). A URL keeps its address, only the password in it is masked. A mail's
     attachment block ('[첨부 name]' and its text) that the secret rules mark keeps its name only (text an index made
-    before a rule may still hold)"""
+    before a rule may still hold). The rules look at match_copy's text (look-alike letters, invisible characters and
+    entities read as what they show) and hide in the text itself"""
     if not text:
         return text
-    if "\n" in text:
-        text = _block_mask(text)
-    text = KEYLIKE.sub(_mask_one, text)
-    text = _table_mask(text)
-    return _ATT_BLOCK.sub(_att_one, text) if "[첨부 " in text else text
+    copy, pieces = match_copy(text)
+    hidden = copy
+    if "\n" in hidden:
+        hidden = _block_mask(hidden)
+    hidden = KEYLIKE.sub(_mask_one, hidden)
+    hidden = _table_mask(hidden)
+    if hidden == copy:
+        out = text
+    elif pieces is None:
+        out = _HIDE_RUN.sub("[가림]", hidden)
+    else:
+        out = _hide_back(text, pieces, hidden)
+    return _ATT_BLOCK.sub(_att_one, out) if "[첨부 " in out else out
 
 
 # a secret's value on the lines after its label: YAML 'password: |' / '>' blocks and a value on the next, more indented
@@ -191,7 +312,7 @@ def _block_mask(text):
             if m and m.end("h") == h.end():
                 m = _TRIPLE.match(text, m.start())
             if m and m.end("h") == h.end():
-                out += [text[at:m.end("h")], "[가림]" if m.group("v").strip() else m.group("v")]
+                out += [text[at:m.end("h")], _HIDE * len(m.group("v")) if m.group("v").strip() else m.group("v")]
                 at = m.end("v")
         text = "".join(out) + text[at:]
     lines, i, hit = text.split("\n"), 0, False
@@ -206,7 +327,7 @@ def _block_mask(text):
             while j < len(lines):
                 ln = lines[j]; lead = len(ln) - len(ln.lstrip(" \t")); more = ln.rstrip("\r").endswith("\\")
                 if ln.strip():
-                    lines[j] = ln[:lead] + "[가림]" + ("\r" if ln.endswith("\r") else ""); hit = True
+                    lines[j] = ln[:lead] + _HIDE * len(ln.rstrip("\r")[lead:]) + ("\r" if ln.endswith("\r") else ""); hit = True
                 j += 1
                 if not more:
                     break
@@ -217,7 +338,7 @@ def _block_mask(text):
                     lead = len(ln) - len(ln.lstrip(" \t"))
                     if len(ln[:lead].expandtabs()) <= ind:
                         break
-                    lines[j] = ln[:lead] + "[가림]" + ("\r" if ln.endswith("\r") else ""); hit = True
+                    lines[j] = ln[:lead] + _HIDE * len(ln.rstrip("\r")[lead:]) + ("\r" if ln.endswith("\r") else ""); hit = True
                 j += 1
         i = j
     return "\n".join(lines) if hit else text
@@ -314,7 +435,7 @@ def _table_mask(text):
                 cell = row[a:b]
                 m = re.match(r'(\s*"?)(.*?)("?\s*)$', cell, re.S)
                 if m and m.group(2).strip():
-                    row = row[:a] + m.group(1) + "[가림]" + m.group(3) + row[b:]; hit = True
+                    row = row[:a] + m.group(1) + _HIDE * len(m.group(2)) + m.group(3) + row[b:]; hit = True
             lines[j] = row + full[len(full.rstrip("\r")):]
             j += 1
         i = j
@@ -404,7 +525,8 @@ def cred_header(head):
     Korean. Not only the first line: 'Saved sign-ins (exported ...)' above the header hid one (red-team 0.2.24)"""
     if isinstance(head, (bytes, bytearray)):
         head = _decode_text(bytes(head[:HEAD_BYTES]))
-    lines = [x for x in (head or "").replace("\ufeff", "").replace("\x00", "").splitlines() if x.strip()][:CRED_LINES]
+    head = match_copy((head or "").replace("\x00", ""))[0]   # look-alike letters, invisible characters, entities: as shown
+    lines = [x for x in head.splitlines() if x.strip()][:CRED_LINES]
     return any(_cred_line(x) for x in lines)
 
 
@@ -424,7 +546,7 @@ def pm_export(head):
     """True when text (or bytes) is a password manager's export by its content"""
     if isinstance(head, (bytes, bytearray)):
         head = _decode_text(bytes(head[:65536]))
-    t = (head or "")[:65536]
+    t = match_copy((head or "")[:65536])[0]
     return bool(_PM_KEEPASS.search(t)) or (bool(_PM_PW.search(t)) and bool(_PM_WHO.search(t)))
 
 
@@ -558,10 +680,10 @@ except ImportError:
     import samepath
 
 try:   # old office formats: content sniffing + Word 97 piece table before LibreOffice (orders of magnitude faster)
-    from .officetext import sniff_text, doc_text, hwp_text
+    from .officetext import sniff_text, doc_text, hwp_text, html_text
     from .moretext import sheet_text, rtf_text, eml_text, emlx_text, mbox_text
 except ImportError:
-    from officetext import sniff_text, doc_text, hwp_text
+    from officetext import sniff_text, doc_text, hwp_text, html_text
     from moretext import sheet_text, rtf_text, eml_text, emlx_text, mbox_text
 
 
@@ -621,8 +743,8 @@ def extract(p: Path, limit):
         if b"\x00" in raw[:4096] and not wide_encoding(raw):   # binary, unless UTF-16 / UTF-32 text
             return ""
         t = _decode_text(raw)   # Korean Notepad files are often 'ANSI' (cp949) or '유니코드' (UTF-16)
-        if ext in (".html", ".htm"):
-            t = re.sub(r"(?s)<(script|style).*?</\1>", " ", t); t = re.sub(r"<[^>]+>", " ", t)
+        if ext in (".html", ".htm"):   # entities decoded, inline tags joined, tables as tab-separated rows (html_text)
+            t = html_text(t)
         if ext == ".ipynb":
             try:
                 t = "\n".join("".join(c.get("source", "")) for c in json.loads(t).get("cells", []))
@@ -2041,6 +2163,9 @@ def remask(con):
     pat = hashlib.sha1((KEYLIKE.pattern + "|" + "|".join(KEYLIKE_HINTS) + f"|rules{MASK_RULES}").encode()).hexdigest()[:16]
     seen = con.execute("SELECT value FROM meta WHERE key='mask_pattern'").fetchone()
     w = " OR ".join(["c.text LIKE ?"] * len(KEYLIKE_HINTS))
+    # and text the hints cannot see: a label spelled with look-alike or fullwidth letters, invisible characters or an
+    # entity (match_copy): any text with a character outside ASCII, or an '&'
+    w += " OR c.text GLOB '*[^' || char(1) || '-' || char(127) || ']*' OR instr(c.text, '&') > 0"
     # CROSS JOIN keeps mask_todo outer: with a plain JOIN SQLite scanned every chunk (2.6 GB, ~5 s) to find an empty todo list
     src = "chunks c" if not seen or seen[0] != pat else "mask_todo t CROSS JOIN chunks c ON c.id = t.id"
     rows = con.execute(f"SELECT c.id, c.file, c.text FROM {src} WHERE {w}", [f"%{h}%" for h in KEYLIKE_HINTS]).fetchall()

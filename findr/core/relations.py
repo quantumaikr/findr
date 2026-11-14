@@ -111,7 +111,7 @@ def _df(con, visible=None, vkey=""):
     return n, df
 
 
-MASK_RULES = 3   # raised when index.mask learns new rules (cached terms are then worked out again)
+MASK_RULES = 4   # raised when index.mask learns new rules (cached terms are then worked out again)
 
 
 def _masker():

@@ -152,10 +152,13 @@ def _hdr(msg, k):
 
 
 def _html_text(body):
-    import html as _html
-    body = re.sub(r"(?s)<(script|style).*?</\1>", " ", body)
-    body = re.sub(r"<br\s*/?>|</p>|</div>|</tr>", "\n", body, flags=re.I)
-    return _html.unescape(re.sub(r"<[^>]+>", " ", body))
+    """an HTML mail body as text, read as a browser shows it (officetext.html_text): entities decoded, tables as rows of
+    tab-separated cells, so a credential table in an HTML mail is masked like one in a text file (red-team 0.2.26)"""
+    try:
+        from .officetext import html_text
+    except ImportError:
+        from officetext import html_text
+    return html_text(body)
 
 
 def _body_text(part):
@@ -299,7 +302,8 @@ def _message_text(msg, limit, attachments=True, deadline=None):
                 blocks.append(f"[첨부 {n}]\n{t}")
     t = "\n".join(head + ([""] + [body.strip()] if body.strip() else []) + (["", "첨부: " + ", ".join(names)] if names else [])
                   + ([""] + blocks if blocks else []))
-    return re.sub(r"[ \t]+", " ", re.sub(r"\n\s*\n\s*\n+", "\n\n", t))[:limit]
+    # runs of spaces made one; tabs kept (a tab-separated table in a body stays one, for the credential-table rule)
+    return re.sub(r" {2,}", " ", re.sub(r"\n\s*\n\s*\n+", "\n\n", t))[:limit]
 
 
 def eml_text(path, limit=2_000_000):

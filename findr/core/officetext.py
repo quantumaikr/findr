@@ -6,15 +6,74 @@ import html as _html
 import re
 import struct
 
-_TAG = re.compile(r"<[^>]+>")
 _SCRIPT = re.compile(r"(?is)<(script|style)\b.*?</\1>")
 
 
-def _strip_html(t):
-    t = _SCRIPT.sub(" ", t)
-    t = re.sub(r"(?i)<br\s*/?>|</p>|</tr>|</div>|</h\d>", "\n", t)
-    t = _html.unescape(_TAG.sub(" ", t))
-    return re.sub(r"[ \t ]+", " ", re.sub(r"\n\s*\n+", "\n", t)).strip()
+# --- HTML as a reader sees it (red-team 0.2.26): a tag is not a space ('Pass<b>word</b>' is one word), entities are
+# decoded ('password&#58; x'), and a table is rows of tab-separated cells, so the credential-table rule sees its header
+_HTML_TOK = re.compile(r"<!--.*?(?:-->|$)|<(/?)([A-Za-z][A-Za-z0-9:\-]*)\b[^>]*>|<[!?/][^>]*>|([^<]+)|<", re.S)
+_HTML_BLOCK = {"p", "div", "li", "ul", "ol", "dl", "dt", "dd", "h1", "h2", "h3", "h4", "h5", "h6", "table", "caption", "section", "article", "header", "footer", "nav", "aside", "main", "blockquote", "pre",
+               "hr", "form", "fieldset", "legend", "title", "address", "figure", "figcaption", "details", "summary", "body",
+               "html", "head", "option", "select", "textarea", "center"}
+
+
+def html_text(t):
+    """HTML -> text: script / style / comments dropped; inline tags joined without a space (as a browser shows them);
+    block tags and <br> end a line; a table row is one line of tab-separated cells; entities decoded after the tags are
+    gone; runs of spaces in the source collapsed except inside <pre> / <textarea>"""
+    t = _SCRIPT.sub(" ", t or "")
+    out, pre = [], 0
+    for m in _HTML_TOK.finditer(t):
+        close, name, text = m.group(1), m.group(2), m.group(3)
+        if text is not None:
+            s = _html.unescape(text)
+            out.append(s if pre else re.sub(r"\s+", " ", s))
+            continue
+        if not name:
+            if m.group(0) == "<":
+                out.append("<")
+            continue
+        n = name.lower()
+        if n in ("pre", "textarea"):
+            pre = max(0, pre + (-1 if close else 1))
+        if n == "br":
+            out.append("\n")
+        elif n in ("td", "th"):
+            if close:
+                out.append("\t")
+        elif n == "tr":   # one line a row: no blank line between rows (a blank line ends a table)
+            _row_end(out) if close else _line(out)
+        elif n in _HTML_BLOCK:
+            _line(out)
+    return tidy_rows("".join(out).replace("\r", ""))
+
+
+def _line(out):
+    """a line break unless the text already ends one (spaces after it aside)"""
+    while out and out[-1] in (" ", ""):
+        out.pop()
+    if out and not out[-1].endswith("\n"):
+        out.append("\n")
+
+
+def _row_end(out):
+    """a table row's end: the tab after its last cell becomes the line break"""
+    while out and out[-1] in (" ", ""):
+        out.pop()
+    if out and out[-1] == "\t":
+        out[-1] = "\n"
+    else:
+        _line(out)
+
+
+def tidy_rows(s):
+    """spaces around tabs and line ends dropped, runs of spaces and blank lines made one"""
+    s = re.sub(r"[ \f\v ]*\t[ \f\v ]*", "\t", s)
+    s = re.sub(r"[ \f\v ]*\n[ \f\v ]*", "\n", s)
+    s = re.sub(r"[ \f\v]{2,}", " ", s)
+    return re.sub(r"\n{3,}", "\n\n", s).strip()
+
+
 
 
 def sniff_text(path, limit=2_000_000):
@@ -42,9 +101,9 @@ def sniff_text(path, limit=2_000_000):
         from email import policy
         msg = email.message_from_bytes(raw, policy=policy.default)
         parts = [p.get_content() for p in msg.walk() if p.get_content_type() in ("text/html", "text/plain")]
-        t = "\n".join(_strip_html(x) if "<" in x else x for x in parts if isinstance(x, str))
+        t = "\n".join(html_text(x) if "<" in x else x for x in parts if isinstance(x, str))
     elif head.startswith(("<html", "<!doctype", "<?xml", "<meta", "<head")) or "<html" in head:
-        t = _strip_html(t)
+        t = html_text(t)
     return t[:limit]
 
 
