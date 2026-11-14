@@ -227,3 +227,48 @@ def test_mail_recursion_error_is_caught(tmp_path, monkeypatch):
         raise RecursionError
     monkeypatch.setattr(email, "message_from_bytes", boom)
     assert index.extract(p, index.MAXREAD) == ""
+
+
+def test_secret_attachment_is_named_not_read(tmp_path):
+    """review of #202: a password export mailed to oneself keeps its name in the index, never its text"""
+    m = _mail()
+    m.add_attachment(b"name,url,username,password\nbank,https://bank.example.invalid,someone,NotARealSecret1\n",
+                     maintype="text", subtype="csv", filename="Chrome Passwords.csv")
+    m.add_attachment(b"url,username,password\nhttps://site.example.invalid,someone,NotARealSecret2\n",
+                     maintype="text", subtype="csv", filename="team_password_list.csv")   # by its header
+    m.add_attachment(b"rule,owner\nlength,it\n", maintype="text", subtype="csv", filename="password_policy.csv")
+    p = tmp_path / "s.eml"; p.write_bytes(bytes(m))
+    t = index.extract(p, index.MAXREAD)
+    assert "Chrome Passwords.csv" in t and "team_password_list.csv" in t
+    assert "NotARealSecret" not in t and "bank.example" not in t
+    assert "length,it" in t   # an ordinary CSV named with password is still read
+
+
+def test_mbox_caps_hold_on_one_huge_line_and_the_deadline(tmp_path, monkeypatch):
+    """review of #202: the byte cap and the deadline are checked on every bounded piece, not per line of any size"""
+    monkeypatch.setattr(moretext, "MBOX_LINE", 1024)
+    monkeypatch.setattr(moretext, "MBOX_MAX_BYTES", 64 * 1024)
+    p = tmp_path / "big.mbox"
+    with open(p, "wb") as f:
+        f.write(b"From a@example.com Sat Nov 14 10:00:00 2026\nSubject: one\n\n")
+        f.write(b"x" * (1024 * 1024))   # a megabyte with no line break
+    read = []
+    real = moretext._mbox_messages
+
+    def spy(fh, deadline=None):
+        for raw in real(fh, deadline):
+            read.append(len(raw)); yield raw
+    monkeypatch.setattr(moretext, "_mbox_messages", spy)
+    moretext.mbox_text(p)
+    assert read and max(read) <= 64 * 1024 + 1024   # stopped at the cap, not after the whole line
+    # the deadline: nothing more is read once it has passed, and attachments are not read after it
+    data = b"".join(b"From a@example.com Sat Nov 14 10:00:00 2026\n" + bytes(_mail(f"메일 {i}", "본문")).replace(b"\r\n", b"\n") + b"\n"
+                    for i in range(50))
+    q = tmp_path / "many.mbox"; q.write_bytes(data)
+    monkeypatch.setattr(moretext, "MBOX_SECONDS", -1)
+    read.clear()
+    assert moretext.mbox_text(q) is None and read == []
+    att = _mail(); att.add_attachment("별첨내용".encode(), maintype="text", subtype="plain", filename="a.txt")
+    part = [a for _, a in moretext._walk(att)[1]][0]
+    assert moretext._attachment_text("a.txt", part, deadline=0) == ""
+    assert moretext._attachment_text("a.txt", part) == "별첨내용"

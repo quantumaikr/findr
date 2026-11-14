@@ -195,15 +195,30 @@ def _walk(msg):
     return plain or html, atts
 
 
+def _is_secret(name, data):
+    """an attachment whose name (or, for a CSV named with password, header) marks a key or credential file: the same rule
+    as for files on the PC (index.is_secret). Its name is kept, its text is never read"""
+    try:
+        from .index import is_secret
+    except ImportError:
+        from index import is_secret
+    try:
+        return is_secret(Path(name), head=(data or b"")[:4096])
+    except Exception:   # noqa: BLE001  (a name the path rules cannot take: not read)
+        return True
+
+
 def _attachment_text(name, part, deadline=None):
-    """text inside an attachment, read by the same readers as a file of that kind; "" when unsupported, too big or unreadable"""
+    """text inside an attachment, read by the same readers as a file of that kind; "" when unsupported, too big, unreadable,
+    past the deadline (time.monotonic()) or a secret (a password export mailed to oneself)"""
     import tempfile
+    import time
     ext = Path(name).suffix.lower()
-    if ext not in _ATT_EXT:
+    if ext not in _ATT_EXT or (deadline is not None and time.monotonic() > deadline):
         return ""
     try:
         data = part.get_payload(decode=True)
-        if not data or len(data) > MAIL_ATTACH_BYTES:
+        if not data or len(data) > MAIL_ATTACH_BYTES or _is_secret(name, data):
             return ""
         with tempfile.TemporaryDirectory(prefix="findr-att-") as d:
             f = Path(d) / ("att" + ext)
@@ -228,7 +243,7 @@ def _attachment_text(name, part, deadline=None):
         return ""
 
 
-def _message_text(msg, limit, attachments=True):
+def _message_text(msg, limit, attachments=True, deadline=None):
     head = [f"{k}: {v}" for k in ("Subject", "From", "To", "Cc", "Date") if (v := _hdr(msg, k))]
     # thread headers, compact: lets a mail be tied to the conversation it belongs to
     head += [f"{k}: {v[:1000]}" for k in ("Message-ID", "In-Reply-To", "References") if (v := _hdr(msg, k))]
@@ -242,7 +257,7 @@ def _message_text(msg, limit, attachments=True):
     blocks = []
     if attachments:
         for n, a in atts[:MAIL_MAX_ATTACH]:
-            t = _attachment_text(n, a)
+            t = _attachment_text(n, a, deadline)
             if t:
                 blocks.append(f"[첨부 {n}]\n{t}")
     t = "\n".join(head + ([""] + [body.strip()] if body.strip() else []) + (["", "첨부: " + ", ".join(names)] if names else [])
@@ -289,22 +304,34 @@ def emlx_text(path, limit=2_000_000):
         return None
 
 
-def _mbox_messages(f):
-    """raw messages of an mbox file, streamed: a 'From ' line that follows a blank line (or starts the file) begins the next one"""
-    buf, prev_blank, size, total, count = [], True, 0, 0, 0
-    for line in f:
+MBOX_LINE = 1 << 20   # bytes read at a time: a file with no line breaks (or one huge line) is still read in bounded pieces
+
+
+def _mbox_messages(f, deadline=None):
+    """raw messages of an mbox file, streamed: a 'From ' line that follows a blank line (or starts the file) begins the next one.
+    Read in pieces of at most MBOX_LINE bytes; the file's byte cap and the deadline (time.monotonic()) are checked at every one"""
+    import time
+    buf, prev_blank, size, total, count, cont = [], True, 0, 0, 0, False
+    while True:
+        line = f.readline(MBOX_LINE)
+        if not line:
+            break
         total += len(line)
-        if line.startswith(b"From ") and prev_blank:
+        if total > MBOX_MAX_BYTES or (deadline is not None and time.monotonic() > deadline):
+            break
+        start = not cont   # a piece that starts a line (the rest of a long line is never a 'From ' line)
+        cont = not line.endswith(b"\n")
+        if start and line.startswith(b"From ") and prev_blank:
             if buf:
                 yield b"".join(buf); count += 1
             buf, size = [], 0
-            if count >= MBOX_MAX_MESSAGES or total > MBOX_MAX_BYTES:
+            if count >= MBOX_MAX_MESSAGES:
                 return
             prev_blank = False
             continue   # the envelope line is not part of the message
-        prev_blank = line in (b"\n", b"\r\n")
+        prev_blank = start and line in (b"\n", b"\r\n")
         if size < MAIL_MAX_BYTES:
-            buf.append(line[1:] if line.startswith(b">From ") else line); size += len(line)
+            buf.append(line[1:] if start and line.startswith(b">From ") else line); size += len(line)
     if buf:
         yield b"".join(buf)
 
@@ -318,11 +345,11 @@ def mbox_text(path, limit=2_000_000):
     out, n = [], 0
     try:
         with open(path, "rb") as f:
-            for raw in _mbox_messages(f):
+            for raw in _mbox_messages(f, deadline):
                 msg = _parse_mail(raw)
                 if msg is not None:
                     try:
-                        t = _message_text(msg, MBOX_MESSAGE_CHARS)
+                        t = _message_text(msg, MBOX_MESSAGE_CHARS, deadline=deadline)
                     except Exception:
                         t = ""
                     if t:
