@@ -16,8 +16,12 @@ def sheet_text(path, limit=2_000_000):
         for name in wb.sheet_names:
             out.append(f"[{name}]")
             for row in wb.get_sheet_by_name(name).to_python(skip_empty_area=True):
-                cells = [str(c).strip() for c in row if c not in ("", None)]
-                if cells:
+                # empty cells kept in place (trailing ones dropped): a column stays under its header, so the
+                # credential-table rule masks the right one
+                cells = ["" if c in ("", None) else str(c).strip() for c in row]
+                while cells and not cells[-1]:
+                    cells.pop()
+                if any(cells):
                     line = "\t".join(cells); out.append(line); size += len(line)
                     if size >= limit:
                         return "\n".join(out)[:limit]
@@ -124,7 +128,7 @@ MBOX_MESSAGE_CHARS = 60_000      # text kept per message in an .mbox, so one lon
 MBOX_SECONDS = 45
 # Korean senders label cp949 text (which has the 8,822 syllables KS X 1001 / euc-kr lacks, e.g. 똠) as euc-kr, ks_c_5601-1987 ...
 _KO_CHARSET = re.compile(rb"(?i)(=\?|charset\s*=\s*[\"']?)(euc-?kr|ks_c_5601(?:-1987)?|x-windows-949|ks_c_5601_1987)(?=[?\"'; \r\n]|$)")
-_ATT_EXT = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".txt", ".md", ".csv", ".tsv", ".log", ".html", ".htm", ".xml", ".json",
+_ATT_EXT = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".odt", ".odp", ".txt", ".md", ".csv", ".tsv", ".log", ".html", ".htm", ".xml", ".json",
             ".hwp", ".doc", ".xls", ".xlsb", ".ods", ".rtf"}   # nothing nested (.eml, .zip) and no LibreOffice conversion (.ppt)
 
 
@@ -152,10 +156,13 @@ def _hdr(msg, k):
 
 
 def _html_text(body):
-    import html as _html
-    body = re.sub(r"(?s)<(script|style).*?</\1>", " ", body)
-    body = re.sub(r"<br\s*/?>|</p>|</div>|</tr>", "\n", body, flags=re.I)
-    return _html.unescape(re.sub(r"<[^>]+>", " ", body))
+    """an HTML mail body as text, read as a browser shows it (officetext.html_text): entities decoded, tables as rows of
+    tab-separated cells, so a credential table in an HTML mail is masked like one in a text file (red-team 0.2.26)"""
+    try:
+        from .officetext import html_text
+    except ImportError:
+        from officetext import html_text
+    return html_text(body)
 
 
 def _body_text(part):
@@ -299,7 +306,8 @@ def _message_text(msg, limit, attachments=True, deadline=None):
                 blocks.append(f"[첨부 {n}]\n{t}")
     t = "\n".join(head + ([""] + [body.strip()] if body.strip() else []) + (["", "첨부: " + ", ".join(names)] if names else [])
                   + ([""] + blocks if blocks else []))
-    return re.sub(r"[ \t]+", " ", re.sub(r"\n\s*\n\s*\n+", "\n\n", t))[:limit]
+    # runs of spaces made one; tabs kept (a tab-separated table in a body stays one, for the credential-table rule)
+    return re.sub(r" {2,}", " ", re.sub(r"\n\s*\n\s*\n+", "\n\n", t))[:limit]
 
 
 def eml_text(path, limit=2_000_000):

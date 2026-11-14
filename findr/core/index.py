@@ -29,7 +29,7 @@ TEXT = {".md", ".txt", ".py", ".pyi", ".js", ".ts", ".jsx", ".tsx", ".json", ".j
         ".cfg", ".csv", ".tsv", ".log", ".html", ".htm", ".css", ".sh", ".ps1", ".bat", ".cmd", ".c", ".h", ".cpp", ".hpp",
         ".cu", ".cuh", ".java", ".go", ".rs", ".sql", ".xml", ".rst", ".ipynb", ".jinja", ".tex", ".r", ".m", ".lua", ""}
 DOC = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".hwp", ".doc", ".ppt", ".xls", ".key",
-       ".xlsb", ".ods", ".rtf", ".eml", ".emlx", ".mbox", ".pages", ".numbers"}   # moretext.py (sheets, RTF, e-mail), keynote_text (iWork)
+       ".xlsb", ".ods", ".odt", ".odp", ".rtf", ".eml", ".emlx", ".mbox", ".pages", ".numbers"}   # moretext.py (sheets, RTF, e-mail), keynote_text (iWork)
 AUD = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".wma", ".ogg"}   # transcribed locally by stt_cache.py (faster-whisper)
 OLD = {".hwp", ".doc", ".ppt", ".xls"}   # old binary formats: converted locally by LibreOffice (+ H2Orestart for hwp), cached
 SECRET = re.compile(r"^(\.env(\..*)?|\.envrc|\.netrc|_netrc|\.pgpass|pgpass\.conf|\.npmrc|\.pypirc|\.git-credentials|kubeconfig(\.ya?ml)?"
@@ -100,9 +100,16 @@ _PEM_B64 = r"LS0tLS1CRUdJTi[A-Za-z0-9+/=]*(?:\r?\n[A-Za-z0-9+/=]{8,})*"
 # 'password: correct horse battery staple', '비밀번호: ...', a short JSON "password": "..."). Quoted: what is inside the
 # quotes; not quoted: to the end of the line (a phrase with spaces). Korean labels as well
 # 'PW:', 'pw=', 'P/W:' as a word of their own (a note's 'ID: kim / PW: ...'), at a line's start or after a space
-_SEP = r"""['"]?\s*(?:=>|->|[:=：](?!=))"""
-# (a word not followed by a separator is passed over before its letters are looked at: most words of a text are such)
-_LABEL = (r"(?:(?=[A-Za-z0-9_.\-]{1,64}" + _SEP + r")" + _KV_NAME + r"|(?:비밀번호|패스워드|비번|암호)"
+# Separators (red-team 0.2.26: Makefile ':=' / '?=' / '+=', Go 'dbPassword := ...' and typed declarations passed): ':', '=',
+# '=>', '->', '<-', ':=', '::=', '?=', '??=', '+=', '||=', and a type between the name and an assignment (Go 'var
+# dbPassword string = ...', 'apiKey: string = ...' takes ':' already). Comparisons ('==', '!=', '<=', '>=', '=~') are not
+_OP = r"(?:=>|->|<-(?!-)|::=|:=|\?\?=|\?=|\+=|\|\|=|[=：](?![=~])|:(?![:=]))"
+_SET = r"(?:::=|:=|\?\?=|\?=|\+=|\|\|=|=(?![=~>]))"
+_TYPED = r"[ \t]+[A-Za-z_*&\[][A-Za-z0-9_<>\[\]?.:*& ]{0,40}?[ \t]*" + _SET   # after a space: a word's own letters are not a type
+_SEP = r"""['"]?(?:\s*""" + _OP + "|" + _TYPED + ")"
+# (a word not followed by a separator is passed over before its letters are looked at: most words of a text are such; and
+# only where a word starts, as _KV_NAME itself)
+_LABEL = (r"(?:(?<![A-Za-z0-9_.\-/])(?=[A-Za-z0-9_.\-]{1,64}" + _SEP + r")" + _KV_NAME + r"|(?:비밀번호|패스워드|비번|암호)"
           r"|(?<!\S)(?i:p/?w)(?=[ \t]*[:：]|=(?!=)))")   # 'pw = x' with spaces is code
 # not a value but one left for the next lines (YAML 'password: |', TOML '= """', a '\' line continuation): see _block_mask
 _NOT_VALUE = r"""(?![|>][+\-0-9]*[ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)|\\[ \t]*(?:\r?\n|$)|"{3}|'{3})"""
@@ -147,7 +154,7 @@ _KEEP = ("url", "lq", "ld", "lx", "lk", "la", "le", "ab", "cu", "mp", "lo", "hoo
 # a fixed piece of text every KEYLIKE match contains: SQLite LIKE (ASCII case-insensitive, '_' any one character) keeps only the
 # chunks that may hold one, so the regex runs on a few rows instead of all of them (a run with no change scanned 920k chunks
 # in Python for 58 s, #67). Keep in step with KEYLIKE: tests/test_mask_prefilter.py checks every alternative is covered
-MASK_RULES = 3   # raised when mask() learns a rule outside KEYLIKE (_block_mask, _table_mask): remask then looks at every chunk
+MASK_RULES = 4   # raised when mask() learns a rule outside KEYLIKE (_block_mask, _table_mask, match_copy): remask then looks at every chunk
 KEYLIKE_HINTS = ("sk-", "akia", "gh_", "hf_", "xox", "aiza", "private", "api", "secret", "password", "passwd", "token",
                  "github_pat", "glpat", "k_live", "k_test", "private-lines", "bearer", "eyj", "://", "pwd", "private_key", "privatekey",
                  "-----", "ls0tls1crudjti", "npm_", "sg.", "gocspx-", "ya29.", "hooks.slack.com", "accountkey", "sharedaccess",
@@ -155,30 +162,152 @@ KEYLIKE_HINTS = ("sk-", "akia", "gh_", "hf_", "xox", "aiza", "private", "api", "
                  "xapp-", "shp", "v1_", "credential", "pin")
 
 
+_HIDE = "\ue000"   # what mask's rules write over a value (one per character), turned into [가림] at the end
+_HIDE_RUN = re.compile(_HIDE + "+")
+
+
 def _mask_one(m):
-    return next((m.group(k) for k in _KEEP if m.group(k)), "") + "[가림]"
+    keep = next((m.group(k) for k in _KEEP if m.group(k)), "")
+    return keep + _HIDE * (m.end() - m.start() - len(keep))
+
+
+# The text the rules look at (red-team 0.2.26): labels spelled to pass them, 'pаssword' with a Cyrillic 'а', fullwidth
+# 'ｐａｓｓｗｏｒｄ：', 'PASS\u200bWORD' with a zero-width space, 'pass\u00adword' with a soft hyphen, 'password&#58;' with an
+# HTML entity. A copy is made in which compatibility characters are NFKC'd one by one (fullwidth to ASCII, mathematical
+# letters, ligatures, odd spaces), invisible characters dropped, entities decoded, and Cyrillic / Greek letters that look
+# like Latin ones read as those inside a word that is otherwise Latin (or made of such letters only). The rules run on the
+# copy; what they hide there is hidden in the original text, mapped back character by character, so the text shown keeps
+# its own letters (a Russian word stays Russian)
+_INVIS_MATCH = "\u00ad\u180e\u200b-\u200f\u2060-\u2064\ufeff"
+_COMPAT = ("\u00a0\u2000-\u200a\u2024-\u2026\u202f\u205f\u2100-\u218f\u2460-\u24ff\u3000\u3200-\u33ff\ufb00-\ufb4f"
+           "\ufe10-\ufe6f\uff01-\uffef\U0001d400-\U0001d7ff\ue000")
+# Cyrillic а е о р с х у і ѕ ј к м н т в (and capitals), Greek capitals and α ο ρ ι κ ν υ χ ε τ: the Latin letter each looks like
+_LOOKALIKE = dict(zip("\u0430\u0435\u043e\u0440\u0441\u0445\u0443\u0456\u0455\u0458\u043a\u043c\u043d\u0442\u0432"
+                      "\u0410\u0415\u041e\u0420\u0421\u0425\u0423\u0406\u0405\u0408\u041a\u041c\u041d\u0422\u0412"
+                      "\u0391\u0392\u0395\u0397\u0399\u039a\u039c\u039d\u039f\u03a1\u03a4\u03a7\u03a5\u0396"
+                      "\u03b1\u03bf\u03c1\u03b9\u03ba\u03bd\u03c5\u03c7\u03b5\u03c4",
+                      "aeopcxyisjkmhtb" "AEOPCXYISJKMHTB" "ABEHIKMNOPTXYZ" "aopikvuxet"))
+_ODD = re.compile("[" + _INVIS_MATCH + _COMPAT + "]|&(?:#[0-9]{1,7};?|#[xX][0-9A-Fa-f]{1,6};?|[A-Za-z][A-Za-z0-9]{1,31};)")
+_LOOK = re.compile("[" + "".join(_LOOKALIKE) + "]")
+_WORDCH = re.compile(r"[\w" + _INVIS_MATCH + "]")
+
+
+def _odd_char(c):
+    if c == _HIDE:
+        return "\ufffd"
+    if c.startswith("&"):
+        import html
+        return html.unescape(c)
+    if re.match("[" + _INVIS_MATCH + "]", c):
+        return ""
+    k = unicodedata.normalize("NFKC", c)
+    return k if k else c
+
+
+def match_copy(text):
+    """(copy, pieces): the text the masking and credential rules look at (above), and for each changed place (start, end,
+    replacement) in the original; pieces is None when the copy is the text itself"""
+    if text.isascii() and "&" not in text:
+        return text, None
+    rep = {}
+    for m in _ODD.finditer(text):
+        r = _odd_char(m.group(0))
+        if r != m.group(0):
+            rep[m.start()] = (m.end(), r)
+    done = -1
+    for m in _LOOK.finditer(text):
+        if m.start() < done:
+            continue
+        a = m.start()
+        while a > 0 and _WORDCH.match(text, a - 1):
+            a -= 1
+        b = m.end()
+        while b < len(text) and _WORDCH.match(text, b):
+            b += 1
+        done = b
+        w = text[a:b]
+        ok = all(ch.isascii() or ch in _LOOKALIKE or not ch.isalpha() or (rep.get(a + i, (0, ch))[1].isascii())
+                 for i, ch in enumerate(w))
+        if ok:
+            for i, ch in enumerate(w):
+                if ch in _LOOKALIKE:
+                    rep[a + i] = (a + i + 1, _LOOKALIKE[ch])
+    if not rep:
+        return text, None
+    pieces = [(k, e, r) for k, (e, r) in sorted(rep.items())]
+    out, at = [], 0
+    for k, e, r in pieces:
+        out += [text[at:k], r]; at = e
+    out.append(text[at:])
+    return "".join(out), pieces
+
+
+def _hide_back(text, pieces, hidden):
+    """the original text with what `hidden` (the copy, its masked characters _HIDE) hides replaced by [가림]"""
+    import bisect
+    # copy offsets of each piece: (copy start, copy end, original start, original end), changed places and the text between
+    segs, c, at = [], 0, 0
+    for k, e, r in pieces:
+        if k > at:
+            segs.append((c, c + k - at, at, k, True)); c += k - at
+        segs.append((c, c + len(r), k, e, False)); c += len(r); at = e
+    if at < len(text):
+        segs.append((c, c + len(text) - at, at, len(text), True))
+    starts = [x[0] for x in segs]
+
+    def orig(pos, end):
+        i = bisect.bisect_right(starts, pos) - 1
+        while i > 0 and segs[i][1] == segs[i][0]:   # a dropped character holds no copy position
+            i -= 1
+        cs, ce, os_, oe, same = segs[i]
+        if same:
+            return os_ + (pos - cs) + (1 if end else 0)
+        return oe if end else os_
+
+    spans = []
+    for m in _HIDE_RUN.finditer(hidden):
+        a, b = orig(m.start(), False), orig(m.end() - 1, True)
+        if spans and a <= spans[-1][1]:
+            spans[-1] = (spans[-1][0], max(spans[-1][1], b))
+        else:
+            spans.append((a, b))
+    out, at = [], 0
+    for a, b in spans:
+        out += [text[at:a], "[가림]"]; at = b
+    out.append(text[at:])
+    return "".join(out)
 
 
 def mask(text):
     """values that look like keys, passwords and tokens replaced by [가림]: what the index stores and every text findr
     returns (read_file, excerpts, the search page). A URL keeps its address, only the password in it is masked. A mail's
     attachment block ('[첨부 name]' and its text) that the secret rules mark keeps its name only (text an index made
-    before a rule may still hold)"""
+    before a rule may still hold). The rules look at match_copy's text (look-alike letters, invisible characters and
+    entities read as what they show) and hide in the text itself"""
     if not text:
         return text
-    if "\n" in text:
-        text = _block_mask(text)
-    text = KEYLIKE.sub(_mask_one, text)
-    text = _table_mask(text)
-    return _ATT_BLOCK.sub(_att_one, text) if "[첨부 " in text else text
+    copy, pieces = match_copy(text)
+    hidden = copy
+    if "\n" in hidden:
+        hidden = _block_mask(hidden)
+    hidden = KEYLIKE.sub(_mask_one, hidden)
+    hidden = _table_mask(hidden)
+    if hidden == copy:
+        out = text
+    elif pieces is None:
+        out = _HIDE_RUN.sub("[가림]", hidden)
+    else:
+        out = _hide_back(text, pieces, hidden)
+    return _ATT_BLOCK.sub(_att_one, out) if "[첨부 " in out else out
 
 
 # a secret's value on the lines after its label: YAML 'password: |' / '>' blocks and a value on the next, more indented
 # line ('password:\n    ...'), a '\' line continuation, and TOML / Python triple-quoted strings (red-team 0.2.25)
 _TRIPLE = re.compile(r"(?P<h>" + _LABEL + _SEP + r"""[ \t]*(?P<q>"{3}|'{3}))(?P<v>[\s\S]{0,20000}?)(?=(?P=q)|\Z)""")
 _TRIPLE_HINT = re.compile(r"""[:=][ \t]*(?:"{3}|'{3})""")
+_LONE_VALUE = re.compile(r"[ \t]*[^\s:=#<>\[\]{}|\-][^\s:=]{3,}")   # one word, not a key ('x:'), a list item or a heading
 _BLOCK_END = set(":=：|>\\+-0123456789")   # how a label line that leaves its value to the next lines ends
-_BLOCK_HEAD = re.compile(r"(?P<ind>[ \t]*)(?:-[ \t]+)?['\"]?" + _LABEL + r"""['"]?[ \t]*[:=][ \t]*(?P<k>[|>][+\-0-9]*|\\)?[ \t]*(?:#.*)?\r?$""")
+_BLOCK_HEAD = re.compile(r"(?P<ind>[ \t]*)(?:-[ \t]+)?['\"]?" + _LABEL + r"""['"]?[ \t]*(?:::=|:=|\?\?=|\?=|\+=|\|\|=|[:=])[ \t]*(?P<k>[|>][+\-0-9]*|\\)?[ \t]*(?:#.*)?\r?$""")
 
 
 def _block_mask(text):
@@ -191,13 +320,15 @@ def _block_mask(text):
             if m and m.end("h") == h.end():
                 m = _TRIPLE.match(text, m.start())
             if m and m.end("h") == h.end():
-                out += [text[at:m.end("h")], "[가림]" if m.group("v").strip() else m.group("v")]
+                out += [text[at:m.end("h")], _HIDE * len(m.group("v")) if m.group("v").strip() else m.group("v")]
                 at = m.end("v")
         text = "".join(out) + text[at:]
     lines, i, hit = text.split("\n"), 0, False
     while i < len(lines) - 1:
         e = lines[i].rstrip()
-        m = _BLOCK_HEAD.match(lines[i]) if e and len(e) < 300 and (e[-1] in _BLOCK_END or "#" in e) else None
+        # any length (red-team 0.2.26: a 300-character comment after 'password: |' passed): the head is matched from the
+        # line's start and the comment after it read once, so a long line costs its length, as the rest of mask does
+        m = _BLOCK_HEAD.match(lines[i]) if e and (e[-1] in _BLOCK_END or "#" in e) else None
         if not m:
             i += 1
             continue
@@ -206,7 +337,7 @@ def _block_mask(text):
             while j < len(lines):
                 ln = lines[j]; lead = len(ln) - len(ln.lstrip(" \t")); more = ln.rstrip("\r").endswith("\\")
                 if ln.strip():
-                    lines[j] = ln[:lead] + "[가림]" + ("\r" if ln.endswith("\r") else ""); hit = True
+                    lines[j] = ln[:lead] + _HIDE * len(ln.rstrip("\r")[lead:]) + ("\r" if ln.endswith("\r") else ""); hit = True
                 j += 1
                 if not more:
                     break
@@ -217,8 +348,12 @@ def _block_mask(text):
                     lead = len(ln) - len(ln.lstrip(" \t"))
                     if len(ln[:lead].expandtabs()) <= ind:
                         break
-                    lines[j] = ln[:lead] + "[가림]" + ("\r" if ln.endswith("\r") else ""); hit = True
+                    lines[j] = ln[:lead] + _HIDE * len(ln.rstrip("\r")[lead:]) + ("\r" if ln.endswith("\r") else ""); hit = True
                 j += 1
+            nxt = lines[i + 1].rstrip("\r") if j == i + 1 else ""
+            if not m.group("k") and _LONE_VALUE.fullmatch(nxt):   # 'client_secret:' and the value alone on the next line,
+                lines[i + 1] = _HIDE * len(nxt) + lines[i + 1][len(nxt):]; hit = True   # not indented (red-team 0.2.26)
+                j = i + 2
         i = j
     return "\n".join(lines) if hit else text
 
@@ -226,10 +361,13 @@ def _block_mask(text):
 CRED_LINES = 20       # non-empty lines looked at for a credential header: an export may start with title lines
 _CRED_COL_CHARS = 40  # a longer column ('notes for this account written by ...') is left out, not the whole line
 _CRED_COL_WORDS = 3   # ... and so is one of more words: a sentence's pieces between commas are not column names
+CRED_HEAD_CHARS = 8000   # of a very long header line, the columns in its first 8000 characters are looked at ...
+CRED_HEAD_COLS = 200     # ... and at most its first 200 columns (red-team 0.2.26: a 2000-character header passed whole)
 _CRED_DELIMS = (",", "\t", ";", "|")
 _PW_HINT = re.compile(r"(?i)pass|pwd|pw|pin|secret|비밀번호|비번|암호|패스워드")
-_CODE_CELL = re.compile(r"[=(){}\[\]<>;]")      # a short column holding these is code, not a name ...
-_TRAIL_NOTE = re.compile(r"\s*\([^()]*\)\s*$")   # ... a note in brackets at its end aside: 'Password (encrypted)'
+_CODE_CELL = re.compile(r"[=(){}\[\]<>;]")   # a column still holding these is left out (code), the others still count
+_NOTE = re.compile(r"\s*(?:\([^()]*\)|\[[^\[\]]*\]|\{[^{}]*\}|<[^<>]*>)")   # a note in brackets: 'Site [URL]', 'Password (encrypted)'
+_EDGE = " \t\"'`*.,!?:;。…？！"   # quotes, emphasis and sentence marks around a column name
 
 
 def _cells(line, d):
@@ -259,21 +397,23 @@ def _id_col(c):
 def _cred_cols(line):
     """(delimiter, indexes of the password columns) when the line is a credential table's header: two or more columns
     split by one delimiter, one naming a password and another an account, a person or a site (see _CRED_PW_IN,
-    _CRED_ID_IN). Long columns are left out; a line ending like a sentence is not a header. None otherwise"""
-    s = line.strip()
-    if len(s) > 2000 or not s or s[-1] in ".!?。" or not _PW_HINT.search(s):
+    _CRED_ID_IN), whatever the other columns hold. Each column is judged alone (red-team 0.2.26: one column like
+    'Site [URL]', 'notes {optional}' or 'shared?' used to drop the whole header): a note in brackets and sentence marks at
+    its ends aside, a column that is long, of many words or still code-like is left out, never the line. Of a very long
+    line, its first CRED_HEAD_COLS columns within CRED_HEAD_CHARS characters. None otherwise"""
+    s = line[:CRED_HEAD_CHARS]
+    if not s.strip() or not _PW_HINT.search(s):
         return None
     for d in _CRED_DELIMS:
         if d not in s:
             continue
-        cells = _cells(line, d)
+        cells = _cells(s, d)[:CRED_HEAD_COLS]
+        if len(cells) < 2:
+            continue
         cols = []
         for k, (a, b) in enumerate(cells):
-            raw = line[a:b].strip().strip("\"'`*").strip()
-            if raw and len(raw) <= _CRED_COL_CHARS and len(raw.split()) <= _CRED_COL_WORDS:
-                if _CODE_CELL.search(_TRAIL_NOTE.sub("", raw)):
-                    cols = []   # code ('def f(self, url, pw, name):'), not column names
-                    break
+            raw = _NOTE.sub("", s[a:b]).strip(_EDGE)
+            if raw and len(raw) <= _CRED_COL_CHARS and len(raw.split()) <= _CRED_COL_WORDS and not _CODE_CELL.search(raw):
                 cols.append((k, _col(raw)))
         pw = [k for k, c in cols if _pw_col(c)]
         if pw and any(k not in pw and _id_col(c) for k, c in cols):
@@ -314,7 +454,7 @@ def _table_mask(text):
                 cell = row[a:b]
                 m = re.match(r'(\s*"?)(.*?)("?\s*)$', cell, re.S)
                 if m and m.group(2).strip():
-                    row = row[:a] + m.group(1) + "[가림]" + m.group(3) + row[b:]; hit = True
+                    row = row[:a] + m.group(1) + _HIDE * len(m.group(2)) + m.group(3) + row[b:]; hit = True
             lines[j] = row + full[len(full.rstrip("\r")):]
             j += 1
         i = j
@@ -362,7 +502,7 @@ JUNK = re.compile(r"^(vocab\.json|merges\.txt|tokenizer(_config)?\.json|special_
 BAK = re.compile(r"(\.(bak\w*|old|orig|backup|swp|tmp)|~)$", re.I)
 MAXREAD = 2_000_000   # bytes of text read per tier-1 file
 GIST = int(os.environ.get("FINDR_GIST") or 12_000)
-RICH = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".key", ".doc", ".hwp", ".ppt", ".xls"}   # read through a parser: output length tells
+RICH = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".odt", ".odp", ".key", ".doc", ".hwp", ".ppt", ".xls"}   # read through a parser: output length tells
 
 
 def _size(s):
@@ -404,7 +544,8 @@ def cred_header(head):
     Korean. Not only the first line: 'Saved sign-ins (exported ...)' above the header hid one (red-team 0.2.24)"""
     if isinstance(head, (bytes, bytearray)):
         head = _decode_text(bytes(head[:HEAD_BYTES]))
-    lines = [x for x in (head or "").replace("\ufeff", "").replace("\x00", "").splitlines() if x.strip()][:CRED_LINES]
+    head = match_copy((head or "").replace("\x00", ""))[0]   # look-alike letters, invisible characters, entities: as shown
+    lines = [x for x in head.splitlines() if x.strip()][:CRED_LINES]
     return any(_cred_line(x) for x in lines)
 
 
@@ -424,7 +565,7 @@ def pm_export(head):
     """True when text (or bytes) is a password manager's export by its content"""
     if isinstance(head, (bytes, bytearray)):
         head = _decode_text(bytes(head[:65536]))
-    t = (head or "")[:65536]
+    t = match_copy((head or "")[:65536])[0]
     return bool(_PM_KEEPASS.search(t)) or (bool(_PM_PW.search(t)) and bool(_PM_WHO.search(t)))
 
 
@@ -558,10 +699,10 @@ except ImportError:
     import samepath
 
 try:   # old office formats: content sniffing + Word 97 piece table before LibreOffice (orders of magnitude faster)
-    from .officetext import sniff_text, doc_text, hwp_text
+    from .officetext import sniff_text, doc_text, hwp_text, html_text, XmlFlow, SheetFlow, SharedStrings
     from .moretext import sheet_text, rtf_text, eml_text, emlx_text, mbox_text
 except ImportError:
-    from officetext import sniff_text, doc_text, hwp_text
+    from officetext import sniff_text, doc_text, hwp_text, html_text, XmlFlow, SheetFlow, SharedStrings
     from moretext import sheet_text, rtf_text, eml_text, emlx_text, mbox_text
 
 
@@ -615,14 +756,14 @@ def extract(p: Path, limit):
             return pdf_text(p, limit)
         if ext == ".key":
             return keynote_text(p, limit)
-        if ext in (".docx", ".xlsx", ".pptx", ".hwpx"):
+        if ext in (".docx", ".xlsx", ".pptx", ".hwpx", ".odt", ".odp"):
             return ooxml_text(p, limit)
         raw = open(p, "rb").read(limit)
         if b"\x00" in raw[:4096] and not wide_encoding(raw):   # binary, unless UTF-16 / UTF-32 text
             return ""
         t = _decode_text(raw)   # Korean Notepad files are often 'ANSI' (cp949) or '유니코드' (UTF-16)
-        if ext in (".html", ".htm"):
-            t = re.sub(r"(?s)<(script|style).*?</\1>", " ", t); t = re.sub(r"<[^>]+>", " ", t)
+        if ext in (".html", ".htm"):   # entities decoded, inline tags joined, tables as tab-separated rows (html_text)
+            t = html_text(t)
         if ext == ".ipynb":
             try:
                 t = "\n".join("".join(c.get("source", "")) for c in json.loads(t).get("cells", []))
@@ -660,9 +801,12 @@ def transcript(p: Path):
 #   5: credential headers by stems (any column naming an account, person or site) in the first 20 lines, in .md / .log as
 #      well; UTF-32 and BOM-less UTF-16 text; mail read again (a credential table in its body masked, a nested mail found
 #      after an mbox 'From ' line or blank lines, or by its MIME parts)
-READERS = 5
+#   6: Office files read in order (runs joined, tables as tab-separated rows), OpenDocument text and slides, HTML (and
+#      HTML mail) with entities decoded and tables as rows; credential headers judged column by column (red-team 0.2.26)
+READERS = 6
 REREAD_EXT = {2: (".xls", ".xlsb", ".ods", ".hwp")}
-REREAD_ALL = {3: (".eml", ".emlx", ".mbox"), 5: (".eml", ".emlx", ".mbox")}   # read again even with text stored: what they stored may now be left out
+REREAD_ALL = {3: (".eml", ".emlx", ".mbox"), 5: (".eml", ".emlx", ".mbox"),
+              6: (".docx", ".xlsx", ".pptx", ".hwpx", ".odt", ".odp", ".html", ".htm", ".eml", ".emlx", ".mbox")}   # read again even with text stored: what they stored may now be left out
 
 
 _STALE_HEAD = re.compile(r"[ \t]*(?:-[ \t]+)?['\"]?" + _LABEL + r"""['"]?[ \t]*[:=][ \t]*(?:\[가림\])?[ \t]*\r?$""")
@@ -672,7 +816,7 @@ def _stale_block(text):
     """text an older findr stored with a secret's label at a line's end (or its '|' masked) and indented lines under it"""
     lines = text.split("\n")
     return any((_BLOCK_HEAD.match(a) or _STALE_HEAD.match(a)) and b[:1] in (" ", "\t") and b.strip() and b.strip() != "[가림]"
-               for a, b in zip(lines, lines[1:]) if len(a) < 300)
+               for a, b in zip(lines, lines[1:]))
 
 
 def reread_for_new_readers(con):
@@ -689,12 +833,12 @@ def reread_for_new_readers(con):
     if have < 5:   # text files whose stored text still holds the zero bytes of a UTF-16 / UTF-32 file read with the wrong width
         n += con.execute("""UPDATE files SET pending=1 WHERE tier=1 AND id IN (SELECT file FROM chunks WHERE n=0
                             AND instr(text, char(0)) > 0)""").rowcount
-    if have < 5:   # files already read that the content rules now mark (a password export's header, by its first lines
-        # since 4): read again, so the content stage keeps the name only
+    if have < 6:   # files already read that the content rules now mark (a password export's header, by its first lines
+        # since 4, column by column since 6): read again, so the content stage keeps the name only
         hit = [fid for fid, name, t in con.execute("""SELECT f.id, f.name, c.text FROM files f JOIN chunks c ON c.file=f.id AND c.n=0
                                                       WHERE f.tier=1""")
                if t and secret_text(name, t)]
-        if have < 5:   # a value on the lines under its label (YAML 'password:' / 'secret: |'): the stored text lost the
+        if have < 6:   # a value on the lines under its label (YAML 'password:' / 'secret: |'): the stored text lost the
             # indentation that tells the value's lines (runs of spaces are cut to two), so the file is read again
             w = " OR ".join(["c.text LIKE ?"] * len(KEYLIKE_HINTS))
             hit += [fid for fid, t in con.execute(f"""SELECT DISTINCT c.file, c.text FROM chunks c JOIN files f ON f.id = c.file
@@ -882,6 +1026,16 @@ WAL_LIMIT = 64 * 2 ** 20   # bytes the write-ahead file keeps after a checkpoint
 _RUN = {"con": None}
 
 
+def via_column(con):
+    """files.via: for a file read through a link (a symbolic link the walk met as a file), the path it led to then (links
+    resolved), NULL for any other file. Added to an older index here; its links are read again at the next walk, which
+    notes their targets (a row whose link is already gone cannot be told). The AI tools (mcp_server) never serve such a row's stored text unless
+    the path is still that same link and it leads inside its own folder, outside the deny folders (red-team 0.2.26: a link
+    into a deny folder, replaced by a plain file after indexing, kept serving the denied file's text)"""
+    if "via" not in [r[1] for r in con.execute("PRAGMA table_info(files)")]:
+        con.execute("ALTER TABLE files ADD COLUMN via TEXT")
+
+
 def wal_trim(con):
     """after a large write: move the write-ahead file into the index and cut it to nothing (best effort: a reader in the
     middle of a question keeps its part until the next time)"""
@@ -980,6 +1134,7 @@ def _main():
         con.execute("ALTER TABLE files ADD COLUMN pending INT DEFAULT 0")
     if "emb2" not in [r[1] for r in con.execute("PRAGMA table_info(chunks)")]:   # the larger model's vectors, filled in idle time
         con.execute("ALTER TABLE chunks ADD COLUMN emb2 BLOB")
+    via_column(con)
     con.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
     if not con.execute("SELECT 1 FROM meta WHERE key='nfc'").fetchone():   # an index made before NFC: moved once (#12)
         start = int((con.execute("SELECT value FROM meta WHERE key='nfc_upto'").fetchone() or ["0"])[0])   # an interrupted move goes on from here
@@ -1136,6 +1291,7 @@ def _main():
         seen, t0, new = set(), time.time(), 0
         pre = root.as_posix().rstrip("/") + "/"   # several roots share one db: only this root's files can be "gone"
         known = {r[0]: (r[1], r[2], r[3], r[4]) for r in con.execute("SELECT path,size,mtime,id,tier FROM files WHERE path LIKE ? ESCAPE '\\'", (like_pre(pre),))}
+        known_via = dict(con.execute("SELECT path, via FROM files WHERE via IS NOT NULL AND path LIKE ? ESCAPE '\\'", (like_pre(pre),)).fetchall())
         unread = []   # folders the walk could not open: counted, never silent
         for dpl, dns, fns in os.walk(_long(str(root)), onerror=unread.append):
             dp = _short(dpl)
@@ -1184,8 +1340,9 @@ def _main():
                     continue
                 seen.add(s)
                 tick("names", k, len(roots), scanned=scanned + len(seen), folder=_short(dpl)[len(str(root)):].lstrip("/\\")[:80] or root.name)
+                via = None   # a link: where it leads, kept with the row (what was read is that file's text)
                 if os.path.islink(os.path.join(dpl, fn)):   # a link: where it leads decides too
-                    t_ = samepath.unfirm(os.path.realpath(os.path.join(dpl, fn)))
+                    t_ = via = samepath.unfirm(os.path.realpath(os.path.join(dpl, fn)))
                     if samepath.under(t_, excl_ids, follow=False) or left_out(key(Path(t_).as_posix())):
                         continue   # into findr's own folders: not the person's file
                 tr = tier(p)
@@ -1195,14 +1352,15 @@ def _main():
                     tr = tier(p, sniff=True)   # found secret by its first line when read: still so unless that changed
                 if tr in (1, 2) and cloud_only(st):
                     tr = 3   # OneDrive 'online-only': reading it would download it; found by name until it is on the PC
-                if s in known and known[s][0] == st.st_size and abs(known[s][1] - st.st_mtime) < 1 and known[s][3] == tr:
+                if s in known and known[s][0] == st.st_size and abs(known[s][1] - st.st_mtime) < 1 and known[s][3] == tr \
+                        and known_via.get(s) == via:   # (a link made a file, or led elsewhere, is read again)
                     continue   # unchanged (a changed tier rule re-reads the file; compared with the stored tier, so an
                     # online-only file is no longer dropped and added again on every run)
                 if s in known:   # changed: drop old rows
                     fid = known[s][2]
                     drop(con, fid)
-                cur = con.execute("INSERT INTO files(path,name,ext,size,mtime,tier,pending) VALUES(?,?,?,?,?,?,?)",
-                                  (s, nfc(p.name), real_ext(p), st.st_size, st.st_mtime, tr, 1 if tr in (1, 2) else 0))
+                cur = con.execute("INSERT INTO files(path,name,ext,size,mtime,tier,pending,via) VALUES(?,?,?,?,?,?,?,?)",
+                                  (s, nfc(p.name), real_ext(p), st.st_size, st.st_mtime, tr, 1 if tr in (1, 2) else 0, via))
                 fid = cur.lastrowid   # name and folder searchable at once; content comes in its wave
                 cid = con.execute("INSERT INTO chunks(file,n,text) VALUES(?,?,?)", (fid, 0, "")).lastrowid
                 if tr != 0:   # a secret file is not in the word index at all (fts_no_secrets)
@@ -2041,6 +2199,9 @@ def remask(con):
     pat = hashlib.sha1((KEYLIKE.pattern + "|" + "|".join(KEYLIKE_HINTS) + f"|rules{MASK_RULES}").encode()).hexdigest()[:16]
     seen = con.execute("SELECT value FROM meta WHERE key='mask_pattern'").fetchone()
     w = " OR ".join(["c.text LIKE ?"] * len(KEYLIKE_HINTS))
+    # and text the hints cannot see: a label spelled with look-alike or fullwidth letters, invisible characters or an
+    # entity (match_copy): any text with a character outside ASCII, or an '&'
+    w += " OR c.text GLOB '*[^' || char(1) || '-' || char(127) || ']*' OR instr(c.text, '&') > 0"
     # CROSS JOIN keeps mask_todo outer: with a plain JOIN SQLite scanned every chunk (2.6 GB, ~5 s) to find an empty todo list
     src = "chunks c" if not seen or seen[0] != pat else "mask_todo t CROSS JOIN chunks c ON c.id = t.id"
     rows = con.execute(f"SELECT c.id, c.file, c.text FROM {src} WHERE {w}", [f"%{h}%" for h in KEYLIKE_HINTS]).fetchall()
@@ -2148,13 +2309,16 @@ def embed_photos(con, url, bs=16):
 
 
 def ooxml_text(p, limit):
-    """Word, Excel, PowerPoint, HWPX: text parts read in pieces, stopping once `limit` characters are in.
-    A large workbook can expand to gigabytes of XML; reading it whole used to take all the memory and time."""
+    """Word, Excel, PowerPoint, HWPX, OpenDocument text / slides: text parts read in pieces, stopping once `limit`
+    characters are in (a large workbook can expand to gigabytes of XML; reading it whole took all the memory and time).
+    Read in order, as the program shows it (officetext.XmlFlow): runs inside a paragraph joined without a space, a line
+    per paragraph, a table's rows as tab-separated cells; a workbook's sheets as rows of cells, shared strings looked up
+    (red-team 0.2.26: every tag read as a space split 'Pass' + 'word:' and hid tables from the credential-table rule)"""
     import zipfile
     keys = ("word/document", "sharedStrings", "worksheets/", "slides/slide", "Contents/section")
     def order(n):   # body first; slides and sections in their own order (slide2 before slide10)
         m = re.search(r"(\d+)\.xml$", n)
-        return (0 if ("document" in n or "sharedStrings" in n) else 1, n.rsplit("/", 1)[0], int(m.group(1)) if m else 0)
+        return (0 if ("document" in n or "sharedStrings" in n or n == "content.xml") else 1, n.rsplit("/", 1)[0], int(m.group(1)) if m else 0)
     z = zipfile.ZipFile(p); out, have = [], 0; end = time.time() + FILE_SECONDS
     try:   # the properties the saving program wrote (title, subject, keywords, author): first, they say what the file is
         core = z.read("docProps/core.xml").decode("utf-8", "ignore")
@@ -2164,22 +2328,36 @@ def ooxml_text(p, limit):
             out.append(props); have += len(props)
     except KeyError:
         pass
-    for n in sorted((n for n in z.namelist() if n.endswith(".xml") and any(k in n for k in keys)), key=order):
+    shared, sheets = SharedStrings(), False
+    for n in sorted((n for n in z.namelist() if n.endswith(".xml") and (any(k in n for k in keys) or n == "content.xml")), key=order):
+        if "sharedStrings" in n:
+            flow = shared
+        elif "worksheets/" in n:
+            flow = SheetFlow(shared.items); sheets = True
+        else:
+            flow = XmlFlow(odf=(n == "content.xml"))
         with z.open(n) as f:
-            tail = ""
-            while have < limit and time.time() < end:
+            tail, size = "", 0
+            while have + size < limit and time.time() < end:
                 b = f.read(1 << 20)
                 if not b:
                     break
                 txt = tail + b.decode("utf-8", "ignore")
                 cut = txt.rfind(">") + 1   # a tag may continue in the next piece
                 tail = txt[cut:]
-                t = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", txt[:cut]))
-                if t.strip():
-                    out.append(t); have += len(t)
+                flow.feed(txt[:cut])
+                size = flow.size
+        if flow is shared:
+            continue
+        t = flow.text()
+        if t.strip():
+            out.append(t); have += len(t)
         if have >= limit:
             break
-    return re.sub(r"\s+", " ", " ".join(out)).strip()[:limit]
+    if not sheets and shared.items:   # a workbook whose sheets were not found: its strings, one a line
+        t = "\n".join(x for x in shared.items if x.strip())
+        out.append(t); have += len(t)
+    return "\n".join(x.strip() for x in out if x.strip())[:limit]
 
 
 def _snappy(b):
@@ -2449,9 +2627,17 @@ def reuse_moved(con, fresh, lost):
         (ofid, otr), (nfid, s, _, _, _, ntr, root) = o[0], n[0]
         if otr != ntr:
             continue   # a different tier now (a library folder, online-only): read as the new file it is
+        try:   # a link's target goes with it (via_column)
+            nvia = (con.execute("SELECT via FROM files WHERE id=?", (nfid,)).fetchone() or [None])[0]
+        except sqlite3.OperationalError:
+            nvia = None
         drop(con, nfid)   # the row the walk just added for it
         name, rel = nfc(Path(s).name), nfc(s[len(root.as_posix()):])
         con.execute("UPDATE files SET path=?, name=? WHERE id=?", (s, name, ofid))
+        try:
+            con.execute("UPDATE files SET via=? WHERE id=?", (nvia, ofid))
+        except sqlite3.OperationalError:
+            pass
         for cid, text in con.execute("SELECT id, text FROM chunks WHERE file=? AND n>=0", (ofid,)).fetchall():
             con.execute("DELETE FROM fts WHERE rowid=?", (cid,))
             con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, name, rel, nfc(text or "")))
