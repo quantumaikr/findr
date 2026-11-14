@@ -102,7 +102,7 @@ def test_credential_header_below_a_title_or_with_short_names(tmp_path, text):
 
 
 def test_ordinary_tables_are_not_credentials(tmp_path):
-    for text in ("name,phone,city\nkim,010,seoul\n", "Report\na\nb\nc\nd\ne\nurl,username,password\n", "pass rate,year\n0.8,2026\n"):
+    for text in ("name,phone,city\nkim,010,seoul\n", "Report\n" + "a\n" * 20 + "url,username,password\n", "pass rate,year\n0.8,2026\n"):
         assert not index.cred_header(text), text
 
 
