@@ -1086,7 +1086,7 @@ class Finder:
         rows = {r[5]: r for r in self.con.execute(f"""SELECT f.path, f.name, f.size, f.mtime, f.tier, f.id,
                     (SELECT text FROM chunks c WHERE c.file=f.id AND c.n=0) FROM files f WHERE f.id IN ({qm})""", list(fids))}
         return [{"path": winpath(r[0]), "name": r[1], "size": r[2], "date": fmt_time(r[3]),
-                 "kind": {1: "문서·코드", 2: "라이브러리", 3: "이름만"}.get(r[4], ""), "snippet": (r[6] or "")[:160], "score": 0, "fid": r[5]}
+                 "kind": {1: "문서·코드", 2: "라이브러리", 3: "이름만"}.get(r[4], ""), "snippet": (r[6] or "")[:160], "snippet_start": 0, "score": 0, "fid": r[5]}
                 for f in fids for r in [rows.get(f)] if r]
 
     def name_floor(self, q, res):
@@ -1159,7 +1159,7 @@ class Finder:
         rows = self.con.execute(f"""SELECT f.path, f.name, f.size, f.mtime, f.tier, f.id, (SELECT text FROM chunks c WHERE c.file=f.id AND c.n=0)
                                     FROM files f WHERE {' AND '.join(cond)} ORDER BY f.mtime DESC LIMIT ?""", args + [max(k, 30)]).fetchall()
         out = [{"path": winpath(path), "name": name, "size": size, "date": fmt_time(mt),
-                "kind": {1: "문서·코드", 2: "라이브러리", 3: "이름만"}.get(tr, ""), "snippet": (txt or "")[:160], "score": 0, "fid": fid}
+                "kind": {1: "문서·코드", 2: "라이브러리", 3: "이름만"}.get(tr, ""), "snippet": (txt or "")[:160], "snippet_start": 0, "score": 0, "fid": fid}
                for path, name, size, mt, tr, fid, txt in rows]
         n = self.con.execute(f"SELECT count(*) FROM files f WHERE {' AND '.join(cond)}", args).fetchone()[0]
         return {"parsed": show(p), "results": out, "ms": int(1000 * (time.time() - t0)),
@@ -1578,8 +1578,8 @@ class Finder:
             if len(res) == k:
                 break
         out = [{"path": winpath(path), "name": v[2], "size": v[4], "date": fmt_time(v[5]),
-                "kind": {1: "문서·코드", 2: "라이브러리", 3: "이름만"}.get(v[6], ""), "snippet": snip(v[1], words), "score": round(v[0] * 1000, 2),
-                "fid": v[7]}
+                "kind": {1: "문서·코드", 2: "라이브러리", 3: "이름만"}.get(v[6], ""), "snippet": snip_at(v[1], words)[0], "snippet_start": snip_at(v[1], words)[1],
+                "score": round(v[0] * 1000, 2), "fid": v[7]}
                for path, v in res]
         # say so when nothing is close in meaning and no words matched (the answer may be outside the indexed folders)
         weak = top_sim < (JWEAK if p.get("jenc") else WEAK) and not lex
@@ -1884,7 +1884,7 @@ def _as_line(con, x, path):
                     "WHERE f.path=?", (_local(path),)).fetchone()
     if not r:
         return None
-    return {**x, "path": path, "fid": r[0], "name": r[1], "size": r[2], "snippet": (r[4] or "")[:160],
+    return {**x, "path": path, "fid": r[0], "name": r[1], "size": r[2], "snippet": (r[4] or "")[:160], "snippet_start": 0,
             "date": fmt_time(r[3]) if r[3] else x.get("date")}
 
 
@@ -2427,10 +2427,34 @@ def winpath(s):
     return re.sub(r"^/mnt/([a-z])/", lambda m: m.group(1).upper() + ":\\", s).replace("/", "\\") if s.startswith("/mnt/") else s
 
 
+_NUMRUN = re.compile(r"\d+(?:[,.\-:/]\d+)*")   # 1,234,567 / 010-1234-5678 / 2026.11.14 / 12:30:05
+
+
+def snip_at(t, words, n=160):
+    """(snippet, start): start is where the snippet's first source character sits in `t` (the text as given, before
+    whitespace is folded). The cut never falls inside a number run: it moves out to the run's edge."""
+    t = t or ""
+    idx, chars, prev = [], [], False
+    for i, c in enumerate(t):   # fold whitespace runs to one space, remembering each kept character's place in t
+        if c.isspace():
+            if not prev:
+                idx.append(i); chars.append(" ")
+            prev = True
+        else:
+            idx.append(i); chars.append(c); prev = False
+    f = "".join(chars)
+    pos = min([i for i in (f.lower().find(w.lower()) for w in words) if i >= 0] or [0])
+    a, e = max(0, pos - 40), min(len(f), max(0, pos - 40) + n)
+    for m in _NUMRUN.finditer(f):
+        if m.start() < a < m.end():
+            a = m.start()
+        if m.start() < e < m.end():
+            e = m.end()
+    return ("…" if a else "") + f[a:e] + ("…" if e < len(f) else ""), (idx[a] if a < len(idx) else len(t))
+
+
 def snip(t, words, n=160):
-    t = re.sub(r"\s+", " ", t or "")
-    pos = min([i for i in (t.lower().find(w.lower()) for w in words) if i >= 0] or [0])
-    a = max(0, pos - 40); return ("…" if a else "") + t[a:a + n] + ("…" if a + n < len(t) else "")
+    return snip_at(t, words, n)[0]
 
 
 PAGE = """<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

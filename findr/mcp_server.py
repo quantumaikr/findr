@@ -73,7 +73,7 @@ def _engine_search(query, limit):
     for x in (r.get("results") or [])[:limit]:
         out.append({"name": x.get("name"), "path": x.get("path"), "modified": x.get("date"),
                     "chance": round(x["prob"], 2) if x.get("prob") is not None else None,
-                    "excerpt": (x.get("snippet") or "")[:300]})
+                    "excerpt": (x.get("snippet") or "")[:300], "excerpt_start": x.get("snippet_start")})
     return {"results": out, "note": r.get("note") or "", "engine": "full"}
 
 

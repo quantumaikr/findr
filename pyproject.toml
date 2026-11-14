@@ -55,4 +55,4 @@ Models = "https://huggingface.co/quantumaikr/findr-models"
 packages = ["findr", "findr.core"]
 
 [tool.setuptools.package-data]
-"findr.core" = ["*.html", "doctype_heads.json"]
+"findr.core" = ["*.html", "*.json"]

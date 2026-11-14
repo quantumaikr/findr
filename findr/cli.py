@@ -683,9 +683,13 @@ def cmd_uninstall(a):
         print(L("지우지 않았습니다.", "Nothing was removed.")); return 0
     # the Windows app is installed into this same folder: its files stay for the system's uninstaller (removing them here
     # left 'findr' in Settings > Apps with no uninstaller to run)
-    app = [n for n in ("findr-desktop.exe", "uninstall.exe") if (h / n).exists()]
+    # Which files are the app's is not ours to name: any executable in the folder is left (the engine never writes one), plus
+    # the running app's own file when it tells us (FINDR_APP_EXE, by name or path) and the installer's fixed names.
+    app_exe = os.environ.get("FINDR_APP_EXE", "").strip()
+    keep = {"uninstall.exe", "uv.exe", "engine"} | ({os.path.basename(app_exe).lower()} if app_exe else set())
+    app = [e.name for e in h.iterdir() if e.is_file() and (e.suffix.lower() == ".exe" or e.name.lower() in keep)]
     if app:
-        keep = {"findr-desktop.exe", "uninstall.exe", "uv.exe", "engine"}
+        keep |= {n.lower() for n in app}
         for e in list(h.iterdir()):
             if e.name.lower() not in keep:
                 shutil.rmtree(e, ignore_errors=True) if e.is_dir() else e.unlink(missing_ok=True)
