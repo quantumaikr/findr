@@ -47,7 +47,7 @@ def test_mcp_server_lists_tools(tmp_path):
             async with ClientSession(r, w) as s:
                 await s.initialize()
                 return sorted(t.name for t in (await s.list_tools()).tools)
-    assert asyncio.run(go()) == ["list_folder", "read_file", "search_files", "versions"]
+    assert asyncio.run(go()) == ["file_relations", "list_folder", "read_file", "search_files", "versions"]
 
 
 @pytest.fixture

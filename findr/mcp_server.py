@@ -9,6 +9,8 @@ Tools
                                does once a search shows roughly where something is (a photo with no text, a project folder)
   versions(path)               the same document's other files: exact copies anywhere, other versions in its folder, the
                                same name in other folders, with dates, so the latest or the original can be picked
+  file_relations(path, terms)  what ties one file to others: its characteristic words, a stable file id, the id of its version
+                               family and the files with exactly the same content (#203)
 
 The last two and the filters came from real-PC runs (11/9): agents with search_files alone needed 2-4 calls, and said a
 kind filter, a folder view and a version view would have ended most of them in one.
@@ -83,6 +85,43 @@ def _db():
     con = sqlite3.connect(f"file:{paths.DB}?mode=ro", uri=True, timeout=10)
     con.create_function("nfc", 1, lambda s: unicodedata.normalize("NFC", s) if s else s, deterministic=True)
     return con
+
+
+def _rw():
+    """the index open for writing, for the ids and terms kept in it (made when first asked, #203); None when it cannot be
+    written now (the indexer holds it, a read-only folder): the tools then answer without those"""
+    if not paths.DB.exists():
+        return None
+    try:
+        con = sqlite3.connect(str(paths.DB), timeout=10)
+        con.create_function("nfc", 1, lambda s: unicodedata.normalize("NFC", s) if s else s, deterministic=True)
+        con.execute("SELECT 1 FROM files LIMIT 1")
+        return con
+    except sqlite3.Error:
+        return None
+
+
+def _rel_ids(fid, others):
+    """{'file_id', 'family_id', 'members': {path: file id}} for an index row and its family: the files other than the
+    'similar' ones the versions tool names, and the files with the very same bytes. {} when the ids cannot be written"""
+    from .core import relations
+    con = _rw()
+    if con is None:
+        return {}
+    try:
+        fids = {}
+        for p2 in others:
+            r = con.execute("SELECT id FROM files WHERE path=?", (p2,)).fetchone()
+            if r:
+                fids[p2] = r[0]
+        same = relations.copies(con, fid)   # the very same bytes belong to the family too
+        fam = relations.family_id(con, fid, [*fids.values(), *(c["fid"] for c in same)])
+        return {"file_id": relations.file_id(con, fid), "family_id": fam,
+                "members": {p2: relations.file_id(con, f2) for p2, f2 in fids.items()}, "same": same}
+    except sqlite3.Error:
+        return {}
+    finally:
+        con.close()
 
 
 def _day(mt):
@@ -387,8 +426,46 @@ def versions(path: str) -> dict:
     me = con.execute("SELECT mtime FROM files WHERE id=?", (fid,)).fetchone()[0]
     sim = _similar(con, fid, name, ext, folder, head, me, seen)   # after the named ones: maybe another version, with why
     out = out[:30] + sim
-    return {"file": {"name": name, "path": fp, "modified": _day(me)}, "others": out,
-            "note": "" if out else "No other copy or version of this file is indexed."}
+    ids = _rel_ids(fid, [o["path"] for o in out if o["relation"] != "similar"])   # additive fields (#203)
+    for o in out:
+        if o["path"] in ids.get("members", {}):
+            o["file_id"] = ids["members"][o["path"]]
+    return {"file": {"name": name, "path": fp, "modified": _day(me), "file_id": ids.get("file_id"), "family_id": ids.get("family_id")},
+            "others": out, "note": "" if out else "No other copy or version of this file is indexed."}
+
+
+def file_relations(path: str, terms: int = 10) -> dict:
+    """What ties one indexed file to others, from findr's index: its characteristic words (what the text is about, best
+    first), a stable file id (kept when the file is re-indexed, edited or moved), the id of its version family (the same one
+    versions() reports), and the other files with exactly the same content (sha1), wherever they are. Use the ids to
+    recognise the same file or the same family of files across calls; use copies to find duplicates of one file."""
+    from .core import relations
+    ro = _db()
+    if ro is None:
+        return {"error": "findr has no index on this PC yet"}
+    row = ro.execute("SELECT id, name, size, mtime, path FROM files WHERE replace(nfc(path), '\\', '/') = ?", (_norm(path),)).fetchone()
+    ro.close()
+    if not row:
+        return {"error": "not a file in findr's index; use a path returned by search_files"}
+    fid, name, size, mt, fp = row
+    v = versions(fp)
+    con = _rw()
+    words, same, sig = [], [], None
+    if con is not None:
+        try:
+            words = relations.terms(con, fid, max(1, min(int(terms or 10), 30)))
+            sig = relations.content_sig(con, fid)
+            same = [{"name": c["name"], "path": c["path"], "modified": _day(c["mtime"]), "file_id": c["id"]} for c in relations.copies(con, fid)]
+        except sqlite3.Error:
+            pass
+        finally:
+            con.close()
+    f = v.get("file") or {}
+    return {"file": {"name": name, "path": fp, "modified": _day(mt), "size": size, "file_id": f.get("file_id"),
+                     "family_id": f.get("family_id"), "content_sha1": sig},
+            "terms": words, "same_content": same,
+            "family": [o for o in v.get("others", []) if o["relation"] != "similar"],
+            "note": "" if f.get("file_id") else "Ids and terms could not be stored now (the index is busy or read-only); try again."}
 
 
 def read_file(path: str, max_chars: int = 4000) -> dict:
@@ -425,4 +502,5 @@ def main():
     srv.tool()(read_file)
     srv.tool()(list_folder)
     srv.tool()(versions)
+    srv.tool()(file_relations)
     srv.run()

@@ -107,6 +107,11 @@ def tier(p: Path):
     return 1
 
 
+try:
+    from . import relations
+except ImportError:
+    import relations
+
 try:   # old office formats: content sniffing + Word 97 piece table before LibreOffice (orders of magnitude faster)
     from .officetext import sniff_text, doc_text, hwp_text
     from .moretext import sheet_text, rtf_text, eml_text
@@ -1783,10 +1788,14 @@ def reuse_moved(con, fresh, lost):
 
 # every other table that keeps rows by file id. A file id is an INTEGER PRIMARY KEY, which SQLite hands out again after the
 # highest one is deleted: a row left here would then describe the next new file (its summary, author, history)
-FILE_TABLES = ("photo_emb", "cards", "docmeta", "events")
+FILE_TABLES = ("photo_emb", "cards", "docmeta", "events", "file_uid", "file_terms")   # file_uid: after relations.tombstone keeps its id (#203)
 
 
 def drop(con, fid):
+    try:
+        relations.tombstone(con, fid)   # the file's stable id waits for it to turn up again (#203)
+    except sqlite3.Error:
+        pass
     con.execute("DELETE FROM fts WHERE rowid IN (SELECT id FROM chunks WHERE file=?)", (fid,))
     con.execute("DELETE FROM chunks WHERE file=?", (fid,)); con.execute("DELETE FROM files WHERE id=?", (fid,))
     for t in FILE_TABLES:
