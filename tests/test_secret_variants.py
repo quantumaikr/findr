@@ -126,3 +126,27 @@ def test_a_mail_inside_a_mail_is_its_name_only(tmp_path):
     p.write_bytes(_mail([("report.csv", "품목,수량\n센서,2\n")], inner=inner).as_bytes())
     t = moretext.eml_text(p)
     assert "센서" in t and "zebracorn" not in t and "inner fwd" not in t, t
+
+
+def test_old_attachment_text_is_dropped_when_returned():
+    """an index made before the rules may hold a password export's text as a mail attachment block"""
+    t = ("Subject: a\n\n첨부: logins 2.csv, r.txt\n\n[첨부 logins 2.csv]\n" + CRED + "[첨부 r.txt]\nquarterly report")
+    out = index.mask(t)
+    assert "PwFakeVariant1" not in out and "[첨부 logins 2.csv]" in out and "quarterly report" in out
+
+
+def test_an_index_from_before_is_read_again(tmp_path):
+    """mail and text files stored by an older findr: mail is read again under the new rules, and a text file whose stored
+    first line is a password export's header loses its text, on the next run"""
+    root = tmp_path / "home"; root.mkdir()
+    p = root / "a.eml"
+    p.write_bytes(_mail([("logins 2.csv", CRED)]).as_bytes())
+    (root / "accounts.txt").write_text(CRED, encoding="utf-8")
+    con = _index([root], tmp_path / "i.db", tmp_path / "data")
+    for fid, name in con.execute("SELECT id, name FROM files").fetchall():   # what an older findr stored
+        con.execute("UPDATE files SET tier=1 WHERE id=?", (fid,))
+        con.execute("UPDATE chunks SET text=? WHERE file=? AND n=0", (("[첨부 logins 2.csv]\n" if name == "a.eml" else "") + CRED, fid))
+    con.execute("UPDATE meta SET value='2' WHERE key='readers'"); con.commit(); con.close()
+    con = _index([root], tmp_path / "i.db", tmp_path / "data")
+    text = " ".join(t or "" for (t,) in con.execute("SELECT text FROM chunks"))
+    assert "PwFakeVariant1" not in text and dict(con.execute("SELECT name, tier FROM files"))["accounts.txt"] == 0

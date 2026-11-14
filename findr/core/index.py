@@ -101,8 +101,24 @@ def _mask_one(m):
 
 def mask(text):
     """values that look like keys, passwords and tokens replaced by [가림]: what the index stores and every text findr
-    returns (read_file, excerpts, the search page). A URL keeps its address, only the password in it is masked"""
-    return KEYLIKE.sub(_mask_one, text) if text else text
+    returns (read_file, excerpts, the search page). A URL keeps its address, only the password in it is masked. A mail's
+    attachment block ('[첨부 name]' and its text) that the secret rules mark keeps its name only (text an index made
+    before a rule may still hold)"""
+    if not text:
+        return text
+    text = KEYLIKE.sub(_mask_one, text)
+    return _ATT_BLOCK.sub(_att_one, text) if "[첨부 " in text else text
+
+
+_ATT_BLOCK = re.compile(r"\[첨부 ([^\]\n]{1,300})\]\n(.*?)(?=\n\[첨부 [^\]\n]{1,300}\]\n|\Z)", re.S)
+
+
+def _att_one(m):
+    try:
+        bad = is_secret(Path(m.group(1)), head=m.group(2)[:4096].encode("utf-8", "replace"))
+    except Exception:   # noqa: BLE001
+        bad = True
+    return f"[첨부 {m.group(1)}]\n" if bad else m.group(0)
 
 
 def mask_obj(o, keep=frozenset({"path", "name", "date", "modified", "folder", "fid", "route", "kind", "ext", "file_id", "family_id"})):
@@ -379,8 +395,10 @@ def transcript(p: Path):
 # What the readers can read changes between versions. An unchanged file (same size, mtime and tier) is never read again,
 # so files these readers newly handle are queued once when the reader version goes up.
 #   2: .xls/.xlsb/.ods without LibreOffice (#29), distribution(배포용) .hwp (#28)
-READERS = 2
+#   3: mail attachments under the secret rules and nested mail by name only; password exports found by their first line
+READERS = 3
 REREAD_EXT = {2: (".xls", ".xlsb", ".ods", ".hwp")}
+REREAD_ALL = {3: (".eml", ".emlx", ".mbox")}   # read again even with text stored: what they stored may now be left out
 
 
 def reread_for_new_readers(con):
@@ -390,7 +408,17 @@ def reread_for_new_readers(con):
         return 0
     exts = sorted({e for v, es in REREAD_EXT.items() if v > have for e in es})
     n = con.execute(f"""UPDATE files SET pending=1 WHERE tier=1 AND ext IN ({','.join('?' * len(exts))})
-                        AND NOT EXISTS (SELECT 1 FROM chunks c WHERE c.file=files.id AND length(c.text) > 0)""", exts).rowcount
+                        AND NOT EXISTS (SELECT 1 FROM chunks c WHERE c.file=files.id AND length(c.text) > 0)""", exts).rowcount if exts else 0
+    every = sorted({e for v, es in REREAD_ALL.items() if v > have for e in es})
+    if every:
+        n += con.execute(f"UPDATE files SET pending=1 WHERE tier=1 AND ext IN ({','.join('?' * len(every))})", every).rowcount
+    if have < 3:   # text files already read whose first line is a password export's header: read again (the content stage keeps the name only)
+        hit = [fid for fid, name, t in con.execute("""SELECT f.id, f.name, c.text FROM files f JOIN chunks c ON c.file=f.id AND c.n=0
+                                                      WHERE f.tier=1 AND f.ext IN ('.csv', '.tsv', '.txt', '')""")
+               if t and any(real_ext(Path(x)) in CRED_EXTS for x in name_forms(name)) and cred_header(t[:4096])]
+        for fid in hit:
+            con.execute("UPDATE files SET pending=1 WHERE id=?", (fid,))
+        n += len(hit)
     con.execute("INSERT OR REPLACE INTO meta VALUES('readers', ?)", (str(READERS),)); con.commit()
     if n:
         print(f"FINDR_REREAD {n} files a newer reader can read ({', '.join(exts)})", flush=True)
