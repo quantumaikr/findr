@@ -23,7 +23,9 @@ whether it leaves the PC.
 
 Nothing under findr's data folder (paths.HOME), or under the folders in FINDR_MCP_DENY (separated by os.pathsep), is ever
 named, listed or read by these tools, even when it is in the index: an app that embeds findr may keep its own files there.
-The tools answer for such a path exactly as for one that is not in the index (#200)."""
+Nor is a file the secret rules mark (keys, certificates, password exports: index.is_secret), checked at each answer, so a
+rule added since the last index run holds at once. The tools answer for such a path exactly as for one that is not in the
+index (#200)."""
 import functools
 import json
 import os
@@ -134,8 +136,23 @@ def _deny_roots():
     return out
 
 
+def _secret(p):
+    """the indexer's secret rules that need only the path (index.secret_name) on a path as stored: a rule added since the
+    file was indexed hides it now, not at the next index run. The rules that open the file (a '.key' that is not a Keynote
+    deck, a CSV's header) were applied by the indexer (tier 0). A Windows path is taken apart as one on any OS"""
+    from pathlib import PurePosixPath, PureWindowsPath
+    try:
+        from .core import index
+        s = str(p)
+        q = PureWindowsPath(s) if (os.name == "nt" or "\\" in s) else PurePosixPath(s)
+        return index.secret_name(q)
+    except Exception:   # noqa: BLE001
+        return False
+
+
 def _denied(p, roots=None):
-    """True for a path in or under the data folder or a FINDR_MCP_DENY folder ('..' cannot step out of the check)"""
+    """True for a path in or under the data folder or a FINDR_MCP_DENY folder ('..' cannot step out of the check), or a file
+    the secret rules mark"""
     if not p:
         return False
     roots = _deny_roots() if roots is None else roots
@@ -143,7 +160,7 @@ def _denied(p, roots=None):
         c = _canon(f)
         if any(c == r or c.startswith(r.rstrip("/") + "/") for r in roots):
             return True
-    return False
+    return _secret(p)
 
 
 def _db():
@@ -537,7 +554,9 @@ def file_relations(path: str, terms: int = 10) -> dict:
     ro = _db()
     if ro is None:
         return {"error": "findr has no index on this PC yet"}
-    row = ro.execute("SELECT id, name, size, mtime, path FROM files WHERE replace(nfc(path), '\\', '/') = ?", (_norm(path),)).fetchone()
+    # the same guard as read_file: not the data folder, a deny folder or a secret file (#200), and not a tier-0 row
+    row = None if _denied(path) else ro.execute("SELECT id, name, size, mtime, path FROM files WHERE replace(nfc(path), '\\', '/') = ? "
+                                                "AND tier > 0 AND NOT denied(path)", (_norm(path),)).fetchone()
     ro.close()
     if not row:
         return {"error": "not a file in findr's index; use a path returned by search_files"}
@@ -545,16 +564,23 @@ def file_relations(path: str, terms: int = 10) -> dict:
     v = versions(fp)
     con = _rw()
     words, same, sig = [], [], None
+    f = dict(v.get("file") or {})
     if con is not None:
         try:
             words = relations.terms(con, fid, max(1, min(int(terms or 10), 30)))
             sig = relations.content_sig(con, fid)
-            same = [{"name": c["name"], "path": c["path"], "modified": _day(c["mtime"]), "file_id": c["id"]} for c in relations.copies(con, fid)]
+            roots = _deny_roots()
+            same = [{"name": c["name"], "path": c["path"], "modified": _day(c["mtime"]), "file_id": c["id"], "_fid": c["fid"]}
+                    for c in relations.copies(con, fid, keep=lambda p2: not _denied(p2, roots))]
+            if same:   # the very same bytes belong to the family too (members already in another family stay there)
+                fam = relations.family_id(con, fid, [c["_fid"] for c in same])
+                f["family_id"] = fam or f.get("family_id")
         except sqlite3.Error:
             pass
         finally:
             con.close()
-    f = v.get("file") or {}
+    for c in same:
+        c.pop("_fid", None)
     return {"file": {"name": name, "path": fp, "modified": _day(mt), "size": size, "file_id": f.get("file_id"),
                      "family_id": f.get("family_id"), "content_sha1": sig},
             "terms": words, "same_content": same,

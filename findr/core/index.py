@@ -125,11 +125,16 @@ def cred_header(head):
     return bool(cols & _CRED_PW) and bool(cols & _CRED_ID)
 
 
+def secret_name(p):
+    """the rules that need only the path (names and certificate folders): what a secret file is, without opening it"""
+    return bool(SECRET.search(p.name) or SECRET.search(BAK.sub("", p.name)) or secret_path(p))
+
+
 def is_secret(p: Path, head=None):
     """key and credential files are never read; a '.key' file is a secret unless it is a Keynote deck (a ZIP); a CSV named
     with password / 비밀번호 that is not a known export name is secret when its header is a credential export. `head`: the
     file's first bytes when they are at hand (a mail attachment); otherwise they are read from `p`"""
-    if SECRET.search(p.name) or SECRET.search(BAK.sub("", p.name)) or secret_path(p):
+    if secret_name(p):
         return True
     if CRED_NAME.search(BAK.sub("", nfc(p.name))):
         if head is None:

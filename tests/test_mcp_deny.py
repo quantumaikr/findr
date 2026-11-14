@@ -141,3 +141,38 @@ def test_deny_list_is_read_at_each_call(pc, monkeypatch):
     monkeypatch.setenv("FINDR_MCP_DENY", os.pathsep.join([pc.docs, pc.priv]))
     assert pc.read_file(pc.docs + "/plan_final.docx") == NOT_INDEXED
     assert _paths(pc.search_files("sensor", limit=30)) == []
+
+
+def test_file_relations_answers_as_for_a_file_not_in_the_index(pc):
+    """review of #203: file_relations had no guard; its same-content list named the data folder's copy"""
+    for p in (pc.data + "/app/notes/plan_v2.docx", pc.priv + "/plan_secret.docx", pc.docs + "/../data/app/plan_dotdot.docx"):
+        assert pc.file_relations(p) == NOT_INDEXED, p
+    con = sqlite3.connect(os.path.join(pc.data, "index.db"))
+    con.execute("UPDATE files SET tier=0 WHERE id=6"); con.commit(); con.close()
+    assert pc.file_relations(pc.docs + "/sensor_budget.xlsx") == NOT_INDEXED   # a tier-0 row
+
+
+def test_same_content_leaves_out_the_data_folder(pc):
+    body = b"the very same bytes of the final plan"
+    for p in (pc.docs + "/plan_final.docx", pc.data + "/app/notes/plan_final.docx"):
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(body)
+    con = sqlite3.connect(os.path.join(pc.data, "index.db"))
+    con.execute("UPDATE files SET size=? WHERE id IN (1, 2)", (len(body),)); con.commit(); con.close()
+    r = pc.file_relations(pc.docs + "/plan_final.docx")
+    assert r["file"]["content_sha1"] and r["same_content"] == []
+    assert pc.data not in json.dumps(r)
+
+
+def test_a_new_secret_rule_holds_before_the_next_index_run(pc):
+    """review of #200: a row indexed before a name became secret (tier 1, text stored) is hidden at the next answer"""
+    p = pc.docs + "/Chrome Passwords.csv"
+    con = sqlite3.connect(os.path.join(pc.data, "index.db"))
+    con.execute("INSERT INTO files VALUES(20,?,?,'.csv',100,1700000100,1)", (p, "Chrome Passwords.csv"))
+    con.execute("INSERT INTO chunks VALUES(20,20,0,'sensor site,someone,NotARealSecret')")
+    con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(20,'Chrome Passwords.csv',?,'sensor site,someone,NotARealSecret')", (p,))
+    con.commit(); con.close()
+    assert pc.read_file(p) == NOT_INDEXED and pc.versions(p) == NOT_INDEXED and pc.file_relations(p) == NOT_INDEXED
+    assert p not in _paths(pc.search_files("sensor")) and p not in _paths(pc.search_files("Passwords"))
+    assert p not in [f["path"] for f in pc.list_folder(pc.docs)["files"]]
