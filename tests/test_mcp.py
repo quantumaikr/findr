@@ -37,7 +37,9 @@ def test_read_only_indexed_files(mcp_mod, tmp_path):
 
 def test_read_file_says_why_and_pages(mcp_mod, tmp_path):
     import zipfile
-    old, doc = tmp_path / "old.hwp", tmp_path / "a.docx"
+    docs = tmp_path.parent / (tmp_path.name + "_docs")   # outside the data folder, which the tools never answer from (#200)
+    docs.mkdir()
+    old, doc = docs / "old.hwp", docs / "a.docx"
     old.write_bytes(b"HWP Document File V3.00" + b"\0" * 100)
     with zipfile.ZipFile(doc, "w") as z:
         z.writestr("word/document.xml", "<w:document xmlns:w='x'><w:t>본문</w:t></w:document>")
