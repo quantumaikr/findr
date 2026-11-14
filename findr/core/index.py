@@ -37,8 +37,11 @@ SECRET = re.compile(r"^(\.env(\..*)?|\.netrc|\.pgpass|\.git-credentials|id_(rsa|
                     r"|\.(bash|zsh|sh|python|psql|mysql|node_repl|lesshst)_?history|\.history|ConsoleHost_history\.txt"   # shell histories hold typed tokens
                     r"|(sign|km)(Cert\.der|Pri\.key)"   # a Korean joint certificate (공동인증서): the certificate and its private key
                     # browsers' saved passwords: their CSV exports (Chrome / Edge / Safari 'Passwords.csv', 'Chrome 비밀번호.csv',
-                    # Firefox 'logins.csv') and the stores themselves (Firefox logins.json + key4.db, Chrome 'Login Data')
-                    r"|.*(password|비밀번호).*\.csv|logins( ?\(\d+\))?\.csv|logins\.json|key[34]\.db|signons\.sqlite|Login Data( For Account)?"
+                    # Firefox 'logins.csv') and the stores themselves (Firefox logins.json + key4.db, Chrome 'Login Data'). Other CSV
+                    # names with password / 비밀번호 in them are secret only when their header row is a credential export (CRED_CSV)
+                    r"|passwords.*\.csv|(password|비밀번호)( ?\(\d+\))?\.csv|((microsoft )?edge|chrome|safari|firefox|brave|opera|vivaldi|whale|네이버 웨일|웨일|"
+                    r"google|구글) ?(passwords?|비밀번호)( ?\(\d+\))?\.csv"
+                    r"|logins( ?\(\d+\))?\.csv|logins\.json|key[34]\.db|signons\.sqlite|Login Data( For Account)?"
                     # password-manager exports: the manager's name and export / vault / backup in the name
                     # (bitwarden_export_….json, lastpass_vault_export.csv, 1PasswordExport-….csv, dashlane-credential-export.csv)
                     r"|(?=.*(bitwarden|lastpass|1password|keepass|dashlane|nordpass|roboform|enpass|proton ?pass))"
@@ -46,7 +49,16 @@ SECRET = re.compile(r"^(\.env(\..*)?|\.netrc|\.pgpass|\.git-credentials|id_(rsa|
 # folders of certificates, and any path naming them, are never read either (see secret_path): the NPKI / GPKI / EPKI folders
 # that Korean banking, government and school sign-ins keep (with signCert.der, signPri.key), and copies made by hand
 CERT_DIRS = {"npki", "gpki", "epki"}
+# a folder named with these words (a certificate backup made by hand) hides the certificate files in it, not its other files
+# ('공동인증서 발급 안내.pdf' and a guide in such a folder are ordinary documents)
 CERT_WORDS = ("공동인증서", "공인인증서")
+CERT_EXTS = {".der", ".key", ".pfx", ".p12", ".cer", ".crt", ".pem"}
+# a CSV whose name says password / 비밀번호 but is not one of the known export names: secret when its header row is a
+# credential export (a password column with a user name or site column); 'password_policy_review.csv' with other columns is read
+CRED_NAME = re.compile(r"(password|비밀번호|passwd).*\.csv$", re.I)
+_CRED_PW = {"password", "passwd", "pwd", "pass", "login_password", "비밀번호", "암호", "패스워드"}
+_CRED_ID = {"username", "user", "user name", "login", "login_username", "email", "e-mail", "account", "아이디", "사용자", "사용자 이름",
+            "계정", "url", "login_uri", "website", "site", "web site", "origin", "hostname", "사이트", "웹사이트", "주소"}
 # '.key' is both a cryptographic key and an Apple Keynote deck: Keynote is a ZIP, a key file is not (see is_secret)
 # values that look like keys are masked inside indexed text (a key pasted into a note or log never reaches the index)
 KEYLIKE = re.compile(r"(sk-[A-Za-z0-9_\-]{20,}|sk-ant-[A-Za-z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|hf_[A-Za-z0-9]{30,}"
@@ -94,16 +106,39 @@ def real_ext(p: Path):
 
 
 def secret_path(s):
-    """a path inside a certificate folder (NPKI, GPKI, EPKI, any case) or naming 공동인증서 / 공인인증서 anywhere.
-    Both separators: a Windows path is checked the same on any PC (and the index may hold one from another)"""
-    s = nfc(str(s))
-    return any(x.casefold() in CERT_DIRS for x in re.split(r"[\\/]+", s)[:-1]) or any(w in s for w in CERT_WORDS)
+    """a path inside a certificate folder (NPKI, GPKI, EPKI, any case), or a certificate-like file (CERT_EXTS) inside a
+    folder whose name holds 공동인증서 / 공인인증서. Both separators: a Windows path is checked the same on any PC (and the
+    index may hold one from another)"""
+    parts = re.split(r"[\\/]+", nfc(str(s)))
+    if any(x.casefold() in CERT_DIRS for x in parts[:-1]):
+        return True
+    return real_ext(Path(parts[-1])) in CERT_EXTS and any(w in x for x in parts[:-1] for w in CERT_WORDS)
 
 
-def is_secret(p: Path):
-    """key and credential files are never read; a '.key' file is a secret unless it is a Keynote deck (a ZIP)"""
+def cred_header(head):
+    """True when the first line of a CSV (bytes or text) is a credential export's header: a password column and a user
+    name or site column"""
+    if isinstance(head, bytes):
+        head = head[:4096].decode("utf-8-sig", "replace")
+    line = (head or "").lstrip("\ufeff").splitlines()[0] if (head or "").strip() else ""
+    cols = {c.strip().strip('"\'').strip().casefold() for c in re.split(r"[,;\t]", line)}
+    return bool(cols & _CRED_PW) and bool(cols & _CRED_ID)
+
+
+def is_secret(p: Path, head=None):
+    """key and credential files are never read; a '.key' file is a secret unless it is a Keynote deck (a ZIP); a CSV named
+    with password / 비밀번호 that is not a known export name is secret when its header is a credential export. `head`: the
+    file's first bytes when they are at hand (a mail attachment); otherwise they are read from `p`"""
     if SECRET.search(p.name) or SECRET.search(BAK.sub("", p.name)) or secret_path(p):
         return True
+    if CRED_NAME.search(BAK.sub("", nfc(p.name))):
+        if head is None:
+            try:
+                with open(p, "rb") as f:
+                    head = f.read(4096)
+            except OSError:
+                return False   # nothing to read: nothing to hide either
+        return cred_header(head)
     if real_ext(p) == ".key":
         try:
             with open(p, "rb") as f:

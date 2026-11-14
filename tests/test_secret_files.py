@@ -43,9 +43,10 @@ def test_ordinary_names_are_still_read(tmp_path, name):
     "/home/me/Epki/x.pdf",
     "C:\\Users\\me\\AppData\\LocalLow\\NPKI\\KICA\\USER\\list.txt",
     "C:/Program Files/GPKI/Certificate/class2/info.txt",
-    "D:\\자료\\공동인증서 백업\\설명.txt",
-    "/home/me/문서/공인인증서/안내.hwp",
-    "/home/me/공동인증서_2025.zip",
+    "D:\\자료\\공동인증서 백업\\signCert.cer",
+    "/home/me/문서/공인인증서/user.crt",
+    "/home/me/공동인증서_2025/bank.der",
+    "/home/me/공동인증서/backup/kmPri.key.bak",
 ])
 def test_certificate_folders_and_named_paths(path):
     assert index.secret_path(path), path
@@ -55,11 +56,14 @@ def test_certificate_folders_and_named_paths(path):
 def test_certificate_names_in_decomposed_korean():
     """macOS may hand the name decomposed (NFD); it is the same name"""
     import unicodedata
-    assert index.secret_path(unicodedata.normalize("NFD", "/Users/me/공동인증서/a.txt"))
+    assert index.secret_path(unicodedata.normalize("NFD", "/Users/me/공동인증서/a.der"))
 
 
 @pytest.mark.parametrize("path", ["/home/me/npki_report.txt", "/home/me/문서/인증서 발급 안내.txt", "/home/me/NPKI",
-                                  "C:\\Users\\me\\Documents\\GPKI안내.hwp"])
+                                  "C:\\Users\\me\\Documents\\GPKI안내.hwp",
+                                  # the words name a certificate only on a folder, and only for certificate files in it
+                                  "/home/me/문서/공동인증서 발급 안내.pdf", "/home/me/공동인증서_2025.zip",
+                                  "D:\\자료\\공동인증서 백업\\설명.txt", "/home/me/문서/공인인증서/안내.hwp"])
 def test_not_a_certificate_folder(path):
     assert not index.secret_path(path), path   # the folder name alone, as a whole folder; a file named NPKI is a file
 
@@ -140,3 +144,18 @@ def test_the_data_folder_chosen_itself_stays(tmp_path):
     data = _data_folder(tmp_path / "home")
     con = _index([data], tmp_path / "i.db", data)
     assert {"engine.log", "settings.json", "메모.txt"} <= {n for (n,) in con.execute("SELECT name FROM files")}
+
+
+@pytest.mark.parametrize("name,head,secret", [
+    ("password_policy_review.csv", "rule,owner,status\nlength,it,ok\n", False),
+    ("비밀번호 정책.csv", "항목,담당,상태\n길이,전산,완료\n", False),
+    ("team_password_list.csv", "url,username,password\nhttps://example.invalid,me,not-real\n", True),
+    ("공용 비밀번호 목록.csv", "\ufeff사이트,아이디,비밀번호\nexample,me,not-real\n", True),
+    ("old_passwd_dump.csv", "name;login;passwd\nx;me;not-real\n", True),
+])
+def test_other_password_csv_names_need_a_credential_header(tmp_path, name, head, secret):
+    """#12 follow-up: 'password' in a CSV name alone no longer hides it; the header row of a credential export does"""
+    p = tmp_path / name
+    p.write_text(head, encoding="utf-8")
+    assert index.is_secret(p) is secret and (index.tier(p) == 0) is secret, name
+    assert index.is_secret(Path(name), head=head.encode("utf-8")) is secret   # the head given (a mail attachment)
