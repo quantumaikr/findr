@@ -210,10 +210,33 @@ def _cred_line(line):
     return bool(pw) and bool(who)
 
 
+# password-manager exports by their content, whatever their name (red-team 0.2.24: vault.json, keepass_dump.xml): a KeePass
+# XML, or JSON / XML records holding a password field beside a user name or site field (Bitwarden, 1Password .1pif, Firefox
+# logins.json, any manager's JSON export)
+PM_EXTS = {".json", ".jsonl", ".xml", ".txt", ".csv", ".tsv", ".1pif", ""}
+_PM_KEEPASS = re.compile(r"<\s*KeePassFile\b", re.I)
+_PM_PW = re.compile(r"(?i)\"(?:password|passwd|pwd|encryptedPassword|login_?password|passphrase)\"\s*:"
+                    r"|\"designation\"\s*:\s*\"password\"|<\s*(?:password|passwd)\s*>")
+_PM_WHO = re.compile(r"(?i)\"(?:username|user|login|email|uri|uris|url|hostname|origin|origin_?url|website|encryptedUsername"
+                     r"|login_?username|login_?uri)\"\s*:|\"(?:designation|name)\"\s*:\s*\"(?:username|email|login)\""
+                     r"|<\s*(?:username|user|login|email|url|uri|website)\s*>")
+
+
+def pm_export(head):
+    """True when text (or bytes) is a password manager's export by its content"""
+    if isinstance(head, (bytes, bytearray)):
+        b = bytes(head[:65536])
+        head = b.decode("utf-16", "replace") if b[:2] in (b"\xff\xfe", b"\xfe\xff") else _decode_text(b)
+    t = (head or "")[:65536]
+    return bool(_PM_KEEPASS.search(t)) or (bool(_PM_PW.search(t)) and bool(_PM_WHO.search(t)))
+
+
 def secret_text(name, text):
     """the content rules on text already read (the content stage, and an index from before a rule): a credential export's
-    header in a CSV / TSV / text file"""
-    return any(real_ext(Path(f)) in CRED_EXTS for f in name_forms(name)) and cred_header(text[:4096])
+    header in a CSV / TSV / text file, or a password manager's export (pm_export) in a JSON / XML / text file"""
+    forms = name_forms(base_name(name))
+    exts = {real_ext(Path(f)) for f in forms}
+    return bool((exts & CRED_EXTS and cred_header(text[:4096])) or (exts & PM_EXTS and pm_export(text)))
 
 
 def name_forms(name):
@@ -283,9 +306,11 @@ def is_secret(p: Path, head=None, sniff=True, follow=True):
         t = link_target(p)
         if t is not None and is_secret(Path(t), sniff=sniff, follow=False):
             return True
-    forms = name_forms(p.name)
-    if any(real_ext(Path(f)) in CRED_EXTS for f in forms) and (head is not None or sniff or any(CRED_NAME.search(f) for f in forms)):
-        if cred_header(_head(p) if head is None else head):
+    forms = name_forms(base_name(p.name))
+    exts = {real_ext(Path(f)) for f in forms}
+    if exts & (CRED_EXTS | PM_EXTS) and (head is not None or sniff or any(CRED_NAME.search(f) for f in forms)):
+        h = _head(p) if head is None else head
+        if (exts & CRED_EXTS and cred_header(h)) or (exts & PM_EXTS and pm_export(h)):
             return True
     if real_ext(p) == ".key":
         try:

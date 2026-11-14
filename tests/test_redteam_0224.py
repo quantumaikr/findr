@@ -145,3 +145,28 @@ def test_mail_attached_as_text_is_a_nested_mail(tmp_path):
     assert "Quokka81" not in t and "fwd2.txt" in t and "Wombat9" in t
     # an index from before: the stored attachment block is cut to its name when returned
     assert "Quokka81" not in index.mask("x\n\n[첨부 fwd2.txt]\n" + inner.replace("\r\n", "\n"))
+
+
+# ---------------------------------------------------------------- 6. password-manager exports by content
+PM = {
+    "vault.json": '{"encrypted": false, "items": [{"type": 1, "name": "Plum", "login": {"username": "ogil", "password": "Tulip-7x", "uris": [{"uri": "https://plum.example"}]}}]}',
+    "dump.xml": "<KeePassFile><Root><Group><Entry><String><Key>Password</Key><Value>Lynx*66</Value></String></Entry></Group></Root></KeePassFile>",
+    "sites.json": '{"nextId": 3, "logins": [{"hostname": "https://kelp.example", "encryptedUsername": "MDIE", "encryptedPassword": "MDoE"}]}',
+    "export.1pif": '{"title":"Kelp","secureContents":{"fields":[{"value":"quill","name":"username"},{"value":"x","designation":"password"}]}}',
+    "backup.txt": "<entries><entry><url>https://kelp.example</url><username>q</username><password>x</password></entry></entries>",
+}
+
+
+@pytest.mark.parametrize("name", sorted(PM))
+def test_password_manager_exports_are_secret_by_content(tmp_path, name):
+    p = tmp_path / name
+    p.write_text(PM[name], encoding="utf-8")
+    assert index.secret_text(name, PM[name]) and index.is_secret(p, sniff=True)
+    assert index.is_secret(index.Path(name), head=PM[name].encode())   # a mail attachment
+
+
+def test_ordinary_json_and_xml_are_not_password_exports():
+    for name, t in (("pkg.json", '{"name": "x", "version": "1.0", "author": {"email": "a@example.invalid"}}'),
+                    ("feed.xml", "<rss><channel><title>t</title><link>https://example.invalid</link></channel></rss>"),
+                    ("form.json", '{"fields": ["user", "password"]}')):
+        assert not index.secret_text(name, t), name
