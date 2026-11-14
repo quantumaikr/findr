@@ -17,6 +17,35 @@ import moretext
 V = "Quo" + "kkaR4m"   # the invented secret value every case hides
 
 
+# ---------------------------------------------------------------- 1. credential headers judged column by column
+@pytest.mark.parametrize("head", [
+    "Site [URL],Username,Password", "site,username,password,notes {optional}", "site,login,password,email<primary>",
+    "site,user,password,shared?", "| Service | Account | Password | Owner. |", "Site,User,Password.", "url;login;pass (old);x=1",
+    "Website!,Login:,Password?", "url,username,password," + ",".join(f"custom_field_{i}" for i in range(150)),
+    ",".join(f"c{i}" for i in range(400)) + ",url,user,password",   # past CRED_HEAD_COLS: not looked at
+])
+def test_header_with_odd_columns_is_still_a_header(head):
+    want = not head.startswith("c0,")
+    assert bool(index.cred_header(head + "\n")) == want, head[:80]
+
+
+def test_long_header_masks_its_password_column(tmp_path):
+    head = "url,username,password," + ",".join(f"custom_field_{i}" for i in range(150))
+    assert len(head) > 2000
+    text = head + "\nhttps://a.example,kim," + V + "," * 150 + "\n"
+    assert V not in index.mask(text)
+    p = tmp_path / "export.csv"
+    p.write_text(text, encoding="utf-8")
+    assert index.is_secret(p)
+
+
+@pytest.mark.parametrize("text", ["name,phone,city\n", "id,title,date\n", "pass rate,year\n", "암호화 방식,사용자\n",
+                                  "Change the password, then tell the user.\n", "policy,owner,status\n",
+                                  "Enter your user name, password\n", "password\n", "just a password line with no delimiter\n"])
+def test_lines_without_both_kinds_of_column_are_not_headers(text):
+    assert not index.cred_header(text), text
+
+
 # ---------------------------------------------------------------- 6. labels spelled to pass, HTML
 @pytest.mark.parametrize("label", ["pаssword", "ｐａｓｓｗｏｒｄ", "PASS​WORD",
                                    "pass­word", "pаss‍wоrd", "\U0001d429\U0001d41a\U0001d42c\U0001d42c\U0001d430\U0001d428\U0001d42b\U0001d41d",

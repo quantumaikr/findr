@@ -34,10 +34,17 @@ def test_credential_headers_by_stems(tmp_path, head):
 
 @pytest.mark.parametrize("text", [
     "name,phone,city\n", "id,title,date\n", "pass rate,year\n", "암호화 방식,사용자\n", "Change the password, then tell the user.\n",
-    "Password, username and email are required for every account\n", "def f(self, url, pw, name):\n", "url, pw, name = row\n",
+    "Password, username and email are required for every account\n",
     "항목,담당,금액\n", "policy,owner,status\n", "Enter your user name, password\n"])
 def test_ordinary_lines_are_not_credential_headers(text):
     assert not index.cred_header(text), text
+
+
+@pytest.mark.parametrize("text", ["def f(self, url, pw, name):\n", "url, pw, name = row\n"])
+def test_code_with_a_password_and_a_site_column_is_a_header(text):
+    # since 0.2.26's red-team each column is judged alone: code-like columns are left out, the line is not, so code
+    # naming a password beside a url is taken as a header (a column masked under it is the price of not missing one)
+    assert index.cred_header(text), text
 
 
 def test_header_below_many_title_lines(tmp_path):
@@ -68,7 +75,7 @@ def test_table_in_any_text_has_its_password_column_masked():
     md = "| Site | Login | Password |\n| --- | --- | --- |\n| bank | kim | " + V + " |\n"
     assert index.mask(md) == "| Site | Login | Password |\n| --- | --- | --- |\n| bank | kim | [가림] |\n"
     code = "def __init__(self, url, pw, name):\n    self.url, self.name = url, name\n"
-    assert index.mask(code) == code
+    assert index.mask(code).startswith("def __init__(self, url, pw, name):\n")
 
 
 def _eml(tmp_path, body, atts=()):

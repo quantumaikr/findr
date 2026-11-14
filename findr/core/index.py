@@ -347,10 +347,13 @@ def _block_mask(text):
 CRED_LINES = 20       # non-empty lines looked at for a credential header: an export may start with title lines
 _CRED_COL_CHARS = 40  # a longer column ('notes for this account written by ...') is left out, not the whole line
 _CRED_COL_WORDS = 3   # ... and so is one of more words: a sentence's pieces between commas are not column names
+CRED_HEAD_CHARS = 8000   # of a very long header line, the columns in its first 8000 characters are looked at ...
+CRED_HEAD_COLS = 200     # ... and at most its first 200 columns (red-team 0.2.26: a 2000-character header passed whole)
 _CRED_DELIMS = (",", "\t", ";", "|")
 _PW_HINT = re.compile(r"(?i)pass|pwd|pw|pin|secret|비밀번호|비번|암호|패스워드")
-_CODE_CELL = re.compile(r"[=(){}\[\]<>;]")      # a short column holding these is code, not a name ...
-_TRAIL_NOTE = re.compile(r"\s*\([^()]*\)\s*$")   # ... a note in brackets at its end aside: 'Password (encrypted)'
+_CODE_CELL = re.compile(r"[=(){}\[\]<>;]")   # a column still holding these is left out (code), the others still count
+_NOTE = re.compile(r"\s*(?:\([^()]*\)|\[[^\[\]]*\]|\{[^{}]*\}|<[^<>]*>)")   # a note in brackets: 'Site [URL]', 'Password (encrypted)'
+_EDGE = " \t\"'`*.,!?:;。…？！"   # quotes, emphasis and sentence marks around a column name
 
 
 def _cells(line, d):
@@ -380,21 +383,23 @@ def _id_col(c):
 def _cred_cols(line):
     """(delimiter, indexes of the password columns) when the line is a credential table's header: two or more columns
     split by one delimiter, one naming a password and another an account, a person or a site (see _CRED_PW_IN,
-    _CRED_ID_IN). Long columns are left out; a line ending like a sentence is not a header. None otherwise"""
-    s = line.strip()
-    if len(s) > 2000 or not s or s[-1] in ".!?。" or not _PW_HINT.search(s):
+    _CRED_ID_IN), whatever the other columns hold. Each column is judged alone (red-team 0.2.26: one column like
+    'Site [URL]', 'notes {optional}' or 'shared?' used to drop the whole header): a note in brackets and sentence marks at
+    its ends aside, a column that is long, of many words or still code-like is left out, never the line. Of a very long
+    line, its first CRED_HEAD_COLS columns within CRED_HEAD_CHARS characters. None otherwise"""
+    s = line[:CRED_HEAD_CHARS]
+    if not s.strip() or not _PW_HINT.search(s):
         return None
     for d in _CRED_DELIMS:
         if d not in s:
             continue
-        cells = _cells(line, d)
+        cells = _cells(s, d)[:CRED_HEAD_COLS]
+        if len(cells) < 2:
+            continue
         cols = []
         for k, (a, b) in enumerate(cells):
-            raw = line[a:b].strip().strip("\"'`*").strip()
-            if raw and len(raw) <= _CRED_COL_CHARS and len(raw.split()) <= _CRED_COL_WORDS:
-                if _CODE_CELL.search(_TRAIL_NOTE.sub("", raw)):
-                    cols = []   # code ('def f(self, url, pw, name):'), not column names
-                    break
+            raw = _NOTE.sub("", s[a:b]).strip(_EDGE)
+            if raw and len(raw) <= _CRED_COL_CHARS and len(raw.split()) <= _CRED_COL_WORDS and not _CODE_CELL.search(raw):
                 cols.append((k, _col(raw)))
         pw = [k for k, c in cols if _pw_col(c)]
         if pw and any(k not in pw and _id_col(c) for k, c in cols):
