@@ -182,3 +182,71 @@ def test_versions_similar_is_capped_and_skips_crowded_parents(lectures, monkeypa
     monkeypatch.setattr(lectures, "SIBLING_MAX", 5)   # a crowded parent (the home or Downloads folder): the same folder only
     sim = [x for x in lectures.versions("/d/강의/1차 과정/08. 강화학습.key")["others"] if x["relation"] == "similar"]
     assert sim and all(x["folder"] == "같은 폴더" for x in sim)
+
+
+def _docs(tmp_path):
+    d = tmp_path.parent / (tmp_path.name + "_docs")   # outside the data folder
+    d.mkdir(exist_ok=True)
+    return d
+
+
+def _add(tmp_path, fid, p, tier):
+    con = sqlite3.connect(str(tmp_path / "index.db"))
+    con.execute("INSERT INTO files VALUES(?,?,?,?,1,1700000000,?)", (fid, str(p), p.name, p.suffix, tier))
+    con.execute("INSERT INTO chunks VALUES(?,?,0,'')", (fid, fid))
+    con.commit(); con.close()
+
+
+def test_read_file_reads_now_only_what_the_indexer_reads_and_masks_keys(mcp_mod, tmp_path, monkeypatch):
+    """review of #204: a name-only file (a VPN profile with a private key) was read as raw bytes, and keys came back unmasked"""
+    d = _docs(tmp_path)
+    vpn, note, cloud = d / "office.ovpn", d / "notes.txt", d / "online.txt"
+    vpn.write_text("client\n<key>\n-----BEGIN PRIVATE KEY-----\nNOTAREALKEY\n-----END PRIVATE KEY-----\n</key>\n")
+    note.write_text("the access key sk-ant-" + "x" * 30 + " is here")
+    cloud.write_text("cloud placeholder text")
+    _add(tmp_path, 10, vpn, 3); _add(tmp_path, 11, note, 1); _add(tmp_path, 12, cloud, 1)
+    r = mcp_mod.read_file(str(vpn))
+    assert r["text"] == "" and "NOTAREALKEY" not in str(r)
+    r = mcp_mod.read_file(str(note))
+    assert r["text"] == "the access key [가림] is here"
+    from findr.core import index
+    monkeypatch.setattr(index, "cloud_only_path", lambda s: s == str(cloud))
+    assert mcp_mod.read_file(str(cloud))["text"] == ""   # an online-only file is not downloaded
+    from findr.core import deepread   # the reader itself refuses them too
+    assert deepread.deep_read(str(vpn))["text"] == "" and "[가림]" in deepread.deep_read(str(note))["text"]
+
+
+def test_read_file_ocr_runs_in_a_child_and_is_cut_off(mcp_mod, tmp_path, monkeypatch):
+    """review of #204: OCR in the MCP server kept EasyOCR / torch for good and held the assistant for minutes. It runs in a
+    process of its own, stopped after FINDR_MCP_DEEP_READ_SECONDS (+ the page in progress)"""
+    import time
+    d = _docs(tmp_path)
+    scan, photo = d / "scan.pdf", d / "receipt.png"
+    scan.write_bytes(b"%PDF-1.4\n%%EOF\n"); photo.write_bytes(b"\x89PNG\r\n\x1a\n")
+    _add(tmp_path, 20, scan, 1); _add(tmp_path, 21, photo, 3)   # a photo is name-only in the index, but OCR may read it
+    seen = []
+
+    def fake(path, max_chars, seconds):
+        seen.append((path, seconds))
+        return [sys.executable, "-c", "import json; print('noise'); print(json.dumps({'text': 'scan text sk-ant-" + "y" * 30 + "', 'ocr': {'pages_read': 1, 'pages_total': 1}}))"]
+    monkeypatch.setattr(mcp_mod, "_deep_cmd", fake)
+    r = mcp_mod.read_file(str(scan))
+    assert r["text"] == "scan text [가림]" and r["ocr"]["pages_read"] == 1 and seen[-1] == (str(scan), 30.0)
+    assert mcp_mod.read_file(str(photo))["text"].startswith("scan text") and seen[-1][0] == str(photo)
+    monkeypatch.setenv("FINDR_MCP_DEEP_READ_SECONDS", "1")
+    monkeypatch.setattr(mcp_mod, "DEEP_GRACE", 1)
+    monkeypatch.setattr(mcp_mod, "_deep_cmd", lambda p, m, s: [sys.executable, "-c", "import time; time.sleep(60)"])
+    t = time.time()
+    r = mcp_mod.read_file(str(scan))
+    assert time.time() - t < 15 and r["text"] == "" and "stopped" in r["note"]
+
+
+def test_deep_read_child_entry_prints_one_json_line(tmp_path):
+    import json, subprocess
+    from pathlib import Path
+    p = tmp_path / "a.txt"; p.write_text("hello child")
+    root = Path(__file__).resolve().parent.parent
+    out = subprocess.run([sys.executable, "-m", "findr.core.deepread", str(p), "100", "5"], capture_output=True, text=True, cwd=root, timeout=120)
+    got = json.loads([x for x in out.stdout.splitlines() if x.startswith("{")][-1])
+    assert got["text"] == "hello child"
+

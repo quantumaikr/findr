@@ -595,7 +595,7 @@ def read_file(path: str, max_chars: int = 4000) -> dict:
     if con is None:
         return {"error": "findr has no index on this PC yet"}
     max_chars = max(200, min(int(max_chars or 4000), 20000))
-    row = None if _denied(path) else con.execute("SELECT id, name FROM files WHERE (path = ? OR nfc(path) = ?) AND tier > 0 AND NOT denied(path)",
+    row = None if _denied(path) else con.execute("SELECT id, name, tier FROM files WHERE (path = ? OR nfc(path) = ?) AND tier > 0 AND NOT denied(path)",
                                                  (path, unicodedata.normalize("NFC", path))).fetchone()
     if not row:
         return {"error": "not a file in findr's index; use a path returned by search_files"}
@@ -609,19 +609,67 @@ def read_file(path: str, max_chars: int = 4000) -> dict:
     out = {"name": row[1], "path": path, "text": body, "truncated": n > max_chars,
            "note": "" if body else "findr has only the name of this file so far (its text is read later, or it has none)"}
     try:   # what the index cannot say: why a file is unreadable, a docx's pages, and the file read now when the index has no text
-        from .core import deepread
-        if os.path.isfile(path):
-            if not body or path.lower().endswith(".docx"):
-                got = deepread.deep_read(path, max_chars)
-                for k in ("unreadable", "pages", "pages_estimated", "ocr"):
-                    if k in got:
-                        out[k] = got[k]
-                if not body:
-                    out["text"], out["truncated"] = got["text"], got.get("truncated", False)
-                    out["note"] = got.get("note") or out["note"]
-    except Exception:
+        if os.path.isfile(path) and (not body or path.lower().endswith(".docx")) and _deep_ok(path, row[2]):
+            got = _deep_read(path, max_chars)
+            for k in ("unreadable", "pages", "pages_estimated", "ocr"):
+                if k in got:
+                    out[k] = got[k]
+            if not body:
+                out["text"], out["truncated"] = _mask(got.get("text") or ""), got.get("truncated", False)
+                out["note"] = got.get("note") or ("read from the file now (findr has not stored its text yet)" if out["text"] else out["note"])
+    except Exception:   # noqa: BLE001
         pass
     return out
+
+
+def _mask(text):
+    """values that look like keys, masked as the index masks them (index.chunks)"""
+    from .core import index
+    return index.KEYLIKE.sub("[가림]", text)
+
+
+def _deep_ok(path, tier):
+    """read now only what the indexer would read: a tier-1 file (documents, text) or a photo / scan for OCR. Never a tier-3
+    file read as raw bytes (a VPN profile holds a private key), never a secret, never an online-only cloud file (reading it
+    would download it)"""
+    from pathlib import Path
+    from .core import deepread, index
+    if index.is_secret(Path(path)) or index.cloud_only_path(path):
+        return False
+    return tier == 1 or index.real_ext(Path(path)) in deepread.IMAGES
+
+
+DEEP_SECONDS = 30   # FINDR_MCP_DEEP_READ_SECONDS: time an assistant's read_file may spend on OCR (pages are read until then)
+DEEP_GRACE = 15     # ... and the page in progress when it runs out; then the reader is stopped
+
+
+def _deep_cmd(path, max_chars, seconds):
+    import sys
+    return [sys.executable, "-m", "findr.core.deepread", str(path), str(int(max_chars)), str(seconds)]
+
+
+def _deep_read(path, max_chars):
+    """deepread.deep_read: in this process for what needs no recognizer; OCR (a scanned PDF, a photo) in a short-lived child
+    process, so the recognizer (EasyOCR / torch, 1-2 GB) is not kept by the MCP server, and a slow scan is cut off at
+    FINDR_MCP_DEEP_READ_SECONDS (30) instead of holding the assistant for minutes"""
+    from pathlib import Path
+    from .core import deepread, index
+    ext = index.real_ext(Path(path))
+    if ext != ".pdf" and ext not in deepread.IMAGES:
+        return deepread.deep_read(path, max_chars)
+    why = deepread.unreadable_reason(path)
+    if why:
+        return {"text": "", "unreadable": why, "note": why}
+    seconds = deepread._env_num("FINDR_MCP_DEEP_READ_SECONDS", DEEP_SECONDS, float)
+    import subprocess
+    try:
+        r = subprocess.run(_deep_cmd(path, max_chars, seconds), capture_output=True, timeout=seconds + DEEP_GRACE,
+                           stdin=subprocess.DEVNULL, cwd=str(Path(__file__).resolve().parent.parent))
+        line = [x for x in r.stdout.decode("utf-8", "replace").splitlines() if x.startswith("{")][-1:]
+        return json.loads(line[0]) if line else {"text": "", "note": "the file could not be read now"}
+    except subprocess.TimeoutExpired:
+        return {"text": "", "note": f"reading this file took longer than {seconds:.0f} s and was stopped "
+                                    "(FINDR_MCP_DEEP_READ_SECONDS); its text comes when findr indexes it"}
 
 
 def main():

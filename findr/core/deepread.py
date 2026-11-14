@@ -162,12 +162,12 @@ def _ocr_image(path, ix, side):
                 pass
 
 
-def _ocr_pdf(path, ix, side, max_pages, seconds):
-    """(lines, pages_read, pages_total)"""
+def _ocr_pdf(path, ix, side, max_pages, seconds, end=None):
+    """(lines, pages_read, pages_total); `end` (time.time()) or now + seconds: checked before every page"""
     import numpy as np
     import pypdfium2 as pdfium
     doc = pdfium.PdfDocument(str(path)); total = len(doc); lines, done = [], 0
-    end = time.time() + seconds
+    end = min(end or float("inf"), time.time() + seconds)
     try:
         for i in range(min(total, max_pages)):
             if time.time() > end:
@@ -180,17 +180,33 @@ def _ocr_pdf(path, ix, side, max_pages, seconds):
     return lines, done, total
 
 
-def deep_read(path, max_chars=4000):
+def deep_read(path, max_chars=4000, seconds=None):
     """the file read now. Keys: text; unreadable (a reason, no text) ; pages / pages_estimated (docx); ocr {pages_read,
-    pages_total} for a scan; note (what the caller should know when the text is short, partial or missing)"""
+    pages_total} for a scan; note (what the caller should know when the text is short, partial or missing).
+    Only what the indexer reads: never a secret (index.is_secret), never an online-only cloud file, never a kind of file
+    findr reads by name only (its raw bytes may be a key: a VPN profile). Values that look like keys are masked as in the
+    index. seconds: the time budget from now (FINDR_DEEP_READ_SECONDS, 180, when not given), checked before each page"""
+    t_end = time.time() + (seconds if seconds else _env_num("FINDR_DEEP_READ_SECONDS", 180, float))
     out = {"text": ""}
+    ix = _index()
+    ext = ix.real_ext(Path(path))
+    if ix.is_secret(Path(path)):
+        out["note"] = "findr never reads key, certificate or password files"
+        return out
+    if ext not in ix.TEXT and ext not in ix.DOC and ext not in IMAGES:
+        out["note"] = "findr does not read the contents of this kind of file (only its name)"
+        return out
+    try:
+        if ix.cloud_only_path(str(path)):
+            out["note"] = "an online-only cloud file: its content is not on this PC (reading it would download it)"
+            return out
+    except Exception:   # noqa: BLE001
+        pass
     why = unreadable_reason(path)
     if why:
         out["unreadable"] = why
         out["note"] = why
         return out
-    ext = _ext(path)
-    ix = _index()
     if ext == ".docx":
         pg = docx_pages(path)
         if pg:
@@ -207,12 +223,12 @@ def deep_read(path, max_chars=4000):
         else:
             try:
                 lines, done, total = _ocr_pdf(path, ix, ix.OCR_SIDE, _env_num("FINDR_DEEP_READ_PAGES", 200),
-                                              _env_num("FINDR_DEEP_READ_SECONDS", 180, float))
+                                              max(0.0, t_end - time.time()), end=t_end)
                 text = "\n".join(lines) or text
                 out["ocr"] = {"pages_read": done, "pages_total": total}
                 if done < total:
                     out["note"] = (f"scanned PDF: OCR read {done} of {total} pages (limits FINDR_DEEP_READ_PAGES, "
-                                   "FINDR_DEEP_READ_SECONDS)")
+                                   "FINDR_DEEP_READ_SECONDS / FINDR_MCP_DEEP_READ_SECONDS)")
                 else:
                     out["note"] = f"scanned PDF: OCR read all {total} pages"
             except Exception:
@@ -227,6 +243,24 @@ def deep_read(path, max_chars=4000):
             else:
                 text = "\n".join(lines)
                 out["ocr"] = {"pages_read": 1, "pages_total": 1}
+    text = ix.KEYLIKE.sub("[가림]", text)   # as index.chunks masks what it stores
     out["text"] = text[:max_chars]
     out["truncated"] = len(text) > max_chars
     return out
+
+
+def main(argv=None):
+    """python -m findr.core.deepread PATH [MAX_CHARS] [SECONDS]: deep_read in a process of its own (the MCP server's OCR,
+    so the recognizer leaves with it); one line of JSON on standard output"""
+    import json
+    a = list(sys.argv[1:] if argv is None else argv)
+    try:
+        got = deep_read(a[0], int(a[1]) if len(a) > 1 else 4000, float(a[2]) if len(a) > 2 else None)
+    except Exception as e:   # noqa: BLE001
+        got = {"text": "", "note": f"the file could not be read now ({type(e).__name__})"}
+    sys.stdout.write("\n" + json.dumps(got, ensure_ascii=True) + "\n")
+    sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    main()
