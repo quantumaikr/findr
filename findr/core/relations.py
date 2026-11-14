@@ -111,6 +111,17 @@ def _df(con, visible=None, vkey=""):
     return n, df
 
 
+MASK_RULES = 3   # raised when index.mask learns new rules (cached terms are then worked out again)
+
+
+def _masker():
+    try:
+        from .index import mask
+    except ImportError:
+        from index import mask
+    return mask
+
+
 def terms(con, fid, k=TERMS_K, visible=None, vkey=""):
     """the file's characteristic words, best first: tf (log) x idf, the idf from a sample of the files that can be shown
     (see _df; `vkey` names the `visible` rule, so a changed deny list is not served terms ranked under the old one).
@@ -119,7 +130,9 @@ def terms(con, fid, k=TERMS_K, visible=None, vkey=""):
     row = con.execute("SELECT size, mtime FROM files WHERE id=?", (fid,)).fetchone()
     if not row:
         return []
-    stamp = f"{row[0]}|{row[1]}|{k}" + (f"|{vkey}" if vkey else "")
+    mask = _masker()
+    # the masking rules are part of the stamp: terms kept under older rules are worked out again under the new ones
+    stamp = f"{row[0]}|{row[1]}|{k}|m{MASK_RULES}" + (f"|{vkey}" if vkey else "")
     w = _schema(con)
     if w:
         c = con.execute("SELECT stamp, terms FROM file_terms WHERE file=?", (fid,)).fetchone()
@@ -132,8 +145,11 @@ def terms(con, fid, k=TERMS_K, visible=None, vkey=""):
         if n >= TEXT_CAP:
             break
     tf = {}
-    for x in tokens("\n".join(text)[:TEXT_CAP]):
-        tf[x] = tf.get(x, 0) + 1
+    # from the text as masked: a password or token an index from before a masking rule still holds is never a term
+    # (red-team 0.2.25: file_relations listed 'camelpwleak111' from '"dbPassword": "..."')
+    for x in tokens(mask("\n".join(text)[:TEXT_CAP])):
+        if x != "가림":
+            tf[x] = tf.get(x, 0) + 1
     out = []
     if tf:
         N, df = _df(con, visible, vkey)

@@ -24,7 +24,9 @@ def sniff_text(path, limit=2_000_000):
         raw = open(path, "rb").read(limit * 2)
     except OSError:
         return None
-    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+    if raw[:4] in (b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff"):   # UTF-32 (its BOM starts like UTF-16's)
+        t = raw.decode("utf-32", "ignore")
+    elif raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
         t = raw.decode("utf-16", "ignore")
     elif raw[:4] == b"\xd0\xcf\x11\xe0" or b"\x00" in raw[:4096]:
         return None                                        # OLE container or other binary

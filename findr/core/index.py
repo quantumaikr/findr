@@ -57,17 +57,18 @@ CERT_EXTS = {".der", ".key", ".pfx", ".p12", ".cer", ".crt", ".pem"}
 # a CSV whose name says password / 비밀번호 but is not one of the known export names: secret when its header row is a
 # credential export (a password column with a user name or site column); 'password_policy_review.csv' with other columns is read
 CRED_NAME = re.compile(r"(password|비밀번호|passwd).*\.csv$", re.I)
-# column names compared without spaces, '_' and '-' ('User Name', 'login_username', 'e-mail')
-# (a whole cell: 'pw' and 'pwd' only as the column's whole name, case aside: 'PW', 'Pwd')
-_CRED_PW = {"password", "passwd", "pwd", "pw", "pass", "passcode", "passphrase", "loginpassword", "비밀번호", "비번", "암호",
-            "패스워드", "secret"}
-_CRED_ID = {"username", "user", "userid", "login", "loginusername", "loginname", "email", "mail", "account", "id", "아이디", "사용자",
-            "사용자이름", "사용자명", "계정", "url", "uri", "loginuri", "website", "site", "origin", "originurl", "hostname", "host",
-            "domain", "사이트", "웹사이트", "주소", "도메인", "이메일", "name", "title"}
-_CRED_PW_IN = ("password", "passwd", "비밀번호", "패스워드", "비번")   # inside a longer column name ('Password (encrypted)')
-_CRED_ID_IN = ("username", "login", "아이디", "url")
-# kinds of file whose first line is looked at: a password export saved as .txt or .tsv is one too
-CRED_EXTS = {".csv", ".tsv", ".txt"}
+# A credential table's header (red-team 0.2.25: 'Email Address', 'Account Name', '이메일 주소' were missed when names were
+# listed one by one): column names are compared case-folded, NFC, without spaces, '_', '-' and quotes. One column holds a
+# password word (_CRED_PW_IN anywhere in it, _CRED_PW as its whole name) and another an identity or site word
+# (_CRED_ID_IN anywhere, 'id' as the whole name or its ending: 'userid', 'LoginID')
+_CRED_PW = {"pw", "pin", "pass", "secret", "p/w"}
+_CRED_PW_IN = ("password", "passwd", "pwd", "passcode", "passphrase", "비밀번호", "비번", "암호", "패스워드")
+_CRED_PW_NOT = ("암호화",)   # '암호화 방식' (encryption method) is not a password column
+_CRED_ID_IN = ("user", "login", "account", "email", "mail", "name", "site", "url", "uri", "host", "domain", "service", "title",
+               "origin", "아이디", "계정", "이메일", "메일", "사용자", "사이트", "주소", "도메인", "서비스")
+# kinds of file whose first lines are looked at: a password export saved as .txt / .tsv, or a table of sign-ins in a note
+# or a log (Markdown pipe table, tab, ';', ',' or '|' between columns)
+CRED_EXTS = {".csv", ".tsv", ".txt", ".md", ".markdown", ".log"}
 # copy markers people's systems add to a name: 'Copy of x', 'x 2', 'x (1)', 'x copy', 'x - Copy', 'x - 복사본', 'x 복사본'
 _COPY_PRE = re.compile(r"^(?:copy of |사본 - |복사본 - )+", re.I)
 _COPY_SUF = re.compile(r"(?:\s*-\s*(?:복사본|사본|copy)(?:\s*\(\d+\))?|\s+(?:복사본|사본|copy)(?:\s+\d{1,3})?|\s*\(\d{1,3}\)|\s+\d{1,3})$", re.I)
@@ -77,8 +78,16 @@ _SECOND_EXT = re.compile(r"^(.+\.[^.]+)\.(txt|text|bak|old|orig|backup|copy|down
 # the name of a setting that holds a secret, with words before it (AWS_SECRET_ACCESS_KEY, client_secret, DB_PASSWORD) and
 # at most two after it (DB_PASSWORD_PROD); 'tokenizer' or 'max_tokens' is not one. 'pass' only after a word (DB_PASS,
 # SMTP_PASS): 'pass: 12A' alone is a boarding pass
-_KV_NAME = (r"(?<![A-Za-z0-9])(?:(?:[A-Za-z0-9]+[_.\-]){0,4}(?i:api[_-]?key|secret(?:[_-]?access)?(?:[_-]?key)?|password|passwd|passphrase"
-            r"|pwd|token|private[_-]?key)|(?:[A-Za-z0-9]+[_.\-]){1,4}(?i:pass))(?:[_.\-][A-Za-z0-9]+){0,2}(?![A-Za-z0-9])")
+# Since 0.2.25's red-team (dbPassword, accessToken, clientSecret, PGPASSWORD, x-api-key were missed): any identifier
+# (letters, digits, '_', '.', '-') holding one of the secret words, glued to what comes before it or not (camelCase,
+# snake_case, kebab-case, dotted, ALLCAPS), the word not running on into more letters ('tokenizer', 'max_tokens',
+# 'TokenOpt', 'secretary', 'author' are not ones), and at most two '_' / '.' / '-' parts after it (DB_PASSWORD_PROD).
+# 'auth' only as the identifier's last part (basic_auth, X-Auth; not oauth); 'pass' only after a word (DB_PASS,
+# smtp.pass, smtpPass): 'pass: 12A' alone is a boarding pass
+_SECRET_WORD = (r"(?:(?:(?i:password|passwd|pwd|secret(?:[_\-]?(?:access[_\-]?)?key)?|token|api[_\-]?key|access[_\-]?key"
+                r"|private[_\-]?key|credentials?|passphrase)|[A-Za-z0-9][_.\-](?i:pass)|[a-z0-9]Pass)(?![A-Za-z])"
+                r"|(?<![oO])(?i:auth)(?![A-Za-z0-9_.\-]))")
+_KV_NAME = (r"(?<![A-Za-z0-9_.\-/])[A-Za-z0-9_.\-]{0,48}?" + _SECRET_WORD + r"(?:[_.\-][A-Za-z0-9]+){0,2}(?![A-Za-z0-9_.\-])")
 # PEM / PGP private key: to its END line; with none (a note cut short), to the end of the text or to the first blank line
 # that is not followed by more key lines (a PGP block has one blank line after its headers). Any case, any spacing, and its
 # header split over two lines ('-----BEGIN RSA PRIVATE\nKEY-----')
@@ -90,23 +99,40 @@ _PEM_B64 = r"LS0tLS1CRUdJTi[A-Za-z0-9+/=]*(?:\r?\n[A-Za-z0-9+/=]{8,})*"
 # a value under a label that names a secret: the label is kept, the value masked whatever its length (red-team 0.2.24:
 # 'password: correct horse battery staple', '비밀번호: ...', a short JSON "password": "..."). Quoted: what is inside the
 # quotes; not quoted: to the end of the line (a phrase with spaces). Korean labels as well
-_LABEL = r"(?:" + _KV_NAME + r"|(?:비밀번호|패스워드|비번|암호))"
-_SEP = r"""['"]?\s*[:=：](?!=)"""
-_LABELED = (r'(?P<lq>' + _LABEL + _SEP + r'[ \t]*")(?:\\.|[^"\\\r\n])+(?=")'
-            r"|(?P<ls>" + _LABEL + _SEP + r"[ \t]*')(?:\\.|[^'\\\r\n])+(?=')"
-            r"|(?P<lu>" + _LABEL + _SEP + r"""[ \t]*['"]?)(?=[^\s'"])[^\r\n]+"""
+# 'PW:', 'pw=', 'P/W:' as a word of their own (a note's 'ID: kim / PW: ...'), at a line's start or after a space
+_SEP = r"""['"]?\s*(?:=>|->|[:=：](?!=))"""
+# (a word not followed by a separator is passed over before its letters are looked at: most words of a text are such)
+_LABEL = (r"(?:(?=[A-Za-z0-9_.\-]{1,64}" + _SEP + r")" + _KV_NAME + r"|(?:비밀번호|패스워드|비번|암호)"
+          r"|(?<!\S)(?i:p/?w)(?=[ \t]*[:：]|=(?!=)))")   # 'pw = x' with spaces is code
+# not a value but one left for the next lines (YAML 'password: |', TOML '= """', a '\' line continuation): see _block_mask
+_NOT_VALUE = r"""(?![|>][+\-0-9]*[ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)|\\[ \t]*(?:\r?\n|$)|"{3}|'{3})"""
+# one label, then its value: inside double or single quotes, or (not quoted, or a quote never closed) to the line's end
+_LABELED = (r"""(?P<lq>""" + _LABEL + _SEP + r"""[ \t]*(?:(?P<q1>")|(?P<q2>')|['"]?))"""
+            r"""(?(q1)(?:\\.|[^"\\\r\n])+(?=")|(?(q2)(?:\\.|[^'\\\r\n])+(?=')|""" + _NOT_VALUE + r"""(?=[^\s'"])[^\r\n]+))"""
+            # a call's quoted setting name, a comma and a quoted value: PHP define('DB_PASSWORD', '...'), setenv("API_TOKEN", "...")
+            r"""|(?P<ld>(?<=[A-Za-z0-9_])\(\s*['"]""" + _KV_NAME + r"""['"]\s*,\s*['"])[^'"\r\n]+(?=['"])"""
             # XML: <password>...</password>, and a KeePass entry's <Key>Password</Key><Value>...</Value>
             r"|(?P<lx><(?i:password|passwd|pwd|passphrase|secret|token|api[_-]?key|client[_-]?secret|private[_-]?key|비밀번호|암호)"
             r"(?:\s[^<>]*)?>)[^<]+(?=</)"
-            r"|(?P<lk>(?i:<Key>\s*(?:password|passwd|비밀번호|암호)\s*</Key>\s*<Value(?:\s[^<>]*)?>))[^<]+(?=</Value>)")
+            r"|(?P<lk>(?i:<Key>\s*(?:password|passwd|비밀번호|암호)\s*</Key>\s*<Value(?:\s[^<>]*)?>))[^<]+(?=</Value>)"
+            # XML / .config attributes: <add key="DbPassword" value="..."/>, <entry name="password">...</entry>
+            r"""|(?P<la><[^<>]*?\s(?i:key|name|id)\s*=\s*['"]""" + _KV_NAME + r"""['"][^<>]*?\s(?i:value)\s*=\s*['"])[^'"<>]+"""
+            r"""|(?P<le><[A-Za-z][^<>]*?\s(?i:key|name)\s*=\s*['"]""" + _KV_NAME + r"""['"][^<>]*(?<!/)>)(?=\s*[^\s<])[^<]+(?=</)"""
+            # 'Authorization: Basic ...' (user:password in base64) and its kin ('Bearer' is a rule of its own)
+            r"""|(?P<ab>(?i:(?:proxy-)?authorization)['"]?\s*[:=]\s*['"]?(?i:basic|digest|token|ntlm|negotiate)[ \t]+)[A-Za-z0-9+/=._~\-]+"""
+            # command lines: curl -u user:password, mysql -pPASSWORD, --password VALUE (--password=VALUE is a label above)
+            r"""|(?P<cu>\bcurl\b[^\r\n]*?\s(?:-u|--user)[ \t=]*['"]?[^\s:'"]*:)[^\s'"]+"""
+            r"""|(?P<mp>\b(?:mysql|mysqldump|mysqladmin|mariadb)[A-Za-z\-]*\b[^\r\n]*?(?<!\S)-p['"]?)(?=[^\s'"\-])[^\s'"]+"""
+            r"""|(?P<lo>(?<!\S)--?(?i:password|passwd)[ \t]+['"]?)(?=[^\s'"\-])[^\s'"]+""")
 KEYLIKE = re.compile(r"(sk-[A-Za-z0-9_\-]{20,}|sk-ant-[A-Za-z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|hf_[A-Za-z0-9]{30,}"
                      r"|github_pat_[A-Za-z0-9_]{22,}|glpat-[A-Za-z0-9_\-]{20,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}"
-                     r"|xox[abposr]-[A-Za-z0-9\-]{10,}|AIza[0-9A-Za-z_\-]{35}|" + _PEM + r"|" + _PEM_B64 +
+                     r"|xox[abposre]-[A-Za-z0-9\-]{10,}|xoxe\.xox[bp]-[A-Za-z0-9\-]{10,}|xapp-[A-Za-z0-9\-]{10,}|AIza[0-9A-Za-z_\-]{35}|" + _PEM + r"|" + _PEM_B64 +
                      r"|Private-Lines:\s*\d+(?:\s+[A-Za-z0-9+/=]{4,}(?![\-:A-Za-z0-9+/=]))+"   # a PuTTY key's private part
                      r"|(?i:bearer)\s+[A-Za-z0-9\-._~+/]{16,}=*"
                      r"|eyJ[A-Za-z0-9_\-]{5,}\.eyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]*"   # a JWT
                      r"|npm_[A-Za-z0-9]{30,}|SG\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}|GOCSPX-[A-Za-z0-9_\-]{20,}"   # npm, SendGrid,
                      r"|ya29\.[A-Za-z0-9_\-]{20,}"   # a Google OAuth client secret and access token
+                     r"|shp(?:at|ss|ca|pa)_[A-Fa-f0-9]{32}|do[por]_v1_[a-f0-9]{64}"   # Shopify, DigitalOcean
                      r"|(?P<hook>hooks\.slack\.com/services/)[A-Za-z0-9/_\-]+"   # a Slack webhook
                      # Azure storage: AccountKey=..., SharedAccessSignature=..., a SAS URL's sig=...
                      r"|(?P<az>(?i:AccountKey|SharedAccessKey|SharedAccessSignature)\s*=\s*)[^;\s'\"<>]+"
@@ -114,17 +140,19 @@ KEYLIKE = re.compile(r"(sk-[A-Za-z0-9_\-]{20,}|sk-ant-[A-Za-z0-9_\-]{20,}|AKIA[0
                      # Twilio: an SK / AC id or a 32-hex auth token after 'twilio' or 'auth' on the same line
                      r"|(?P<tw>(?i:\b(?:twilio|auth(?:[_ -]?token)?)\b)[^\r\n]{0,80}?)(?<![A-Za-z0-9])(?:SK|AC)?[0-9a-fA-F]{32}(?![0-9A-Za-z])"
                      # scheme://user:PASSWORD@host, the password up to the last '@' before the host (it may hold '@' and
-                     # '/'); 'host:8080/path@x' is a port, not a password
-                     r"""|(?P<url>\b[A-Za-z][A-Za-z0-9+.\-]*://[^\s:/@'"<>]+:)(?!\d+(?:[/?#\s'"<>]|$))[^\s'"<>]+(?=@[^\s@/'"<>]+(?:[:/?#\s'"<>]|$))"""
+                     # '/'); 'host:8080/path@x' is a port, not a password. No user name at all: redis://:PASSWORD@host
+                     r"""|(?P<url>\b[A-Za-z][A-Za-z0-9+.\-]*://[^\s:/@'"<>]*:)(?!\d+(?:[/?#\s'"<>]|$))[^\s'"<>]+(?=@[^\s@/'"<>]+(?:[:/?#\s'"<>]|$))"""
                      r"|" + _LABELED + r")")
-_KEEP = ("url", "lq", "ls", "lu", "lx", "lk", "hook", "az", "sig", "tw")
+_KEEP = ("url", "lq", "ld", "lx", "lk", "la", "le", "ab", "cu", "mp", "lo", "hook", "az", "sig", "tw")
 # a fixed piece of text every KEYLIKE match contains: SQLite LIKE (ASCII case-insensitive, '_' any one character) keeps only the
 # chunks that may hold one, so the regex runs on a few rows instead of all of them (a run with no change scanned 920k chunks
 # in Python for 58 s, #67). Keep in step with KEYLIKE: tests/test_mask_prefilter.py checks every alternative is covered
+MASK_RULES = 3   # raised when mask() learns a rule outside KEYLIKE (_block_mask, _table_mask): remask then looks at every chunk
 KEYLIKE_HINTS = ("sk-", "akia", "gh_", "hf_", "xox", "aiza", "private", "api", "secret", "password", "passwd", "token",
                  "github_pat", "glpat", "k_live", "k_test", "private-lines", "bearer", "eyj", "://", "pwd", "private_key", "privatekey",
                  "-----", "ls0tls1crudjti", "npm_", "sg.", "gocspx-", "ya29.", "hooks.slack.com", "accountkey", "sharedaccess",
-                 "sig=", "twilio", "auth", "비밀번호", "패스워드", "비번", "암호", "pass")
+                 "sig=", "twilio", "auth", "비밀번호", "패스워드", "비번", "암호", "pass", "pw", "p/w", "curl", "mysql", "mariadb",
+                 "xapp-", "shp", "v1_", "credential", "pin")
 
 
 def _mask_one(m):
@@ -138,8 +166,159 @@ def mask(text):
     before a rule may still hold)"""
     if not text:
         return text
+    if "\n" in text:
+        text = _block_mask(text)
     text = KEYLIKE.sub(_mask_one, text)
+    text = _table_mask(text)
     return _ATT_BLOCK.sub(_att_one, text) if "[첨부 " in text else text
+
+
+# a secret's value on the lines after its label: YAML 'password: |' / '>' blocks and a value on the next, more indented
+# line ('password:\n    ...'), a '\' line continuation, and TOML / Python triple-quoted strings (red-team 0.2.25)
+_TRIPLE = re.compile(r"(?P<h>" + _LABEL + _SEP + r"""[ \t]*(?P<q>"{3}|'{3}))(?P<v>[\s\S]{0,20000}?)(?=(?P=q)|\Z)""")
+_TRIPLE_HINT = re.compile(r"""[:=][ \t]*(?:"{3}|'{3})""")
+_BLOCK_END = set(":=：|>\\+-0123456789")   # how a label line that leaves its value to the next lines ends
+_BLOCK_HEAD = re.compile(r"(?P<ind>[ \t]*)(?:-[ \t]+)?['\"]?" + _LABEL + r"""['"]?[ \t]*[:=][ \t]*(?P<k>[|>][+\-0-9]*|\\)?[ \t]*(?:#.*)?\r?$""")
+
+
+def _block_mask(text):
+    if _TRIPLE_HINT.search(text):   # looked for only on the lines that open a triple quote after ':' / '=' (fast on code)
+        out, at = [], 0
+        for h in _TRIPLE_HINT.finditer(text):
+            if h.start() < at:
+                continue
+            m = _TRIPLE.search(text, max(at, text.rfind("\n", 0, h.start()) + 1), h.end())
+            if m and m.end("h") == h.end():
+                m = _TRIPLE.match(text, m.start())
+            if m and m.end("h") == h.end():
+                out += [text[at:m.end("h")], "[가림]" if m.group("v").strip() else m.group("v")]
+                at = m.end("v")
+        text = "".join(out) + text[at:]
+    lines, i, hit = text.split("\n"), 0, False
+    while i < len(lines) - 1:
+        e = lines[i].rstrip()
+        m = _BLOCK_HEAD.match(lines[i]) if e and len(e) < 300 and (e[-1] in _BLOCK_END or "#" in e) else None
+        if not m:
+            i += 1
+            continue
+        j, ind = i + 1, len(m.group("ind").expandtabs())
+        if m.group("k") == "\\":   # continued on the next line(s)
+            while j < len(lines):
+                ln = lines[j]; lead = len(ln) - len(ln.lstrip(" \t")); more = ln.rstrip("\r").endswith("\\")
+                if ln.strip():
+                    lines[j] = ln[:lead] + "[가림]" + ("\r" if ln.endswith("\r") else ""); hit = True
+                j += 1
+                if not more:
+                    break
+        else:   # the lines indented deeper than the label
+            while j < len(lines):
+                ln = lines[j]
+                if ln.strip():
+                    lead = len(ln) - len(ln.lstrip(" \t"))
+                    if len(ln[:lead].expandtabs()) <= ind:
+                        break
+                    lines[j] = ln[:lead] + "[가림]" + ("\r" if ln.endswith("\r") else ""); hit = True
+                j += 1
+        i = j
+    return "\n".join(lines) if hit else text
+
+
+CRED_LINES = 20       # non-empty lines looked at for a credential header: an export may start with title lines
+_CRED_COL_CHARS = 40  # a longer column ('notes for this account written by ...') is left out, not the whole line
+_CRED_COL_WORDS = 3   # ... and so is one of more words: a sentence's pieces between commas are not column names
+_CRED_DELIMS = (",", "\t", ";", "|")
+_PW_HINT = re.compile(r"(?i)pass|pwd|pw|pin|secret|비밀번호|비번|암호|패스워드")
+_CODE_CELL = re.compile(r"[=(){}\[\]<>;]")      # a short column holding these is code, not a name ...
+_TRAIL_NOTE = re.compile(r"\s*\([^()]*\)\s*$")   # ... a note in brackets at its end aside: 'Password (encrypted)'
+
+
+def _cells(line, d):
+    """(start, end) of each cell of a line split at d; a double-quoted cell may hold d"""
+    out, start, q = [], 0, False
+    for i, ch in enumerate(line):
+        if ch == '"':
+            q = not q
+        elif ch == d and not q:
+            out.append((start, i)); start = i + 1
+    out.append((start, len(line)))
+    return out
+
+
+def _col(c):
+    return re.sub(r"[\s_\-\"'`*]+", "", unicodedata.normalize("NFC", c).casefold())
+
+
+def _pw_col(c):
+    return (c in _CRED_PW or any(w in c for w in _CRED_PW_IN)) and not any(w in c for w in _CRED_PW_NOT)
+
+
+def _id_col(c):
+    return any(w in c for w in _CRED_ID_IN) or (c.endswith("id") and len(c) <= 12)
+
+
+def _cred_cols(line):
+    """(delimiter, indexes of the password columns) when the line is a credential table's header: two or more columns
+    split by one delimiter, one naming a password and another an account, a person or a site (see _CRED_PW_IN,
+    _CRED_ID_IN). Long columns are left out; a line ending like a sentence is not a header. None otherwise"""
+    s = line.strip()
+    if len(s) > 2000 or not s or s[-1] in ".!?。" or not _PW_HINT.search(s):
+        return None
+    for d in _CRED_DELIMS:
+        if d not in s:
+            continue
+        cells = _cells(line, d)
+        cols = []
+        for k, (a, b) in enumerate(cells):
+            raw = line[a:b].strip().strip("\"'`*").strip()
+            if raw and len(raw) <= _CRED_COL_CHARS and len(raw.split()) <= _CRED_COL_WORDS:
+                if _CODE_CELL.search(_TRAIL_NOTE.sub("", raw)):
+                    cols = []   # code ('def f(self, url, pw, name):'), not column names
+                    break
+                cols.append((k, _col(raw)))
+        pw = [k for k, c in cols if _pw_col(c)]
+        if pw and any(k not in pw and _id_col(c) for k, c in cols):
+            return d, pw
+    return None
+
+
+def _cred_line(line):
+    return _cred_cols(line) is not None
+
+
+def _table_mask(text):
+    """the password column's cells masked in every row under a credential table's header, wherever the table is (a CSV
+    pasted in a mail's body, a Markdown table in a note, a sheet read as text): the rows run to a blank line or a row with
+    too few cells. The header and the other columns stay"""
+    if not _PW_HINT.search(text):
+        return text
+    lines, i, hit = text.split("\n"), 0, False
+    while i < len(lines):
+        h = _cred_cols(lines[i]) if _PW_HINT.search(lines[i]) else None
+        if not h:
+            i += 1
+            continue
+        d, pws = h
+        n = len(_cells(lines[i].rstrip("\r"), d))
+        j = i + 1
+        while j < len(lines):
+            full = lines[j]; row = full.rstrip("\r")
+            cs = _cells(row, d)
+            if not row.strip() or len(cs) <= max(pws):
+                break
+            if d == "|" and re.fullmatch(r"[\s|:\-]+", row):   # a Markdown table's |---|---| line
+                j += 1
+                continue
+            extra = max(0, len(cs) - n)   # a password holding the delimiter (unquoted): its pieces too
+            spans = [(cs[k][0], cs[k][1]) for k in pws] if not extra else [(cs[min(pws)][0], cs[min(len(cs) - 1, max(pws) + extra)][1])]
+            for a, b in sorted(spans, reverse=True):
+                cell = row[a:b]
+                m = re.match(r'(\s*"?)(.*?)("?\s*)$', cell, re.S)
+                if m and m.group(2).strip():
+                    row = row[:a] + m.group(1) + "[가림]" + m.group(3) + row[b:]; hit = True
+            lines[j] = row + full[len(full.rstrip("\r")):]
+            j += 1
+        i = j
+    return "\n".join(lines) if hit else text
 
 
 _ATT_BLOCK = re.compile(r"\[첨부 ([^\]\n]{1,300})\]\n(.*?)(?=\n\[첨부 [^\]\n]{1,300}\]\n|\Z)", re.S)
@@ -147,7 +326,7 @@ _ATT_BLOCK = re.compile(r"\[첨부 ([^\]\n]{1,300})\]\n(.*?)(?=\n\[첨부 [^\]\n
 
 def _att_one(m):
     try:
-        bad = is_secret(Path(m.group(1)), head=m.group(2)[:4096].encode("utf-8", "replace"))
+        bad = is_secret(Path(m.group(1)), head=m.group(2)[:HEAD_BYTES].encode("utf-8", "replace"))
         if not bad:   # a mail attached as a text file: a nested mail, its name only
             try:
                 from .moretext import looks_like_mail
@@ -216,28 +395,17 @@ def secret_path(s):
     return real_ext(Path(parts[-1])) in CERT_EXTS and any(w in x for x in parts[:-1] for w in CERT_WORDS)
 
 
-CRED_LINES = 5   # non-empty lines looked at for a credential header: an export may start with a title line
+HEAD_BYTES = 16384   # bytes of a file (or attachment) its content rules look at
 
 
 def cred_header(head):
-    """True when one of the first CRED_LINES non-empty lines of a CSV / TSV / text file (bytes or text) is a credential
-    export's header: two or more short columns, one a password column and one a user name or site column (English or
-    Korean). Not only the first line: 'Saved sign-ins (exported ...)' above the header hid one (red-team 0.2.24)"""
-    if isinstance(head, bytes):
-        b = head[:4096]
-        head = b.decode("utf-16", "replace") if b[:2] in (b"\xff\xfe", b"\xfe\xff") else _decode_text(b)
-    lines = [x for x in (head or "").replace("\ufeff", "").splitlines() if x.strip()][:CRED_LINES]
+    """True when one of the first CRED_LINES non-empty lines of a CSV / TSV / text / Markdown / log file (bytes or text)
+    is a credential table's header (_cred_cols): a password column beside an account, person or site column, English or
+    Korean. Not only the first line: 'Saved sign-ins (exported ...)' above the header hid one (red-team 0.2.24)"""
+    if isinstance(head, (bytes, bytearray)):
+        head = _decode_text(bytes(head[:HEAD_BYTES]))
+    lines = [x for x in (head or "").replace("\ufeff", "").replace("\x00", "").splitlines() if x.strip()][:CRED_LINES]
     return any(_cred_line(x) for x in lines)
-
-
-def _cred_line(line):
-    cols = [unicodedata.normalize("NFC", c).strip().strip('"\'').strip().casefold() for c in re.split(r"[,;\t|]", line)]
-    cols = [re.sub(r"[\s_\-]+", "", c) for c in cols if c]
-    if len(cols) < 2 or any(len(c) > 40 for c in cols):
-        return False   # a sentence, not a header
-    pw = [c for c in cols if c in _CRED_PW or any(w in c for w in _CRED_PW_IN)]
-    who = [c for c in cols if c not in pw and (c in _CRED_ID or any(w in c for w in _CRED_ID_IN))]
-    return bool(pw) and bool(who)
 
 
 # password-manager exports by their content, whatever their name (red-team 0.2.24: vault.json, keepass_dump.xml): a KeePass
@@ -255,8 +423,7 @@ _PM_WHO = re.compile(r"(?i)\"(?:username|user|login|email|uri|uris|url|hostname|
 def pm_export(head):
     """True when text (or bytes) is a password manager's export by its content"""
     if isinstance(head, (bytes, bytearray)):
-        b = bytes(head[:65536])
-        head = b.decode("utf-16", "replace") if b[:2] in (b"\xff\xfe", b"\xfe\xff") else _decode_text(b)
+        head = _decode_text(bytes(head[:65536]))
     t = (head or "")[:65536]
     return bool(_PM_KEEPASS.search(t)) or (bool(_PM_PW.search(t)) and bool(_PM_WHO.search(t)))
 
@@ -266,7 +433,7 @@ def secret_text(name, text):
     header in a CSV / TSV / text file, or a password manager's export (pm_export) in a JSON / XML / text file"""
     forms = name_forms(base_name(name))
     exts = {real_ext(Path(f)) for f in forms}
-    return bool((exts & CRED_EXTS and cred_header(text[:4096])) or (exts & PM_EXTS and pm_export(text)))
+    return bool((exts & CRED_EXTS and cred_header(text[:HEAD_BYTES])) or (exts & PM_EXTS and pm_export(text)))
 
 
 # characters a name can hold that show as nothing: '.env\u200b' read as '.env' to the eye and passed the name rules
@@ -328,7 +495,7 @@ def secret_name(p):
 def _head(p):
     try:
         with open(p, "rb") as f:
-            return f.read(4096)
+            return f.read(HEAD_BYTES)
     except OSError:
         return b""   # nothing to read: nothing to hide either
 
@@ -451,7 +618,7 @@ def extract(p: Path, limit):
         if ext in (".docx", ".xlsx", ".pptx", ".hwpx"):
             return ooxml_text(p, limit)
         raw = open(p, "rb").read(limit)
-        if b"\x00" in raw[:4096] and raw[:2] not in (b"\xff\xfe", b"\xfe\xff"):   # binary, unless UTF-16 text with its BOM
+        if b"\x00" in raw[:4096] and not wide_encoding(raw):   # binary, unless UTF-16 / UTF-32 text
             return ""
         t = _decode_text(raw)   # Korean Notepad files are often 'ANSI' (cp949) or '유니코드' (UTF-16)
         if ext in (".html", ".htm"):
@@ -490,9 +657,22 @@ def transcript(p: Path):
 #   2: .xls/.xlsb/.ods without LibreOffice (#29), distribution(배포용) .hwp (#28)
 #   3: mail attachments under the secret rules and nested mail by name only; password exports found by their first line
 #   4: credential headers below a title line, password-manager exports by their content (secret_text)
-READERS = 4
+#   5: credential headers by stems (any column naming an account, person or site) in the first 20 lines, in .md / .log as
+#      well; UTF-32 and BOM-less UTF-16 text; mail read again (a credential table in its body masked, a nested mail found
+#      after an mbox 'From ' line or blank lines, or by its MIME parts)
+READERS = 5
 REREAD_EXT = {2: (".xls", ".xlsb", ".ods", ".hwp")}
-REREAD_ALL = {3: (".eml", ".emlx", ".mbox")}   # read again even with text stored: what they stored may now be left out
+REREAD_ALL = {3: (".eml", ".emlx", ".mbox"), 5: (".eml", ".emlx", ".mbox")}   # read again even with text stored: what they stored may now be left out
+
+
+_STALE_HEAD = re.compile(r"[ \t]*(?:-[ \t]+)?['\"]?" + _LABEL + r"""['"]?[ \t]*[:=][ \t]*(?:\[가림\])?[ \t]*\r?$""")
+
+
+def _stale_block(text):
+    """text an older findr stored with a secret's label at a line's end (or its '|' masked) and indented lines under it"""
+    lines = text.split("\n")
+    return any((_BLOCK_HEAD.match(a) or _STALE_HEAD.match(a)) and b[:1] in (" ", "\t") and b.strip() and b.strip() != "[가림]"
+               for a, b in zip(lines, lines[1:]) if len(a) < 300)
 
 
 def reread_for_new_readers(con):
@@ -506,14 +686,23 @@ def reread_for_new_readers(con):
     every = sorted({e for v, es in REREAD_ALL.items() if v > have for e in es})
     if every:
         n += con.execute(f"UPDATE files SET pending=1 WHERE tier=1 AND ext IN ({','.join('?' * len(every))})", every).rowcount
-    if have < 4:   # files already read that the content rules now mark (a password export's header, by its first lines
+    if have < 5:   # text files whose stored text still holds the zero bytes of a UTF-16 / UTF-32 file read with the wrong width
+        n += con.execute("""UPDATE files SET pending=1 WHERE tier=1 AND id IN (SELECT file FROM chunks WHERE n=0
+                            AND instr(text, char(0)) > 0)""").rowcount
+    if have < 5:   # files already read that the content rules now mark (a password export's header, by its first lines
         # since 4): read again, so the content stage keeps the name only
         hit = [fid for fid, name, t in con.execute("""SELECT f.id, f.name, c.text FROM files f JOIN chunks c ON c.file=f.id AND c.n=0
                                                       WHERE f.tier=1""")
                if t and secret_text(name, t)]
-        for fid in hit:
+        if have < 5:   # a value on the lines under its label (YAML 'password:' / 'secret: |'): the stored text lost the
+            # indentation that tells the value's lines (runs of spaces are cut to two), so the file is read again
+            w = " OR ".join(["c.text LIKE ?"] * len(KEYLIKE_HINTS))
+            hit += [fid for fid, t in con.execute(f"""SELECT DISTINCT c.file, c.text FROM chunks c JOIN files f ON f.id = c.file
+                                                      WHERE f.tier=1 AND c.n>=0 AND ({w})""", [f"%{h}%" for h in KEYLIKE_HINTS])
+                    if t and _stale_block(t)]
+        for fid in set(hit):
             con.execute("UPDATE files SET pending=1 WHERE id=?", (fid,))
-        n += len(hit)
+        n += len(set(hit))
     con.execute("INSERT OR REPLACE INTO meta VALUES('readers', ?)", (str(READERS),)); con.commit()
     if n:
         print(f"FINDR_REREAD {n} files a newer reader can read ({', '.join(exts)})", flush=True)
@@ -527,14 +716,46 @@ def _hangul_like(t: str) -> bool:
     return bool(na) and sum("가" <= c <= "힣" for c in na) >= 0.6 * len(na)
 
 
+def wide_encoding(b: bytes):
+    """'utf-32-le' / 'utf-32-be' / 'utf-16-le' / 'utf-16-be' for text written in two or four bytes a character: by its
+    BOM (UTF-32's before UTF-16's: FF FE 00 00 starts both), or without one by where its zero bytes fall (ASCII-heavy
+    text: the high bytes of most characters are zero). None for anything else. Red-team 0.2.25: a UTF-32 file decoded as
+    UTF-16 kept a zero between letters, and neither the masking nor the header rules saw 'password' in it"""
+    if b[:4] == b"\xff\xfe\x00\x00":
+        return "utf-32-le"
+    if b[:4] == b"\x00\x00\xfe\xff":
+        return "utf-32-be"
+    if b[:2] == b"\xff\xfe":
+        return "utf-16-le"
+    if b[:2] == b"\xfe\xff":
+        return "utf-16-be"
+    s = b[:4096]
+    n = len(s) - len(s) % 4
+    if n < 8 or b"\x00" not in s:
+        return None
+    z = [sum(1 for i in range(k, n, 4) if s[i] == 0) / (n // 4) for k in range(4)]
+    if z[1] > 0.9 and z[2] > 0.9 and z[3] > 0.9 and z[0] < 0.1:
+        return "utf-32-le"
+    if z[0] > 0.9 and z[1] > 0.9 and z[2] > 0.9 and z[3] < 0.1:
+        return "utf-32-be"
+    odd, even = (z[1] + z[3]) / 2, (z[0] + z[2]) / 2
+    if odd > 0.6 and even < 0.05:
+        return "utf-16-le"
+    if even > 0.6 and odd < 0.05:
+        return "utf-16-be"
+    return None
+
+
 def _decode_text(b: bytes) -> str:
     """text of unknown encoding, as Notepad and converters write it: UTF-16 with a BOM ('유니코드'), UTF-8 (with or without
     BOM), else this PC's code page ('ANSI'), else Korean cp949 when it reads as Korean, else UTF-8 dropping bad bytes.
     b may be cut at a read limit: a character cut in half at the end does not count as a wrong guess"""
     import codecs
     import locale
-    if b[:2] in (b"\xff\xfe", b"\xfe\xff"):
-        return b.decode("utf-16", "ignore")
+    wide = wide_encoding(b)
+    if wide:
+        t = b.decode(wide, "ignore").lstrip("﻿")
+        return t.replace("\x00", "") if t.count("\x00") > 0.2 * max(1, len(t)) else t
     if b[:3] == codecs.BOM_UTF8:
         b = b[3:]
     sys_enc = (locale.getpreferredencoding(False) or "utf-8").lower()
@@ -1817,15 +2038,16 @@ def remask(con):
     con.execute("CREATE TABLE IF NOT EXISTS mask_todo(id INTEGER PRIMARY KEY)")
     con.execute("CREATE TRIGGER IF NOT EXISTS mask_ins AFTER INSERT ON chunks BEGIN INSERT OR IGNORE INTO mask_todo VALUES(NEW.id); END")
     con.execute("CREATE TRIGGER IF NOT EXISTS mask_upd AFTER UPDATE OF text ON chunks BEGIN INSERT OR IGNORE INTO mask_todo VALUES(NEW.id); END")
-    pat = hashlib.sha1((KEYLIKE.pattern + "|" + "|".join(KEYLIKE_HINTS)).encode()).hexdigest()[:16]
+    pat = hashlib.sha1((KEYLIKE.pattern + "|" + "|".join(KEYLIKE_HINTS) + f"|rules{MASK_RULES}").encode()).hexdigest()[:16]
     seen = con.execute("SELECT value FROM meta WHERE key='mask_pattern'").fetchone()
     w = " OR ".join(["c.text LIKE ?"] * len(KEYLIKE_HINTS))
     # CROSS JOIN keeps mask_todo outer: with a plain JOIN SQLite scanned every chunk (2.6 GB, ~5 s) to find an empty todo list
     src = "chunks c" if not seen or seen[0] != pat else "mask_todo t CROSS JOIN chunks c ON c.id = t.id"
     rows = con.execute(f"SELECT c.id, c.file, c.text FROM {src} WHERE {w}", [f"%{h}%" for h in KEYLIKE_HINTS]).fetchall()
     for cid, fid, txt in rows:
-        if txt and KEYLIKE.search(txt):
-            t = mask(txt); name, path, tr = con.execute("SELECT name, path, tier FROM files WHERE id=?", (fid,)).fetchone()
+        t = mask(txt) if txt else txt
+        if t != txt:
+            name, path, tr = con.execute("SELECT name, path, tier FROM files WHERE id=?", (fid,)).fetchone()
             con.execute("DELETE FROM fts WHERE rowid=?", (cid,))
             if tr != 0:
                 con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(name), nfc(path), t))

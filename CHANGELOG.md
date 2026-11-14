@@ -1,5 +1,17 @@
 # 바뀐 점
 
+## 다음 판 (Unreleased)
+0.2.25 보안 점검(레드팀)에서 찾은 새는 곳을 막았습니다. 낱말을 하나씩 더하는 대신 일반 규칙으로 바꿨습니다. 남은 한계는 SECURITY.md에 적었습니다.
+- 비밀번호 표 머리글: 열 이름을 낱말 줄기로 판단. 한 열에 비밀번호 줄기(`password`·`passwd`·`pwd`·`passcode`·`passphrase`·비밀번호·비번·암호·패스워드가 이름 어디에든, 또는 이름 전체가 `pw`·`pin`·`pass`)가 있고 다른 열에 계정·사람·사이트 줄기(`user`·`login`·`account`·`email`·`mail`·`name`·`site`·`url`·`host`·`domain`·`service`, 끝이 `id`, 아이디·계정·이메일·메일·사용자·사이트·주소·도메인·서비스)가 있으면 머리글(`Email Address`·`Account Name`·`이메일 주소`·`계정`·`ID,PW` 등 두 열 머리글 포함). 너무 긴 열(40자 넘음·네 낱말 이상)은 줄 전체가 아니라 그 열만 빼고, 코드 꼴 칸(`(`·`=` 등)이나 문장처럼 끝나는 줄은 머리글로 보지 않음. 앞 20줄(전에는 5줄)을 보고, `.md`·`.log`도(Markdown `|` 표, 탭·`;`·`,`). 판단에 보는 앞부분 4KB → 16KB
+- 표 가리기: 글 어디에서든(메일 본문에 붙여 넣은 CSV, 메모의 표, 표로 읽힌 시트) 비밀번호 표 머리글 아래 행들의 비밀번호 열 칸을 빈 줄까지 가림. 메일은 통째로 버리지 않고 그 열만 가림
+- 이름표 가리기: 설정 이름(글자·숫자·`_`·`.`·`-`) 어디에든 `password`·`passwd`·`pwd`·`secret`·`token`·`apikey`·`api_key`·`accesskey`·`privatekey`·`credential`·`passphrase`가 들어 있으면(`dbPassword`·`smtpPassword`·`accessToken`·`refreshToken`·`clientSecret`·`apiKey`·`PGPASSWORD`·`MYSQL_PWD`·`db.password`·`x-api-key`) 이름표. 낱말이 글자로 이어지는 것(`tokenizer`·`max_tokens`·`TokenOpt`·`secretary`·`author`·`oauth`)은 아님. 구분자에 `=>`·`->` 추가. `PW:`·`pw=`·`P/W:`(낱말 하나, 줄 처음이나 공백 뒤), PHP `define('DB_PASSWORD', '…')` 같은 호출, `<add key="…Password…" value="…">`·`<entry name="password">…`, `Authorization: Basic …`, `curl -u 아이디:비밀번호`, `mysql -p…`, `--password 값`, 토큰 `shpat_`·`shpss_`·`dop_v1_`·`xapp-`·`xoxe-`, 사용자 이름 없는 `redis://:비밀번호@`
+- 여러 줄 값: 비밀 이름표 뒤가 비어 있으면 더 들여쓴 다음 줄들을, YAML `|`·`>` 블록, TOML·Python `"""`·`'''`, `\` 이어 쓰기를 가림
+- 글 풀기: UTF-32(LE·BE BOM)를 UTF-16보다 먼저 알아보고, BOM 없는 UTF-16·UTF-32는 0 바이트 자리로 알아봄(전에는 이진 파일로 보거나 글자 사이에 0이 낀 채 저장해 가리기·머리글 규칙이 보지 못함). 풀고도 0이 20% 넘게 끼어 있으면 뺌
+- 메일 속 메일: 텍스트 첨부가 빈 줄이나 mbox `From ` 줄 뒤에 메일 머리글로 시작하거나, multipart `Content-Type`·base64 첨부 머리글을 품고 있으면 이름만
+- `file_relations`의 특징 낱말은 가린 글에서 뽑음(예전 색인의 가리지 않은 값이 낱말로 나오던 문제). 저장된 낱말은 다시 계산
+- 이미 색인된 것(readers 5): 메일은 다시 읽고, 새 머리글 규칙에 걸리는 파일, 이름표 아래 줄에 값이 있는 파일(저장할 때 들여쓰기가 줄어 가릴 줄을 알 수 없음), 글자 사이에 0이 낀 채 저장된 파일을 다시 읽음. 저장된 조각은 새 규칙으로 한 번 모두 다시 가림
+- 파일 이름은 가리지 않음(파일을 이름으로 열기 때문): SECURITY.md 알려진 한계에 적음
+
 ## 0.2.25 (2026-11-14)
 0.2.24 보안 점검(레드팀)에서 찾은 새는 곳을 막았습니다. 비밀 파일의 내용은 색인하거나 돌려주지 않고, 데이터 폴더와 `FINDR_MCP_DENY` 폴더는 AI 도구의 답에 드러나지 않으며, 키 꼴 문자열은 글을 돌려주는 모든 곳에서 가립니다. 남은 한계는 SECURITY.md의 'Known limitations'에 적었습니다.
 - MCP `search_files`: 안내문과 확률을 보여 주는 파일만으로 계산함. 엔진의 안내문과 `p_none`(엔진 목록 전체, 숨긴 파일 포함으로 계산)은 쓰지 않고, 보정식의 `p_none`·안내문 입력은 고정값, 점수가 없으면 확률 없음(`null`). 엔진에는 늘 50개를 묻고 빠진 것이 있다고 다시 묻지 않음(숨긴 파일만 맞아 엔진이 목록을 짧게 자르면 보이는 파일이 나오지 않던 문제 포함)
