@@ -118,6 +118,12 @@ _ATT_BLOCK = re.compile(r"\[첨부 ([^\]\n]{1,300})\]\n(.*?)(?=\n\[첨부 [^\]\n
 def _att_one(m):
     try:
         bad = is_secret(Path(m.group(1)), head=m.group(2)[:4096].encode("utf-8", "replace"))
+        if not bad:   # a mail attached as a text file: a nested mail, its name only
+            try:
+                from .moretext import looks_like_mail
+            except ImportError:
+                from moretext import looks_like_mail
+            bad = looks_like_mail(m.group(2))
     except Exception:   # noqa: BLE001
         bad = True
     return f"[첨부 {m.group(1)}]\n" if bad else m.group(0)
@@ -241,10 +247,17 @@ def name_forms(name):
 _SECRET_DIRS_CF = {d.casefold() for d in SECRET_DIRS}
 
 
+def base_name(name):
+    """the last part of a name that may carry a folder in either OS's form: a mail attachment named
+    'C:\\Users\\x\\secrets.json' or '../x/.env' on any PC (PurePosixPath takes the whole Windows path as the name)"""
+    parts = [x for x in re.split(r"[\\/]+", str(name or "")) if x]
+    return parts[-1] if parts else str(name or "")
+
+
 def secret_name(p):
     """the rules that need only the path (names, certificate folders, folders of keys such as .ssh and .kube): what a
     secret file is, without opening it"""
-    if any(SECRET.search(f) for f in name_forms(p.name)) or secret_path(p):
+    if any(SECRET.search(f) for f in name_forms(base_name(p.name))) or secret_path(p):
         return True
     parts = re.split(r"[\\/]+", nfc(str(p)))
     return any(x.casefold().rstrip(" .") in _SECRET_DIRS_CF for x in parts[:-1])

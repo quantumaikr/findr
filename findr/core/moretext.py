@@ -178,9 +178,9 @@ def _walk(msg):
         part, depth = stack.pop()
         seen += 1
         try:
-            if part.get_content_maintype() == "message" and depth > 0:   # a mail inside a mail (forwarded as attachment):
-                atts.append((part.get_filename() or "", part))              # its name only, never its text or attachments
-                continue
+            if part.get_content_maintype() == "message":   # a mail inside a mail (forwarded as attachment): its name only,
+                atts.append((part.get_filename() or "", part))  # never its text or attachments. The mail itself being one
+                continue                                         # (message/rfc822 at the top) wraps a mail the same way
             if part.is_multipart():
                 if depth < MAIL_MAX_DEPTH:
                     stack.extend((c, depth + 1) for c in reversed(part.get_payload()))
@@ -196,6 +196,27 @@ def _walk(msg):
         except Exception:
             continue
     return plain or html, atts
+
+
+_MAIL_HDR = re.compile(r"(?i)^(from|to|cc|subject|date|content-type|mime-version|message-id|received|return-path|reply-to)\s*:")
+
+
+def looks_like_mail(data):
+    """bytes (or text) that are an RFC 822 message: a header block of 'Name: value' lines (two or more of the usual mail
+    headers, From or Content-Type among them) before the first blank line. A mail attached as a .txt is a nested mail"""
+    t = data[:8192].decode("utf-8", "replace") if isinstance(data, (bytes, bytearray)) else str(data or "")[:8192]
+    seen = set()
+    for line in t.lstrip("\ufeff").splitlines():
+        if not line.strip():
+            break
+        if line[:1] in (" ", "\t"):
+            continue   # a folded header line
+        m = _MAIL_HDR.match(line)
+        if m:
+            seen.add(m.group(1).lower())
+        elif not re.match(r"^[!-9;-~]+:", line):
+            return False   # not a header line: not a mail's head
+    return len(seen) >= 2 and bool(seen & {"from", "content-type"})
 
 
 def _is_secret(name, data):
@@ -221,8 +242,8 @@ def _attachment_text(name, part, deadline=None):
         return ""
     try:
         data = part.get_payload(decode=True)
-        if not data or len(data) > MAIL_ATTACH_BYTES or _is_secret(name, data):
-            return ""
+        if not data or len(data) > MAIL_ATTACH_BYTES or _is_secret(name, data) or looks_like_mail(data):
+            return ""   # a mail attached as a text file is a nested mail: its name only
         with tempfile.TemporaryDirectory(prefix="findr-att-") as d:
             f = Path(d) / ("att" + ext)
             f.write_bytes(data)

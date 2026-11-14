@@ -104,3 +104,44 @@ def test_credential_header_below_a_title_or_with_short_names(tmp_path, text):
 def test_ordinary_tables_are_not_credentials(tmp_path):
     for text in ("name,phone,city\nkim,010,seoul\n", "Report\na\nb\nc\nd\ne\nurl,username,password\n", "pass rate,year\n0.8,2026\n"):
         assert not index.cred_header(text), text
+
+
+# ---------------------------------------------------------------- 5, 9. mail attachments and nested mail
+import base64  # noqa: E402
+
+import moretext  # noqa: E402
+
+_HEAD = ("From: Tess Varno <tess@example.invalid>\r\nTo: me@example.invalid\r\nSubject: files\r\nMIME-Version: 1.0\r\n"
+         "Content-Type: multipart/mixed; boundary=BB\r\n\r\n--BB\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nsee attached\r\n")
+
+
+def _att(fn, data, ctype="application/octet-stream"):
+    return (f"--BB\r\nContent-Type: {ctype}\r\nContent-Disposition: attachment; filename=\"{fn}\"\r\n"
+            f"Content-Transfer-Encoding: base64\r\n\r\n{base64.b64encode(data.encode()).decode()}\r\n")
+
+
+def _mail(tmp_path, body):
+    p = tmp_path / "m.eml"
+    p.write_bytes(body.encode())
+    return moretext.eml_text(p)
+
+
+@pytest.mark.parametrize("fn", ["C:\\\\Users\\\\kim\\\\secrets.json", "D:\\\\keys\\\\.env.txt", "../x/.env", "..\\\\cfg\\\\credentials.csv"])
+def test_attachment_named_with_a_folder_is_judged_by_its_last_part(tmp_path, fn):
+    t = _mail(tmp_path, _HEAD + _att(fn, "DB_PASS=Quokka4471") + "--BB--\r\n")
+    assert "Quokka4471" not in t and "첨부:" in t
+    assert index.secret_name(index.Path(fn.replace("\\\\", "\\")))
+
+
+def test_top_level_message_rfc822_is_a_nested_mail(tmp_path):
+    inner = ("From: a@example.invalid\r\nSubject: inner\r\nMIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\ninner body Quokka80\r\n")
+    t = _mail(tmp_path, "From: b@example.invalid\r\nSubject: wrapper\r\nMIME-Version: 1.0\r\nContent-Type: message/rfc822\r\n\r\n" + inner)
+    assert "Quokka80" not in t and "wrapper" in t
+
+
+def test_mail_attached_as_text_is_a_nested_mail(tmp_path):
+    inner = "From: a@example.invalid\r\nSubject: inner\r\nContent-Type: text/plain\r\n\r\ninner attach Quokka81\r\n"
+    t = _mail(tmp_path, _HEAD + _att("fwd2.txt", inner, "text/plain") + _att("plain.txt", "Subject line: not a mail\nbody Wombat9") + "--BB--\r\n")
+    assert "Quokka81" not in t and "fwd2.txt" in t and "Wombat9" in t
+    # an index from before: the stored attachment block is cut to its name when returned
+    assert "Quokka81" not in index.mask("x\n\n[첨부 fwd2.txt]\n" + inner.replace("\r\n", "\n"))
