@@ -1305,11 +1305,12 @@ def photos_to_read(rows, deep, engine):
     return first
 
 
-def ocr_wave(con, root, first_pages=None, deep_pages=50):
+def ocr_wave(con, root, first_pages=None, deep_pages=None):
     """scanned PDFs and screenshots now; every photo on a deep run. Each file is read once (files.ocr).
     First pass: the first OCR_FIRST_PAGES pages of a PDF (files.ocr = 3 when pages are left); a deep run reads the rest.
     A copy of a file already read gets that file's text instead of a second OCR."""
     deep = int(os.environ.get("FINDR_FIRST_PIECES") or 0) == 0
+    deep_pages = deep_pages or int(os.environ.get("FINDR_OCR_DEEP_PAGES") or 50)   # indexing stays bounded; one file asked for is read further (deepread.py)
     first_pages, side = first_pages or OCR_FIRST_PAGES, OCR_SIDE
     if ocr_engine() == "none":
         return   # nothing to read with (FINDR_WARN at the start of the run says what to install)

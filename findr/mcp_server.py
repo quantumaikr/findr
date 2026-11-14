@@ -4,7 +4,8 @@ person's files through findr.
 Tools
   search_files(query, limit, kind, since, until, folder)   the files most likely meant, with the odds, where they are and
                                a short excerpt; optionally only one kind of file, a period, or one folder
-  read_file(path, max_chars)   the text findr already read from one indexed file
+  read_file(path, max_chars)   the text findr already read from one indexed file; when the index has none, the file read now
+                               (scan OCR with pages read of total, HEIC), why it cannot be read (HWP 3.x, password), docx pages
   list_folder(path, limit)     what one folder holds, newest first, and its subfolders: to look around the way a person
                                does once a search shows roughly where something is (a photo with no text, a project folder)
   versions(path)               the same document's other files: exact copies anywhere, other versions in its folder, the
@@ -408,8 +409,22 @@ def read_file(path: str, max_chars: int = 4000) -> dict:
         if n >= max_chars:
             break
     body = "\n".join(text)[:max_chars]
-    return {"name": row[1], "path": path, "text": body, "truncated": n > max_chars,
-            "note": "" if body else "findr has only the name of this file so far (its text is read later, or it has none)"}
+    out = {"name": row[1], "path": path, "text": body, "truncated": n > max_chars,
+           "note": "" if body else "findr has only the name of this file so far (its text is read later, or it has none)"}
+    try:   # what the index cannot say: why a file is unreadable, a docx's pages, and the file read now when the index has no text
+        from .core import deepread
+        if os.path.isfile(path):
+            if not body or path.lower().endswith(".docx"):
+                got = deepread.deep_read(path, max_chars)
+                for k in ("unreadable", "pages", "pages_estimated", "ocr"):
+                    if k in got:
+                        out[k] = got[k]
+                if not body:
+                    out["text"], out["truncated"] = got["text"], got.get("truncated", False)
+                    out["note"] = got.get("note") or out["note"]
+    except Exception:
+        pass
+    return out
 
 
 def main():

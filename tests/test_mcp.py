@@ -35,6 +35,24 @@ def test_read_only_indexed_files(mcp_mod, tmp_path):
     assert "error" in mcp_mod.read_file(str(tmp_path / "index.db"))   # any other path is refused
 
 
+def test_read_file_says_why_and_pages(mcp_mod, tmp_path):
+    import zipfile
+    old, doc = tmp_path / "old.hwp", tmp_path / "a.docx"
+    old.write_bytes(b"HWP Document File V3.00" + b"\0" * 100)
+    with zipfile.ZipFile(doc, "w") as z:
+        z.writestr("word/document.xml", "<w:document xmlns:w='x'><w:t>본문</w:t></w:document>")
+        z.writestr("docProps/app.xml", "<Properties><Pages>9</Pages></Properties>")
+    con = sqlite3.connect(str(tmp_path / "index.db"))
+    con.execute("INSERT INTO files VALUES(2,?,'old.hwp','.hwp',1,1700000000,1)", (str(old),))
+    con.execute("INSERT INTO files VALUES(3,?,'a.docx','.docx',1,1700000000,1)", (str(doc),))
+    con.execute("INSERT INTO chunks VALUES(2,3,0,'본문')")
+    con.commit(); con.close()
+    r = mcp_mod.read_file(str(old))
+    assert r["text"] == "" and "HWP 3.x" in r["unreadable"] and "HWP 3.x" in r["note"]
+    r = mcp_mod.read_file(str(doc))
+    assert r["text"] == "본문" and r["pages"] == 9 and r["pages_estimated"] is False
+
+
 def test_mcp_server_lists_tools(tmp_path):
     pytest.importorskip("mcp")
     import asyncio, os
