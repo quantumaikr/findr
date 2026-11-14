@@ -276,9 +276,10 @@ def tier(p: Path, sniff=False):
 
 
 try:
-    from . import relations
+    from . import relations, samepath
 except ImportError:
     import relations
+    import samepath
 
 try:   # old office formats: content sniffing + Word 97 piece table before LibreOffice (orders of magnitude faster)
     from .officetext import sniff_text, doc_text, hwp_text
@@ -671,17 +672,52 @@ def _main():
     # other copies of findr already in the index (a second clone, an older install, a worktree: #119), found by their
     # pyproject.toml rows; like the running checkout, they leave unless a chosen root is one of them or lies inside one
     copies = {Path(raw).parent for (raw,) in con.execute("SELECT path FROM files WHERE name='pyproject.toml'") if is_findr_checkout(Path(raw).parent)}
+    owns = list(dict.fromkeys([*own_dirs(), *copies]))
+    samepath.clear()
+    own_ids = samepath.ids_of(owns)
+
+    def as_own(r):
+        """a chosen folder spelled as the own folder it is in or is (by identity: a firmlink, another letter case, a link)"""
+        d = samepath.under(r, own_ids, follow=False)
+        if d is None:
+            return None
+        for a in samepath.ancestors(r):
+            if samepath.ident(a) == samepath.ident(str(d)):
+                rel = os.path.relpath(os.path.abspath(str(r)), a)
+                return key((Path(d) if rel == "." else Path(d) / rel).as_posix()).rstrip("/")
+        return None
     rkeys = [(key(Path(r).resolve().as_posix()).rstrip("/"), key(Path(r).as_posix()).rstrip("/")) for r in roots]
+    rkeys += [(o, key(Path(r).as_posix()).rstrip("/")) for r in roots if (o := as_own(r)) and o not in {x for x, _ in rkeys}]
     # a chosen folder inside one of them (an app that embeds findr keeps the person's files in its data folder) no longer lets
     # the whole data folder in: the rest of it (index, models, logs, settings) stays out, folder by folder (#200)
     held = {}   # own folder -> the chosen folders inside it, as resolved and as given
-    for d in [*own_dirs(), *copies]:
+    for d in owns:
         k = key(d.as_posix()).rstrip("/")
         inside = [(rs, rg) for rs, rg in rkeys if rs == k or rs.startswith(k + "/")]
         if not inside:
             excl.add(k)
+            # the same folder as a chosen folder above it spells it (/System/Volumes/Data/..., another case): its rows
+            # already in the index under that spelling leave too, and the walk leaves it out by text as well as identity
+            for r in roots:
+                v = samepath.variant(d, r)
+                if v:
+                    excl.add(key(Path(v).as_posix()).rstrip("/"))
         elif all(rs != k for rs, _ in inside):   # a chosen root that is the folder itself keeps all of it
             held[k] = [x for pair in inside for x in pair]
+    # the same folders by identity, for spellings no text compare can see (hard links, bind mounts, case, firmlinks)
+    excl_ids = {i: d for i, d in own_ids.items() if key(Path(d).as_posix()).rstrip("/") in excl}
+    held_ids = {i: d for i, d in own_ids.items() if key(Path(d).as_posix()).rstrip("/") in held}
+    root_ids = samepath.ids_of(roots)
+
+    def own_by_identity(full, sp):
+        """a folder met in the walk that is one of findr's own under another spelling: an excluded one is left out; a held
+        one only when not spelled as held (the chosen folders inside it are walked as their own roots)"""
+        i = samepath.ident(full)
+        if i is None:
+            return False
+        if i in excl_ids:
+            return True
+        return i in held_ids and sp != key(Path(held_ids[i]).as_posix()).rstrip("/")
 
     def left_out(s):
         """an excluded folder or anything under it; inside a held folder, all but the chosen folders and the way down to them"""
@@ -746,6 +782,8 @@ def _main():
                 dns[:] = [d for d in dns if not skip_dir(rel, d)]
             if excl or held:
                 dns[:] = [d for d in dns if not left_out(key((Path(dp) / d).as_posix()))]
+            if excl_ids or held_ids:
+                dns[:] = [d for d in dns if not own_by_identity(os.path.join(dpl, d), key((Path(dp) / d).as_posix()))]
             # a copy of findr met during the walk (#119): only folders holding a pyproject.toml are looked at, which is rare
             dns[:] = [d for d in dns if not (os.path.isfile(os.path.join(dpl, d, "pyproject.toml")) and is_findr_checkout(Path(dp) / d))]
             for fn in fns:
@@ -767,7 +805,13 @@ def _main():
                     continue
                 seen.add(s)
                 tick("names", k, len(roots), scanned=scanned + len(seen), folder=_short(dpl)[len(str(root)):].lstrip("/\\")[:80] or root.name)
+                if os.path.islink(os.path.join(dpl, fn)):   # a link: where it leads decides too
+                    t_ = samepath.unfirm(os.path.realpath(os.path.join(dpl, fn)))
+                    if samepath.under(t_, excl_ids, follow=False) or left_out(key(Path(t_).as_posix())):
+                        continue   # into findr's own folders: not the person's file
                 tr = tier(p)
+                if tr in (1, 2) and os.path.islink(os.path.join(dpl, fn)) and samepath.under(t_, root_ids, follow=False) is None:
+                    tr = 3   # leads outside the chosen folders: found by its name, never read
                 if tr == 1 and s in known and known[s][3] == 0:
                     tr = tier(p, sniff=True)   # found secret by its first line when read: still so unless that changed
                 if tr in (1, 2) and cloud_only(st):

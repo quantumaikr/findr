@@ -145,18 +145,24 @@ def _real_dir(d):
 
 
 def _canon(p):
-    """one spelling for comparing paths: absolute, links resolved, '..' folded, NFC, '/' and case folded. Case is folded
-    on every OS: Windows and macOS ignore it, and on Linux the cost is at most a path left out that need not be"""
+    """one spelling for comparing paths: absolute, links resolved, '..' folded, NFC, '/' and case folded, macOS firmlinks
+    (/System/Volumes/Data/...) taken off, Windows forms (\\\\?\\, \\\\localhost\\C$\\, trailing dots and spaces, short
+    names) made the usual one. Case is folded on every OS: Windows and macOS ignore it, and on Linux the cost is at most a
+    path left out that need not be. Spellings text cannot tell (hard links, bind mounts) are compared by identity in _denied"""
+    from .core import samepath
     s = unicodedata.normalize("NFC", os.path.expanduser(str(p or "")))
-    if re.match(r"^[A-Za-z]:[\\/]|^[\\/]{2}[^\\/]", s) and os.name != "nt":
+    winlike = bool(re.match(r"^[A-Za-z]:[\\/]|^[\\/]{2}[^\\/]", s))
+    if winlike or os.name == "nt":
+        s = samepath.win_text(s)
+    if winlike and os.name != "nt":
         s = s.replace("\\", "/")   # a Windows path seen on another OS (an index copied over): compared as written
     elif os.path.isabs(s):
-        s = os.path.normpath(s)
+        s = samepath.long_name(os.path.normpath(s))
         d, name = os.path.split(s)
         full = os.path.join(_real_dir(d), name) if name else _real_dir(s)
         if name and os.path.islink(full):
             full = _real_dir(full)   # a file that is a link: where it points
-        s = full
+        s = samepath.unfirm(full)
     s = s.replace("\\", "/")
     if s.startswith("//?/UNC/"):
         s = "//" + s[8:]
@@ -166,12 +172,22 @@ def _canon(p):
     return (lead + posixpath.normpath(s).lstrip("/") if lead else posixpath.normpath(s)).rstrip("/").casefold() or "/"
 
 
+class _Roots(set):
+    """the deny folders' canonical texts, and .ids: the same folders by (st_dev, st_ino)"""
+    ids = {}
+
+
 def _deny_roots():
-    """findr's data folder and the folders in FINDR_MCP_DENY, each in every form the index may hold it (C:\\ and /mnt/c/)"""
-    out = set()
-    for d in [str(paths.HOME), *os.environ.get("FINDR_MCP_DENY", "").split(os.pathsep)]:
+    """findr's data folder and the folders in FINDR_MCP_DENY (';' or os.pathsep between them; C:\\x is one folder on any
+    OS), each in every form the index may hold it (C:\\ and /mnt/c/), and by identity"""
+    from .core import samepath
+    out, dirs = _Roots(), []
+    for d in [str(paths.HOME), *samepath.split_list(os.environ.get("FINDR_MCP_DENY", ""))]:
         if d.strip():
-            out |= {_canon(f) for f in _path_forms(d.strip())}
+            forms = _path_forms(d.strip())
+            out |= {_canon(f) for f in forms}
+            dirs += [os.path.expanduser(f) for f in forms if os.path.isabs(os.path.expanduser(f))]
+    out.ids = samepath.ids_of(dirs)
     return out
 
 
@@ -184,7 +200,12 @@ def _secret(p):
         from .core import index
         s = str(p)
         q = PureWindowsPath(s) if (os.name == "nt" or "\\" in s) else PurePosixPath(s)
-        return index.secret_name(q)
+        if index.secret_name(q):
+            return True
+        if os.path.isabs(s) and os.path.islink(s):   # a link with a harmless name: where it leads decides too
+            t = index.link_target(s)
+            return bool(t) and index.secret_name(PurePosixPath(t) if os.name != "nt" else PureWindowsPath(t))
+        return False
     except Exception:   # noqa: BLE001
         return False
 
@@ -199,6 +220,9 @@ def _denied(p, roots=None):
         c = _canon(f)
         if any(c == r or c.startswith(r.rstrip("/") + "/") for r in roots):
             return True
+    from .core import samepath
+    if getattr(roots, "ids", None) and os.path.isabs(str(p)) and samepath.under(str(p), roots.ids) is not None:
+        return True   # the same folder under a spelling text cannot tell (a hard link, a bind mount, a firmlink, case)
     return _secret(p)
 
 
@@ -208,6 +232,8 @@ def _db():
     con = sqlite3.connect(f"file:{paths.DB}?mode=ro", uri=True, timeout=10)
     con.create_function("nfc", 1, lambda s: unicodedata.normalize("NFC", s) if s else s, deterministic=True)
     _real_dir.cache_clear()
+    from .core import samepath
+    samepath.clear()
     roots = _deny_roots()
     con.create_function("denied", 1, lambda s: 1 if _denied(s, roots) else 0, deterministic=True)
     return con
@@ -651,7 +677,7 @@ def read_file(path: str, max_chars: int = 4000) -> dict:
     out = {"name": row[1], "path": path, "text": body, "truncated": n > max_chars,
            "note": "" if body else "findr has only the name of this file so far (its text is read later, or it has none)"}
     try:   # what the index cannot say: why a file is unreadable, a docx's pages, and the file read now when the index has no text
-        if os.path.isfile(path) and (not body or path.lower().endswith(".docx")) and _deep_ok(path, row[2]):
+        if os.path.isfile(path) and (not body or path.lower().endswith(".docx")) and _deep_ok(path, row[2], con):
             got = _deep_read(path, max_chars)
             for k in ("unreadable", "pages", "pages_estimated", "ocr"):
                 if k in got:
@@ -670,14 +696,22 @@ def _mask(text):
     return index.mask(text)
 
 
-def _deep_ok(path, tier):
+def _deep_ok(path, tier, con=None):
     """read now only what the indexer would read: a tier-1 file (documents, text) or a photo / scan for OCR. Never a tier-3
-    file read as raw bytes (a VPN profile holds a private key), never a secret, never an online-only cloud file (reading it
-    would download it)"""
+    file read as raw bytes (a VPN profile holds a private key), never a secret (the link's target too), never an
+    online-only cloud file (reading it would download it). A link is read only when where it leads is itself an indexed,
+    readable file outside the deny folders: a link out of the chosen folders is never followed"""
     from pathlib import Path
     from .core import deepread, index
     if index.is_secret(Path(path)) or index.cloud_only_path(path):
         return False
+    t = index.link_target(path)
+    if t is not None and os.path.islink(path):
+        if con is None or _denied(t):
+            return False
+        r = con.execute("SELECT tier FROM files WHERE path=? OR nfc(path)=?", (t, unicodedata.normalize("NFC", t))).fetchone()
+        if not r or r[0] <= 0 or not (r[0] == 1 or index.real_ext(Path(t)) in deepread.IMAGES):
+            return False
     return tier == 1 or index.real_ext(Path(path)) in deepread.IMAGES
 
 
