@@ -104,14 +104,58 @@ def test_same_content_copies_by_bytes_not_by_name_or_size(tmp_path):
     assert relations.copies(con, 1) == []
 
 
-def test_family_id_is_shared_and_merges_to_the_smallest(tmp_path):
-    con = make(tmp_path, {"a/p.txt": (BODY_A, 1.7e9), "a/p v2.txt": (BODY_A + "x", 1.7e9), "b/q.txt": (OTHER, 1.7e9), "b/q 최종.txt": (OTHER + "y", 1.7e9)})
+def test_family_id_is_shared_and_two_families_never_merge(tmp_path):
+    con = make(tmp_path, {"a/p.txt": (BODY_A, 1.7e9), "a/p v2.txt": (BODY_A + "x", 1.7e9), "b/q.txt": (OTHER, 1.7e9), "b/q 최종.txt": (OTHER + "y", 1.7e9),
+                          "c/new.txt": (BODY_B, 1.7e9)})
     f1 = relations.family_id(con, 1, [2])
     f2 = relations.family_id(con, 3, [4])
     assert f1 and f2 and f1 != f2 and relations.family_id(con, 2, [1]) == f1
-    merged = relations.family_id(con, 1, [3])   # found to be one family after all: the smaller id wins, all four follow
-    assert merged == min(f1, f2)
-    assert {r[0] for r in con.execute("SELECT fam FROM file_uid")} == {merged}
+    # one wrong pairing does not join two families for good (review of #203): each keeps its own
+    assert relations.family_id(con, 1, [3]) == f1 and relations.family_id(con, 3, [1]) == f2
+    assert {r[0]: r[1] for r in con.execute("SELECT file, fam FROM file_uid")} == {1: f1, 2: f1, 3: f2, 4: f2}
+    assert relations.family_id(con, 5, [1]) == f1   # a file with no family joins its member's
+
+
+def test_same_name_in_other_folders_is_not_one_family(mcp_pc):
+    """review of #203: every project has a README.md; same name elsewhere is shown by versions, but is not the family"""
+    m, tmp = mcp_pc
+    for i in range(3):
+        d = tmp / f"proj{i}"; d.mkdir()
+        (d / "README.md").write_text(f"readme of project {i} " * 5, encoding="utf-8")
+    con = sqlite3.connect(tmp / "home" / "index.db")
+    for i in range(3):
+        f = tmp / f"proj{i}" / "README.md"
+        con.execute("INSERT INTO files VALUES(?,?,?,?,?,?,1)", (50 + i, f.as_posix(), "README.md", ".md", f.stat().st_size, 1.7e9))
+        con.execute("INSERT INTO chunks VALUES(?,?,0,?,NULL)", (50 + i, 50 + i, f.read_text(encoding="utf-8")))
+    con.commit(); con.close()
+    fams = {m.versions((tmp / f"proj{i}" / "README.md").as_posix())["file"]["family_id"] for i in range(3)}
+    assert len(fams) == 3 and None not in fams
+    v = m.versions((tmp / "proj0" / "README.md").as_posix())
+    assert {o["relation"] for o in v["others"]} == {"same name elsewhere"} and all(o.get("file_id") for o in v["others"])
+
+
+def test_versions_does_not_hash_and_gives_up_the_lock_at_once(mcp_pc, monkeypatch):
+    """review of #203: versions() hashed every same-size file at each call, and waited 10 s per write while the indexer held
+    the index (140 s seen). It hashes nothing now, and tries the write lock once, briefly"""
+    import time
+    m, tmp = mcp_pc
+    monkeypatch.setattr(relations, "sha1", lambda p: pytest.fail("versions() read a file to hash it"))
+    p = (tmp / "p" / "제안서.txt").as_posix()
+    assert m.versions(p)["file"]["file_id"]
+    w = sqlite3.connect(tmp / "home" / "index.db")
+    w.execute("BEGIN IMMEDIATE"); w.execute("UPDATE files SET tier=1 WHERE id=1")   # the indexer, mid-transaction
+    try:
+        t = time.time()
+        v = m.versions(p)
+        assert time.time() - t < 2 and v["file"]["file_id"] is None and v["others"]   # answered, without the ids
+    finally:
+        w.rollback(); w.close()
+
+
+def test_hashing_is_bounded(tmp_path, monkeypatch):
+    con = make(tmp_path, {"a/x.txt": (BODY_A, 1.7e9), "b/y.txt": (BODY_A, 1.7e9)})
+    monkeypatch.setattr(relations, "HASH_MAX", 10)
+    assert relations.content_sig(con, 1) is None and relations.copies(con, 1) == []
 
 
 def test_read_only_index_answers_without_ids(tmp_path):

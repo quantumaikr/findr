@@ -157,41 +157,60 @@ def _db():
     return con
 
 
+RW_WAIT = 0.2   # seconds a tool waits for the index's write lock: the indexer holds it for long stretches (140 s seen)
+
+
 def _rw():
     """the index open for writing, for the ids and terms kept in it (made when first asked, #203); None when it cannot be
-    written now (the indexer holds it, a read-only folder): the tools then answer without those"""
+    written now (the indexer holds it, a read-only folder): the tools then answer without those. The write lock is tried
+    once, for RW_WAIT s, before anything else; each later write waits at most RW_WAIT s too"""
     if not paths.DB.exists():
         return None
+    con = None
     try:
-        con = sqlite3.connect(str(paths.DB), timeout=10)
+        con = sqlite3.connect(str(paths.DB), timeout=RW_WAIT)
         con.create_function("nfc", 1, lambda s: unicodedata.normalize("NFC", s) if s else s, deterministic=True)
         con.execute("SELECT 1 FROM files LIMIT 1")
+        con.execute("BEGIN IMMEDIATE")   # free now? (the indexer writes in long transactions)
+        con.rollback()
         return con
     except sqlite3.Error:
+        if con is not None:
+            con.close()
         return None
 
 
-def _rel_ids(fid, others):
-    """{'file_id', 'family_id', 'members': {path: file id}} for an index row and its family: the files other than the
-    'similar' ones the versions tool names, and the files with the very same bytes. {} when the ids cannot be written"""
+def _rel_ids(fid, family, named=(), con=None):
+    """{'file_id', 'family_id', 'members': {path: file id}} for an index row. `family`: the paths of its family (same-content
+    copies and versions in its folder); `named`: other paths whose file ids are wanted too. Nothing is hashed here (#203
+    review: versions() read every same-size file at each call). {} when the ids cannot be written now"""
     from .core import relations
-    con = _rw()
+    own = con is None
+    con = _rw() if own else con
     if con is None:
         return {}
     try:
         fids = {}
-        for p2 in others:
+        for p2 in dict.fromkeys([*family, *named]):
             r = con.execute("SELECT id FROM files WHERE path=?", (p2,)).fetchone()
             if r:
                 fids[p2] = r[0]
-        same = relations.copies(con, fid)   # the very same bytes belong to the family too
-        fam = relations.family_id(con, fid, [*fids.values(), *(c["fid"] for c in same)])
-        return {"file_id": relations.file_id(con, fid), "family_id": fam,
-                "members": {p2: relations.file_id(con, f2) for p2, f2 in fids.items()}, "same": same}
+        uid = relations.file_id(con, fid)
+        if uid is None:   # the indexer took the lock meanwhile
+            return {}
+        fam = relations.family_id(con, fid, [fids[p2] for p2 in family if p2 in fids])
+        members = {}
+        for p2, f2 in fids.items():
+            u = relations.file_id(con, f2)
+            if u is None:
+                break
+            members[p2] = u
+        return {"file_id": uid, "family_id": fam, "members": members}
     except sqlite3.Error:
         return {}
     finally:
-        con.close()
+        if own:
+            con.close()
 
 
 def _day(mt):
@@ -499,7 +518,9 @@ def versions(path: str) -> dict:
     me = con.execute("SELECT mtime FROM files WHERE id=?", (fid,)).fetchone()[0]
     sim = _similar(con, fid, name, ext, folder, head, me, seen)   # after the named ones: maybe another version, with why
     out = out[:30] + sim
-    ids = _rel_ids(fid, [o["path"] for o in out if o["relation"] != "similar"])   # additive fields (#203)
+    # additive fields (#203): the family is the copies and the versions in this folder, not the same name elsewhere
+    ids = _rel_ids(fid, [o["path"] for o in out if o["relation"] in ("copy", "version")],
+                   [o["path"] for o in out if o["relation"] == "same name elsewhere"])
     for o in out:
         if o["path"] in ids.get("members", {}):
             o["file_id"] = ids["members"][o["path"]]

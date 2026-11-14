@@ -3,7 +3,8 @@
   terms(con, fid)        the file's characteristic words: top terms by tf-idf over the text the index already holds
   file_id(con, fid)      a stable id for the file (survives re-index, edits in place, moves and renames), see RULES
   family_id(con, fid, members)  an id shared by the files of one version family
-  copies(con, fid)       other indexed files with the same bytes (sha1), found by size first so few files are read
+  copies(con, fid, keep)  other indexed files with the same bytes (sha1), found by size first so few files are read; `keep`
+                         (a path -> bool) leaves files out before they are read
 
 Stdlib only; the tables are created when first used (an index made before this opens and migrates in place, nothing is
 re-read). Reading never fails on a read-only connection: the functions then return what they can without writing.
@@ -17,8 +18,12 @@ RULES for the stable file id (file_uid.uid, "f_" + 16 hex):
      modified time; failing that, of the only dropped file with the same content (sha1) and size
   4. a copy never takes the id of a file that is still there: it is a new file (same content, see copies())
   Notes are forgotten after 60 days. An id is never reused for another file.
-The version-family id (file_uid.fam, "v_" + 16 hex) is given to the files found by the versions tool's grouping (copies, other
-versions in the folder, same name elsewhere); when members already carry different family ids the smallest wins and all take it."""
+The version-family id (file_uid.fam, "v_" + 16 hex) is given to a file and to the members its caller names: the same-content
+copies and the other versions in the same folder (never the same name in another folder: every project has its README.md).
+A file keeps the family it has; a member that has another family keeps that one too: two families are never merged, so one
+wrong pairing cannot join two unrelated families for good. A file without a family takes its own members' (the most common,
+then the smallest), else a new id.
+Hashing is bounded: files above HASH_MAX bytes are not hashed, and one copies() call reads at most COPY_BYTES."""
 import hashlib
 import json
 import math
@@ -35,6 +40,8 @@ SAMPLE = 3000           # chunks sampled for document frequencies (all of them i
 GONE_DAYS = 60
 GONE_MAX = 20000
 COPY_MAX = 200          # same-size files hashed at most per lookup
+COPY_BYTES = 2 << 30    # bytes read at most per lookup (200 same-size files of 200 MB would be 40 GB)
+HASH_MAX = 512 << 20    # a file larger than this is not hashed (no content id, no copies by content)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS file_uid(file INTEGER PRIMARY KEY, uid TEXT UNIQUE, fam TEXT, path TEXT, ino TEXT, sig TEXT, size INT, mtime REAL);
@@ -132,7 +139,9 @@ def terms(con, fid, k=TERMS_K):
 
 # ---------------------------------------------------------------- ids
 def sha1(path):
-    """sha1 of the whole file, as index._file_sig"""
+    """sha1 of the whole file, as index._file_sig; None for a file larger than HASH_MAX"""
+    if os.path.getsize(path) > HASH_MAX:
+        return None
     h = hashlib.sha1()
     with open(path, "rb") as f:
         for b in iter(lambda: f.read(1 << 20), b""):
@@ -233,6 +242,8 @@ def content_sig(con, fid):
         s = sha1(r["path"])
     except OSError:
         return None
+    if not s:
+        return None
     try:
         con.execute("UPDATE file_uid SET sig=? WHERE file=?", (s, fid)); con.commit()
     except sqlite3.OperationalError:
@@ -240,38 +251,47 @@ def content_sig(con, fid):
     return s
 
 
-def copies(con, fid, limit=50):
+def copies(con, fid, limit=50, keep=None):
     """other indexed files with the same bytes: [{path, name, mtime (epoch), size, fid (index row), id (stable file id)}], newest first. Files of another size
-    cannot be copies, so only same-size files are read (at most COPY_MAX per call; the hashes are kept)"""
+    cannot be copies, so only same-size files are read (at most COPY_MAX and COPY_BYTES per call; the hashes are kept).
+    keep(path) -> False leaves a file out before it is read (the MCP tools' data folder and deny list)"""
     f = con.execute("SELECT size, ext FROM files WHERE id=?", (fid,)).fetchone()
-    if not f or not f[0]:
+    if not f or not f[0] or f[0] > HASH_MAX:
         return []
     mine = content_sig(con, fid)
     if not mine:
         return []
     out = []
     cand = con.execute("SELECT id, path, name, mtime FROM files WHERE size=? AND id<>? AND tier IN (1,3) ORDER BY mtime DESC LIMIT ?",
-                       (f[0], fid, COPY_MAX)).fetchall()
+                       (f[0], fid, max(1, min(COPY_MAX, COPY_BYTES // f[0])))).fetchall()
     for fid2, p2, n2, mt in cand:
+        if keep is not None and not keep(p2):
+            continue
         if os.path.exists(p2) and content_sig(con, fid2) == mine:
             out.append({"path": p2, "name": n2, "mtime": mt, "size": f[0], "fid": fid2, "id": file_id(con, fid2)})
     return out[:limit]
 
 
 def family_id(con, fid, member_fids):
-    """the version-family id of a file whose family is `member_fids` (index rows, itself not required): the smallest id any
-    member already has, else a new one; every member takes it. None when ids cannot be written"""
-    rows = [(m, _row(con, m)) for m in dict.fromkeys([fid, *member_fids])]
-    if any(r is None for _, r in rows):
-        return None
-    have = sorted(r["fam"] for _, r in rows if r["fam"])
-    fam = have[0] if have else "v_" + uuid.uuid4().hex[:16]
+    """the version-family id of a file whose family is `member_fids` (index rows: same-content copies and versions in the
+    same folder; itself not required). The file's own family if it has one, else its members' (most common, then smallest),
+    else a new one. Members without a family take it; a member in another family stays there (no merge). None when ids
+    cannot be written (stops at the first row that cannot: the indexer holds the index)"""
+    rows = []
+    for m in dict.fromkeys([fid, *member_fids]):
+        r = _row(con, m)
+        if r is None:
+            return None
+        rows.append((m, r))
+    fam = rows[0][1]["fam"]
+    if not fam:
+        have = [r["fam"] for _, r in rows if r["fam"]]
+        fam = min(set(have), key=lambda x: (-have.count(x), x)) if have else "v_" + uuid.uuid4().hex[:16]
     try:
-        old = tuple(set(have) - {fam})
-        if old:   # a merge: earlier members of the families that join this one follow
-            con.execute(f"UPDATE file_uid SET fam=? WHERE fam IN ({','.join('?' * len(old))})", (fam, *old))
-        con.executemany("UPDATE file_uid SET fam=? WHERE file=?", [(fam, m) for m, _ in rows])
-        con.commit()
+        free = [(fam, m) for m, r in rows if not r["fam"]]
+        if free:
+            con.executemany("UPDATE file_uid SET fam=? WHERE file=?", free)
+            con.commit()
     except sqlite3.OperationalError:
         return None
     return fam
