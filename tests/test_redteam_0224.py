@@ -280,3 +280,21 @@ def test_mcp_hides_a_hard_link_to_a_denied_file(tmp_path, monkeypatch):
     assert "text" in m.read_file((docs / "other.txt").as_posix())
     monkeypatch.setattr(m, "HARDLINK_SCAN", 0)   # too many files to look through: every hard-linked file is left out
     assert "error" in m.read_file((docs / "other.txt").as_posix())
+
+
+# ---------------------------------------------------------------- 11. FINDR_MCP_DENY entries that look wrong
+def test_deny_entries_warn_once_and_fail_safe(tmp_path, monkeypatch, capsys):
+    from pathlib import Path
+    deny = tmp_path / "deny me"; deny.mkdir()
+    m, data = _mcp(tmp_path, monkeypatch, "relative/folder")
+    capsys.readouterr()
+    raw = ";".join(["relative/folder", Path(deny).as_uri(), str(tmp_path / "deny%20me"), str(tmp_path / "not-there-yet")])
+    got = m._deny_entries(raw); m._deny_entries(raw)
+    err = capsys.readouterr().err
+    assert "relative/folder" not in got and err.count("is not an absolute path") == 1, (got, err)
+    assert err.count("is a URL") == 1 and err.count("%-encoded") == 1 and err.count("does not exist") == 1, err
+    assert os.path.normcase(str(deny)) in {os.path.normcase(os.path.normpath(x)) for x in got}, got
+    monkeypatch.setenv("FINDR_MCP_DENY", str(tmp_path / "deny%20me"))
+    assert m._denied(str(deny / "plan.txt"))
+    monkeypatch.setenv("FINDR_MCP_DENY", Path(deny).as_uri())
+    assert m._denied(str(deny / "plan.txt"))

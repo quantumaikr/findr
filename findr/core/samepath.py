@@ -142,7 +142,7 @@ def split_list(s):
         i = 0
         while i < len(bits):
             b = bits[i]
-            if re.fullmatch(r"[A-Za-z]", b) and i + 1 < len(bits) and bits[i + 1][:1] in ("\\", "/"):
-                b = b + ":" + bits[i + 1]; i += 1
+            if re.fullmatch(r"[A-Za-z]|file", b, re.I) and i + 1 < len(bits) and bits[i + 1][:1] in ("\\", "/"):
+                b = b + ":" + bits[i + 1]; i += 1   # C:\\x, and a file: URL (file:///x)
             out.append(b); i += 1
     return [x.strip() for x in out if x.strip()]

@@ -295,12 +295,59 @@ def _hard_linked(p, roots):
     return (st.st_dev, st.st_ino) in ids or not whole
 
 
+_WARNED = set()
+
+
+def _warn(entry, why):
+    """once per entry and reason, on stderr (stdout is the MCP protocol)"""
+    import sys
+    if (entry, why) not in _WARNED:
+        _WARNED.add((entry, why))
+        print(f"findr mcp: FINDR_MCP_DENY entry {entry!r} {why}", file=sys.stderr, flush=True)
+
+
+def _deny_entries(raw):
+    """the folders a FINDR_MCP_DENY value names, each warned about once when it looks wrong. Fail-safe: a relative entry is
+    left out with a warning (the MCP server's working folder is whatever the AI app started it in, so it would name some
+    other folder; nothing is denied in its place); a file: URL is taken as the path it names, a %-encoded entry is denied
+    as written and decoded (denying more never shows more); an entry that does not exist (yet) is kept and warned about"""
+    from .core import samepath
+    out = []
+    for d in samepath.split_list(raw or ""):
+        e = d.strip()
+        if e.lower().startswith("file:"):
+            try:
+                u = urllib.parse.urlparse(e)
+                path = urllib.request.url2pathname(u.path)
+                e2 = ("//" + u.netloc + path) if u.netloc and u.netloc.lower() != "localhost" else path
+            except Exception:   # noqa: BLE001
+                e2 = ""
+            _warn(d, f"is a URL; taken as {e2!r}" if e2 else "is a URL that could not be read; nothing denied for it")
+            if not e2:
+                continue
+            e = e2
+        cands = [e]
+        if re.search(r"%[0-9A-Fa-f]{2}", e):
+            dec = urllib.parse.unquote(e)
+            _warn(d, f"looks %-encoded; denied as written and as {dec!r}")
+            cands.append(dec)
+        x = os.path.expanduser(cands[0])
+        winlike = bool(re.match(r"^[A-Za-z]:[\\/]|^[\\/]{2}[^\\/]", x))
+        if not (os.path.isabs(x) or winlike):
+            _warn(d, "is not an absolute path; it is ignored (give the full path of the folder)")
+            continue
+        if not any(os.path.exists(os.path.expanduser(c)) for c in cands) and (os.name == "nt" or not winlike):
+            _warn(d, "does not exist on this PC (kept: it is denied once it does)")   # (a Windows path elsewhere: an index copied over)
+        out += cands
+    return out
+
+
 def _deny_roots():
     """findr's data folder and the folders in FINDR_MCP_DENY (';' or os.pathsep between them; C:\\x is one folder on any
     OS), each in every form the index may hold it (C:\\ and /mnt/c/), and by identity"""
     from .core import samepath
     out, dirs = _Roots(), []
-    for d in [str(paths.HOME), *samepath.split_list(os.environ.get("FINDR_MCP_DENY", ""))]:
+    for d in [str(paths.HOME), *_deny_entries(os.environ.get("FINDR_MCP_DENY", ""))]:
         if d.strip():
             forms = _path_forms(d.strip())
             out |= {_canon(f) for f in forms}
