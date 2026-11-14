@@ -16,8 +16,12 @@ def sheet_text(path, limit=2_000_000):
         for name in wb.sheet_names:
             out.append(f"[{name}]")
             for row in wb.get_sheet_by_name(name).to_python(skip_empty_area=True):
-                cells = [str(c).strip() for c in row if c not in ("", None)]
-                if cells:
+                # empty cells kept in place (trailing ones dropped): a column stays under its header, so the
+                # credential-table rule masks the right one
+                cells = ["" if c in ("", None) else str(c).strip() for c in row]
+                while cells and not cells[-1]:
+                    cells.pop()
+                if any(cells):
                     line = "\t".join(cells); out.append(line); size += len(line)
                     if size >= limit:
                         return "\n".join(out)[:limit]
@@ -124,7 +128,7 @@ MBOX_MESSAGE_CHARS = 60_000      # text kept per message in an .mbox, so one lon
 MBOX_SECONDS = 45
 # Korean senders label cp949 text (which has the 8,822 syllables KS X 1001 / euc-kr lacks, e.g. 똠) as euc-kr, ks_c_5601-1987 ...
 _KO_CHARSET = re.compile(rb"(?i)(=\?|charset\s*=\s*[\"']?)(euc-?kr|ks_c_5601(?:-1987)?|x-windows-949|ks_c_5601_1987)(?=[?\"'; \r\n]|$)")
-_ATT_EXT = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".txt", ".md", ".csv", ".tsv", ".log", ".html", ".htm", ".xml", ".json",
+_ATT_EXT = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".odt", ".odp", ".txt", ".md", ".csv", ".tsv", ".log", ".html", ".htm", ".xml", ".json",
             ".hwp", ".doc", ".xls", ".xlsb", ".ods", ".rtf"}   # nothing nested (.eml, .zip) and no LibreOffice conversion (.ppt)
 
 

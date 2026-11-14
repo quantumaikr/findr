@@ -66,6 +66,87 @@ def test_comparisons_are_not_assignments(line):
     assert index.mask(s) == s
 
 
+# ---------------------------------------------------------------- 3. Office files read in order, tables as rows
+def _zip(path, parts):
+    with zipfile.ZipFile(path, "w") as z:
+        for n, x in parts.items():
+            z.writestr(n, x)
+    return path
+
+
+W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+
+
+def _docx(path, body):
+    return _zip(path, {"word/document.xml": f'<?xml version="1.0"?><w:document {W}><w:body>{body}</w:body></w:document>'})
+
+
+def _run(t):
+    return f'<w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">{t}</w:t></w:r>'
+
+
+def _cell(t):
+    return f"<w:tc><w:tcPr/><w:p>{_run(t)}</w:p></w:tc>"
+
+
+def test_docx_runs_join_inside_a_paragraph(tmp_path):
+    p = _docx(tmp_path / "a.docx", f"<w:p>{_run('Server notes')}</w:p>\n<w:p>{_run('Pass')}\n  {_run('word: ' + V)}</w:p>"
+                                   f"<w:p><w:pPr><w:tabs><w:tab w:val='left'/></w:tabs></w:pPr>{_run('next')}<w:r><w:tab/></w:r>{_run('line')}</w:p>")
+    t = index.extract(p, 10000)
+    assert t == "Server notes\nPassword: " + V + "\nnext\tline", repr(t)
+    assert V not in index.mask(t)
+
+
+def test_docx_table_is_rows_of_cells(tmp_path):
+    rows = [("Site", "User", "Password"), ("bank", "ivy", V), ("mail", "joe", "")]
+    tbl = "<w:tbl>" + "".join("<w:tr>" + "".join(_cell(c) for c in r) + "</w:tr>" for r in rows) + "</w:tbl>"
+    p = _docx(tmp_path / "t.docx", f"<w:p>{_run('Accounts')}</w:p>{tbl}<w:p>{_run('after')}</w:p>")
+    t = index.extract(p, 10000)
+    # an empty last cell stays a cell: the password column keeps its place in every row
+    assert "Site\tUser\tPassword\nbank\tivy\t" + V + "\nmail\tjoe\t\nafter" in t, repr(t)
+    assert V not in index.mask(t) and "bank\tivy\t[가림]" in index.mask(t)
+
+
+def test_xlsx_sheet_rows_with_shared_and_inline_strings(tmp_path):
+    ss = "<sst>" + "".join(f"<si><t>{x}</t></si>" for x in ("Site", "Username", "Password", "bank")) + \
+         f"<si><r><t>{V[:3]}</t></r><r><rPr/><t>{V[3:]}</t></r><rPh><t>ignored</t></rPh></si></sst>"
+    sheet = ('<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c></row>'
+             '<row r="2"><c r="A2" t="s"><v>3</v></c><c r="B2" t="inlineStr"><is><t>jack</t></is></c><c r="C2" t="s"><v>4</v></c></row>'
+             '<row r="3"><c r="A3"><f>SUM(1)</f><v>7</v></c><c r="C3" t="inlineStr"><is><t>' + V + 'x</t></is></c></row></sheetData></worksheet>')
+    p = _zip(tmp_path / "v.xlsx", {"xl/sharedStrings.xml": ss, "xl/worksheets/sheet1.xml": sheet})
+    t = index.extract(p, 10000)
+    assert t == f"Site\tUsername\tPassword\nbank\tjack\t{V}\n7\t\t{V}x", repr(t)
+    assert V not in index.mask(t)
+
+
+def test_pptx_hwpx_odt_odp_join_runs(tmp_path):
+    pptx = _zip(tmp_path / "d.pptx", {"ppt/slides/slide1.xml": f'<p:sld><a:p><a:r><a:t>Wi-Fi </a:t></a:r><a:r><a:t>pass</a:t></a:r>'
+                                                                f'<a:r><a:t>wd: {V}</a:t></a:r></a:p></p:sld>'})
+    hwpx = _zip(tmp_path / "m.hwpx", {"Contents/section0.xml": f'<hs:sec><hp:p><hp:run><hp:t>계정 비밀</hp:t></hp:run>'
+                                                               f'<hp:run><hp:t>번호: {V}</hp:t></hp:run></hp:p></hs:sec>'})
+    odt = _zip(tmp_path / "n.odt", {"content.xml": f'<office:document-content><office:body><office:text><text:p>Pass<text:span>word'
+                                                    f'</text:span>:<text:s/>{V}</text:p></office:text></office:body></office:document-content>'})
+    odp = _zip(tmp_path / "s.odp", {"content.xml": '<office:document-content><table:table><table:table-row><table:table-cell><text:p>Site'
+                                                    '</text:p></table:table-cell><table:table-cell><text:p>Password</text:p></table:table-cell>'
+                                                    '</table:table-row><table:table-row><table:table-cell><text:p>bank</text:p></table:table-cell>'
+                                                    f'<table:table-cell><text:p>{V}</text:p></table:table-cell></table:table-row></table:table>'
+                                                    '</office:document-content>'})
+    assert index.extract(pptx, 1000) == f"Wi-Fi passwd: {V}"
+    assert index.extract(hwpx, 1000) == f"계정 비밀번호: {V}"
+    assert index.extract(odt, 1000) == f"Password: {V}"
+    assert index.extract(odp, 1000) == f"Site\tPassword\nbank\t{V}"
+    for p in (pptx, hwpx, odt, odp):
+        assert V not in index.mask(index.extract(p, 1000)), p.name
+    assert index.tier(odt) == 1 and index.tier(odp) == 1
+
+
+def test_office_text_is_bounded(tmp_path):
+    body = "".join(f"<w:p>{_run('줄 ' + str(i))}</w:p>" for i in range(20000))
+    p = _docx(tmp_path / "big.docx", body)
+    t = index.extract(p, 5000)
+    assert 0 < len(t) <= 5000
+
+
 # ---------------------------------------------------------------- 6. labels spelled to pass, HTML
 @pytest.mark.parametrize("label", ["pаssword", "ｐａｓｓｗｏｒｄ", "PASS​WORD",
                                    "pass­word", "pаss‍wоrd", "\U0001d429\U0001d41a\U0001d42c\U0001d42c\U0001d430\U0001d428\U0001d42b\U0001d41d",

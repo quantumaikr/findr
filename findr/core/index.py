@@ -29,7 +29,7 @@ TEXT = {".md", ".txt", ".py", ".pyi", ".js", ".ts", ".jsx", ".tsx", ".json", ".j
         ".cfg", ".csv", ".tsv", ".log", ".html", ".htm", ".css", ".sh", ".ps1", ".bat", ".cmd", ".c", ".h", ".cpp", ".hpp",
         ".cu", ".cuh", ".java", ".go", ".rs", ".sql", ".xml", ".rst", ".ipynb", ".jinja", ".tex", ".r", ".m", ".lua", ""}
 DOC = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".hwp", ".doc", ".ppt", ".xls", ".key",
-       ".xlsb", ".ods", ".rtf", ".eml", ".emlx", ".mbox", ".pages", ".numbers"}   # moretext.py (sheets, RTF, e-mail), keynote_text (iWork)
+       ".xlsb", ".ods", ".odt", ".odp", ".rtf", ".eml", ".emlx", ".mbox", ".pages", ".numbers"}   # moretext.py (sheets, RTF, e-mail), keynote_text (iWork)
 AUD = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".wma", ".ogg"}   # transcribed locally by stt_cache.py (faster-whisper)
 OLD = {".hwp", ".doc", ".ppt", ".xls"}   # old binary formats: converted locally by LibreOffice (+ H2Orestart for hwp), cached
 SECRET = re.compile(r"^(\.env(\..*)?|\.envrc|\.netrc|_netrc|\.pgpass|pgpass\.conf|\.npmrc|\.pypirc|\.git-credentials|kubeconfig(\.ya?ml)?"
@@ -495,7 +495,7 @@ JUNK = re.compile(r"^(vocab\.json|merges\.txt|tokenizer(_config)?\.json|special_
 BAK = re.compile(r"(\.(bak\w*|old|orig|backup|swp|tmp)|~)$", re.I)
 MAXREAD = 2_000_000   # bytes of text read per tier-1 file
 GIST = int(os.environ.get("FINDR_GIST") or 12_000)
-RICH = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".key", ".doc", ".hwp", ".ppt", ".xls"}   # read through a parser: output length tells
+RICH = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".odt", ".odp", ".key", ".doc", ".hwp", ".ppt", ".xls"}   # read through a parser: output length tells
 
 
 def _size(s):
@@ -692,10 +692,10 @@ except ImportError:
     import samepath
 
 try:   # old office formats: content sniffing + Word 97 piece table before LibreOffice (orders of magnitude faster)
-    from .officetext import sniff_text, doc_text, hwp_text, html_text
+    from .officetext import sniff_text, doc_text, hwp_text, html_text, XmlFlow, SheetFlow, SharedStrings
     from .moretext import sheet_text, rtf_text, eml_text, emlx_text, mbox_text
 except ImportError:
-    from officetext import sniff_text, doc_text, hwp_text, html_text
+    from officetext import sniff_text, doc_text, hwp_text, html_text, XmlFlow, SheetFlow, SharedStrings
     from moretext import sheet_text, rtf_text, eml_text, emlx_text, mbox_text
 
 
@@ -749,7 +749,7 @@ def extract(p: Path, limit):
             return pdf_text(p, limit)
         if ext == ".key":
             return keynote_text(p, limit)
-        if ext in (".docx", ".xlsx", ".pptx", ".hwpx"):
+        if ext in (".docx", ".xlsx", ".pptx", ".hwpx", ".odt", ".odp"):
             return ooxml_text(p, limit)
         raw = open(p, "rb").read(limit)
         if b"\x00" in raw[:4096] and not wide_encoding(raw):   # binary, unless UTF-16 / UTF-32 text
@@ -794,9 +794,12 @@ def transcript(p: Path):
 #   5: credential headers by stems (any column naming an account, person or site) in the first 20 lines, in .md / .log as
 #      well; UTF-32 and BOM-less UTF-16 text; mail read again (a credential table in its body masked, a nested mail found
 #      after an mbox 'From ' line or blank lines, or by its MIME parts)
-READERS = 5
+#   6: Office files read in order (runs joined, tables as tab-separated rows), OpenDocument text and slides, HTML (and
+#      HTML mail) with entities decoded and tables as rows; credential headers judged column by column (red-team 0.2.26)
+READERS = 6
 REREAD_EXT = {2: (".xls", ".xlsb", ".ods", ".hwp")}
-REREAD_ALL = {3: (".eml", ".emlx", ".mbox"), 5: (".eml", ".emlx", ".mbox")}   # read again even with text stored: what they stored may now be left out
+REREAD_ALL = {3: (".eml", ".emlx", ".mbox"), 5: (".eml", ".emlx", ".mbox"),
+              6: (".docx", ".xlsx", ".pptx", ".hwpx", ".odt", ".odp", ".html", ".htm", ".eml", ".emlx", ".mbox")}   # read again even with text stored: what they stored may now be left out
 
 
 _STALE_HEAD = re.compile(r"[ \t]*(?:-[ \t]+)?['\"]?" + _LABEL + r"""['"]?[ \t]*[:=][ \t]*(?:\[가림\])?[ \t]*\r?$""")
@@ -823,12 +826,12 @@ def reread_for_new_readers(con):
     if have < 5:   # text files whose stored text still holds the zero bytes of a UTF-16 / UTF-32 file read with the wrong width
         n += con.execute("""UPDATE files SET pending=1 WHERE tier=1 AND id IN (SELECT file FROM chunks WHERE n=0
                             AND instr(text, char(0)) > 0)""").rowcount
-    if have < 5:   # files already read that the content rules now mark (a password export's header, by its first lines
-        # since 4): read again, so the content stage keeps the name only
+    if have < 6:   # files already read that the content rules now mark (a password export's header, by its first lines
+        # since 4, column by column since 6): read again, so the content stage keeps the name only
         hit = [fid for fid, name, t in con.execute("""SELECT f.id, f.name, c.text FROM files f JOIN chunks c ON c.file=f.id AND c.n=0
                                                       WHERE f.tier=1""")
                if t and secret_text(name, t)]
-        if have < 5:   # a value on the lines under its label (YAML 'password:' / 'secret: |'): the stored text lost the
+        if have < 6:   # a value on the lines under its label (YAML 'password:' / 'secret: |'): the stored text lost the
             # indentation that tells the value's lines (runs of spaces are cut to two), so the file is read again
             w = " OR ".join(["c.text LIKE ?"] * len(KEYLIKE_HINTS))
             hit += [fid for fid, t in con.execute(f"""SELECT DISTINCT c.file, c.text FROM chunks c JOIN files f ON f.id = c.file
@@ -2285,13 +2288,16 @@ def embed_photos(con, url, bs=16):
 
 
 def ooxml_text(p, limit):
-    """Word, Excel, PowerPoint, HWPX: text parts read in pieces, stopping once `limit` characters are in.
-    A large workbook can expand to gigabytes of XML; reading it whole used to take all the memory and time."""
+    """Word, Excel, PowerPoint, HWPX, OpenDocument text / slides: text parts read in pieces, stopping once `limit`
+    characters are in (a large workbook can expand to gigabytes of XML; reading it whole took all the memory and time).
+    Read in order, as the program shows it (officetext.XmlFlow): runs inside a paragraph joined without a space, a line
+    per paragraph, a table's rows as tab-separated cells; a workbook's sheets as rows of cells, shared strings looked up
+    (red-team 0.2.26: every tag read as a space split 'Pass' + 'word:' and hid tables from the credential-table rule)"""
     import zipfile
     keys = ("word/document", "sharedStrings", "worksheets/", "slides/slide", "Contents/section")
     def order(n):   # body first; slides and sections in their own order (slide2 before slide10)
         m = re.search(r"(\d+)\.xml$", n)
-        return (0 if ("document" in n or "sharedStrings" in n) else 1, n.rsplit("/", 1)[0], int(m.group(1)) if m else 0)
+        return (0 if ("document" in n or "sharedStrings" in n or n == "content.xml") else 1, n.rsplit("/", 1)[0], int(m.group(1)) if m else 0)
     z = zipfile.ZipFile(p); out, have = [], 0; end = time.time() + FILE_SECONDS
     try:   # the properties the saving program wrote (title, subject, keywords, author): first, they say what the file is
         core = z.read("docProps/core.xml").decode("utf-8", "ignore")
@@ -2301,22 +2307,36 @@ def ooxml_text(p, limit):
             out.append(props); have += len(props)
     except KeyError:
         pass
-    for n in sorted((n for n in z.namelist() if n.endswith(".xml") and any(k in n for k in keys)), key=order):
+    shared, sheets = SharedStrings(), False
+    for n in sorted((n for n in z.namelist() if n.endswith(".xml") and (any(k in n for k in keys) or n == "content.xml")), key=order):
+        if "sharedStrings" in n:
+            flow = shared
+        elif "worksheets/" in n:
+            flow = SheetFlow(shared.items); sheets = True
+        else:
+            flow = XmlFlow(odf=(n == "content.xml"))
         with z.open(n) as f:
-            tail = ""
-            while have < limit and time.time() < end:
+            tail, size = "", 0
+            while have + size < limit and time.time() < end:
                 b = f.read(1 << 20)
                 if not b:
                     break
                 txt = tail + b.decode("utf-8", "ignore")
                 cut = txt.rfind(">") + 1   # a tag may continue in the next piece
                 tail = txt[cut:]
-                t = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", txt[:cut]))
-                if t.strip():
-                    out.append(t); have += len(t)
+                flow.feed(txt[:cut])
+                size = flow.size
+        if flow is shared:
+            continue
+        t = flow.text()
+        if t.strip():
+            out.append(t); have += len(t)
         if have >= limit:
             break
-    return re.sub(r"\s+", " ", " ".join(out)).strip()[:limit]
+    if not sheets and shared.items:   # a workbook whose sheets were not found: its strings, one a line
+        t = "\n".join(x for x in shared.items if x.strip())
+        out.append(t); have += len(t)
+    return "\n".join(x.strip() for x in out if x.strip())[:limit]
 
 
 def _snappy(b):

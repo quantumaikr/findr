@@ -74,6 +74,173 @@ def tidy_rows(s):
     return re.sub(r"\n{3,}", "\n\n", s).strip()
 
 
+# --- Office XML (docx, pptx, xlsx, hwpx, odt / odp) read in order (red-team 0.2.26: every tag read as a space split
+# 'Pass</w:t><w:t>word' into two words, and a label passed unmasked). Runs inside one paragraph join without a space;
+# paragraphs and line breaks end a line; a table is rows of tab-separated cells (so the credential-table rule sees it)
+_XTOK = re.compile(r"<(/?)(?:[A-Za-z_][\w.\-]*:)?([A-Za-z_][\w.\-]*)((?:[^>\"']|\"[^\"]*\"|'[^']*')*?)(/?)>|<[^>]*>|([^<]+)")
+_X_PARA = {"p", "h"}                                  # w:p, a:p, hp:p, text:p, text:h
+_X_CELL = {"tc", "table-cell", "covered-table-cell"}  # w:tc, a:tc, hp:tc, table:table-cell
+_X_ROW = {"tr", "table-row"}                          # w:tr, a:tr, hp:tr, table:table-row
+_X_BREAK = {"br", "cr", "lineBreak", "line-break"}    # w:br, a:br, hp:lineBreak, text:line-break
+_X_TEXT = {"t", "delText"}                            # where the text is (w:t, a:t, hp:t); OpenDocument: the paragraph itself
+_X_SKIP = {"tabs", "rPh", "instrText"}                # tab stops (not tab characters), phonetic guides, field codes
+
+
+class XmlFlow:
+    """the text of one Office XML part, fed in pieces that each end at a tag's end; .text() when done. odf: the text is
+    the paragraph's own content (OpenDocument) rather than inside <t> elements"""
+
+    def __init__(self, odf=False):
+        self.out, self.odf = [], odf
+        self.cell = self.intext = self.para = self.skip = self.size = 0
+
+    def feed(self, piece):
+        out = self.out
+        for m in _XTOK.finditer(piece):
+            close, name, attrs, selfc, text = m.groups()
+            if text is not None:
+                if self.skip or not (self.intext or (self.odf and self.para)):
+                    continue   # the indentation of pretty-printed XML is not text
+                s = _html.unescape(text)
+                s = re.sub(r"[\r\n\t]+", " ", s) if not self.odf else re.sub(r"\s+", " ", s)
+                out.append(s); self.size += len(s)
+                continue
+            if name is None:
+                continue
+            opening, ending = not close and not selfc, bool(close or selfc)
+            if name in _X_SKIP:
+                if not selfc:
+                    self.skip = max(0, self.skip + (-1 if close else 1))
+            elif name in _X_TEXT:
+                if not selfc:
+                    self.intext = max(0, self.intext + (-1 if close else 1))
+            elif name in _X_PARA:
+                if not selfc:
+                    self.para = max(0, self.para + (-1 if close else 1))
+                if ending:
+                    out.append(" " if self.cell else "\n")
+            elif name in _X_CELL:
+                if ending:
+                    out.append("\t")
+                if not selfc:
+                    self.cell = max(0, self.cell + (-1 if close else 1))
+            elif name in _X_ROW:   # one line a row: no blank line between rows (a blank line ends a table)
+                if close:
+                    _row_end(out)
+                elif opening:
+                    _line(out)
+            elif self.skip:
+                continue
+            elif name in _X_BREAK and (opening or selfc):
+                out.append(" " if self.cell else "\n")
+            elif name == "tab" and (opening or selfc):
+                out.append(" " if self.cell else "\t")
+            elif name == "s" and self.odf and (opening or selfc):   # text:s, one space or text:c of them
+                c = re.search(r"\bc\s*=\s*[\"'](\d+)", attrs or "")
+                out.append(" " * min(int(c.group(1)) if c else 1, 64))
+
+    def text(self):
+        return tidy_rows("".join(self.out))
+
+
+def _col_index(ref):
+    """'C12' -> 2 (the column letters as a 0-based index); None when there are none"""
+    m = re.match(r"([A-Za-z]{1,3})", ref or "")
+    if not m:
+        return None
+    n = 0
+    for ch in m.group(1).upper():
+        n = n * 26 + ord(ch) - 64
+    return n - 1
+
+
+XLSX_COLS = 512   # columns of one sheet row laid out by position at most (empty cells between them kept as empty columns)
+
+
+class SheetFlow:
+    """an xlsx worksheet's rows as tab-separated lines: shared strings looked up, inline strings and values as they are;
+    a formula's text is not a value. Fed in pieces like XmlFlow"""
+
+    def __init__(self, shared):
+        self.shared, self.lines, self.size = shared, [], 0
+        self.row = self.cell = self.where = None
+        self.ctype, self.col = "", None
+
+    def feed(self, piece):
+        for m in _XTOK.finditer(piece):
+            close, name, attrs, selfc, text = m.groups()
+            if text is not None:
+                if self.cell is not None and self.where:
+                    self.cell.append(_html.unescape(text))
+                continue
+            if name == "row":
+                if not close:
+                    self.row = []
+                if close or selfc:
+                    self._end_row()
+            elif name == "c":
+                if self.row is None:
+                    self.row = []
+                if not close:
+                    r = re.search(r"\br\s*=\s*[\"']([A-Za-z]+)", attrs or "")
+                    t = re.search(r"\bt\s*=\s*[\"'](\w+)", attrs or "")
+                    self.ctype = t.group(1) if t else ""
+                    self.col = _col_index(r.group(1)) if r else None
+                    self.cell = []
+                if close or selfc:
+                    self._end_cell()
+            elif name in ("v", "t") and self.cell is not None and not selfc:
+                self.where = None if close else name
+            elif name in ("f", "rPh") and not (close or selfc):
+                self.where = None
+
+    def _end_cell(self):
+        v = "".join(self.cell or [])
+        if self.ctype == "s":
+            try:
+                v = self.shared[int(v.strip())]
+            except (ValueError, IndexError):
+                v = ""
+        v = re.sub(r"\s+", " ", v).strip()
+        col = self.col if self.col is not None and len(self.row) <= self.col < XLSX_COLS else len(self.row)
+        self.row += [""] * (col - len(self.row)) + [v]
+        self.cell = self.where = None
+
+    def _end_row(self):
+        while self.row and not self.row[-1]:
+            self.row.pop()
+        if self.row:
+            line = "\t".join(self.row); self.lines.append(line); self.size += len(line) + 1
+        self.row = None
+
+    def text(self):
+        if self.row:
+            self._end_row()
+        return "\n".join(self.lines)
+
+
+class SharedStrings:
+    """an xlsx sharedStrings part: one string per <si>, its runs joined without a space, phonetic guides left out"""
+
+    def __init__(self):
+        self.items, self.cur, self.where, self.skip, self.size = [], None, False, 0, 0
+
+    def feed(self, piece):
+        for m in _XTOK.finditer(piece):
+            close, name, attrs, selfc, text = m.groups()
+            if text is not None:
+                if self.cur is not None and self.where and not self.skip:
+                    self.cur.append(_html.unescape(text))
+                continue
+            if name == "si":
+                if not close:
+                    self.cur = []
+                if close or selfc:
+                    s = "".join(self.cur or []); self.items.append(s); self.size += len(s); self.cur = None
+            elif name == "t" and not selfc:
+                self.where = not close
+            elif name == "rPh" and not selfc:
+                self.skip = max(0, self.skip + (-1 if close else 1))
 
 
 def sniff_text(path, limit=2_000_000):
