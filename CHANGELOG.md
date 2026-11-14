@@ -1,5 +1,12 @@
 # 바뀐 점
 
+## 다음 판 (Unreleased)
+대화에 붙인 파일을 읽을 때 비던 곳을 메웠습니다(#204). 모두 `read_file`(MCP)에서, 색인에 글이 없을 때 파일을 지금 읽어 답합니다.
+- HWP 3.x, 암호 걸린 HWP 5, 암호 걸린 PDF·docx·xlsx·pptx·doc: 빈 글 대신 `unreadable`과 note에 읽지 못하는 까닭("cannot read: HWP 3.x file", "password-protected …")을 돌려 줌
+- 스캔 PDF: 깊은 읽기는 앞 3쪽이 아니라 `FINDR_DEEP_READ_PAGES`(기본 200쪽)·`FINDR_DEEP_READ_SECONDS`(기본 180초)까지 OCR하고, `ocr: {pages_read, pages_total}`로 몇 쪽 중 몇 쪽을 읽었는지 알림. 색인은 그대로 한도를 지키며 깊은 계산의 쪽 수만 `FINDR_OCR_DEEP_PAGES`(기본 50)로 바꿀 수 있음
+- HEIC: 깊은 읽기에서 OCR. pillow-heif(findr 의존성)가 없으면 macOS는 sips로 바꿔 읽고, 둘 다 없으면 설치 안내를 돌려 줌
+- docx 쪽수: `docProps/app.xml`의 `<Pages>`를 `pages`로, 없으면 글자 수로 어림해 `pages_estimated: true`로 표시
+
 ## 0.2.23 (2026-11-13)
 0.2.22는 Windows 설치 파일을 만들지 못해 배포하지 않았고, 그 내용을 모두 이 판에 담았습니다.
 다른 프로그램을 쓰면서 검색해도 PC와 findr 창이 멈추지 않도록 메모리와 CPU 사용을 줄였고, Windows의 AMD·Intel 그래픽으로 재정렬을 빠르게 할 수 있습니다. 지우거나 옮긴 파일을 바로 반영하고, 처음 설치할 때 메뉴를 눌러도 설치가 꼬이지 않습니다.
