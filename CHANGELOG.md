@@ -4,6 +4,8 @@
 - 설치본에 `xling_extra.json`이 빠지던 문제: 패키지 데이터를 `*.json`으로 넓히고, `findr/` 아래 데이터 파일이 모두 목록에 드는지 시험함(#199)
 - `findr uninstall`: 남길 파일에 `findr-desktop.exe` 이름을 고정하지 않음. 폴더의 실행 파일(.exe)은 엔진이 만들지 않았으므로 지우지 않고, 앱이 `FINDR_APP_EXE`로 알려 준 자기 파일도 남김(#199)
 - `search.snip()`: 미리보기 글이 원문에서 시작하는 위치를 결과의 `snippet_start`(MCP는 `excerpt_start`)로 함께 줌. 기존 `snippet`·반환형은 그대로. 숫자 덩어리(1,234,567 / 010-1234-5678 / 2026.11.14) 가운데서 앞뒤를 자르지 않음(#201)
+## 다음 판 (Unreleased)
+- 메일 파일(#202): `euc-kr`·`ks_c_5601-1987`·`ks_c_5601`·`x-windows-949`로 표시된 메일을 cp949로 읽어 드문 글자(똠 등)가 깨지지 않음(머리글·본문 모두). 색인 글에 `Message-ID`·`In-Reply-To`·`References`를 넣음. 첨부 속 글자(pdf·docx·xlsx·pptx·hwp·hwpx·txt 등)도 색인함(첨부 10개·개당 30MB·글 10만 자까지, 압축·중첩 메일은 이름만). Apple Mail `.emlx`와 `.mbox`(Thunderbird, Apple Mail 내보내기의 `X.mbox/mbox`) 읽기: 색인은 파일 하나에 한 항목이라 mbox 하나가 한 항목이 되고 그 안의 메일들을 차례로 이어 붙임(메일당 6만 자, 5,000통·읽는 시간 45초까지). 깊게 겹친 multipart는 깊이 12·부분 300개까지만 따라가고, 읽기에 실패하면(RecursionError 포함) 이름만 색인함
 
 ## 0.2.23 (2026-11-13)
 0.2.22는 Windows 설치 파일을 만들지 못해 배포하지 않았고, 그 내용을 모두 이 판에 담았습니다.

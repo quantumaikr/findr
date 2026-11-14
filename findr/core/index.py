@@ -29,7 +29,7 @@ TEXT = {".md", ".txt", ".py", ".pyi", ".js", ".ts", ".jsx", ".tsx", ".json", ".j
         ".cfg", ".csv", ".tsv", ".log", ".html", ".htm", ".css", ".sh", ".ps1", ".bat", ".cmd", ".c", ".h", ".cpp", ".hpp",
         ".cu", ".cuh", ".java", ".go", ".rs", ".sql", ".xml", ".rst", ".ipynb", ".jinja", ".tex", ".r", ".m", ".lua", ""}
 DOC = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".hwp", ".doc", ".ppt", ".xls", ".key",
-       ".xlsb", ".ods", ".rtf", ".eml", ".pages", ".numbers"}   # moretext.py (sheets, RTF, e-mail), keynote_text (iWork)
+       ".xlsb", ".ods", ".rtf", ".eml", ".emlx", ".mbox", ".pages", ".numbers"}   # moretext.py (sheets, RTF, e-mail), keynote_text (iWork)
 AUD = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".wma", ".ogg"}   # transcribed locally by stt_cache.py (faster-whisper)
 OLD = {".hwp", ".doc", ".ppt", ".xls"}   # old binary formats: converted locally by LibreOffice (+ H2Orestart for hwp), cached
 SECRET = re.compile(r"^(\.env(\..*)?|\.netrc|\.pgpass|\.git-credentials|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|credentials(\.json|\.ya?ml|\.txt)?"
@@ -109,10 +109,10 @@ def tier(p: Path):
 
 try:   # old office formats: content sniffing + Word 97 piece table before LibreOffice (orders of magnitude faster)
     from .officetext import sniff_text, doc_text, hwp_text
-    from .moretext import sheet_text, rtf_text, eml_text
+    from .moretext import sheet_text, rtf_text, eml_text, emlx_text, mbox_text
 except ImportError:
     from officetext import sniff_text, doc_text, hwp_text
-    from moretext import sheet_text, rtf_text, eml_text
+    from moretext import sheet_text, rtf_text, eml_text, emlx_text, mbox_text
 
 
 def _long(s: str) -> str:
@@ -146,6 +146,10 @@ def extract(p: Path, limit):
             return rtf_text(p, limit) or ""
         if ext == ".eml":
             return eml_text(p, limit) or ""
+        if ext == ".emlx":
+            return emlx_text(p, limit) or ""
+        if ext == ".mbox" or (p.name == "mbox" and p.parent.suffix.lower() == ".mbox"):   # Apple Mail export: X.mbox/mbox
+            return mbox_text(p, limit) or ""
         if ext in (".pages", ".numbers"):   # iWork shares Keynote's container: snappy-framed protobuf in Index/*.iwa
             return keynote_text(p, limit)
         if ext in OLD:
