@@ -657,8 +657,9 @@ class Finder:
         loaded (no model folder, not enough memory) the lane goes off for this run, with one line on standard error"""
         if getattr(self, "_l2off", False):
             return None
-        if getattr(self, "_l2enc", None) is not None and self._l2enc[0] == self.l2target:
-            return self._l2enc[1]
+        got = getattr(self, "_l2enc", None)   # read once: the idle unload may set it to None between two reads
+        if got is not None and got[0] == self.l2target:
+            return got[1]
         try:
             import enc_eg2
             if self.l2target == "embeddinggemma-2" and not Path(enc_eg2.PATH).is_dir():
@@ -666,8 +667,9 @@ class Finder:
             free = _mem_free_gb()
             if free is not None and free < LANE2_FREE_GB:   # the larger model takes 1.2 GB on a CPU: not on a PC near its limit
                 raise MemoryError(f"{free:.1f} GB free")
-            self._l2enc = (self.l2target, enc_eg2.make_encoder(self.l2target, DEVICE, max_len=128))
-            return self._l2enc[1]
+            got = (self.l2target, enc_eg2.make_encoder(self.l2target, DEVICE, max_len=128))
+            self._l2enc = got
+            return got[1]
         except BaseException as e:   # noqa: BLE001
             if isinstance(e, (KeyboardInterrupt, SystemExit)):
                 raise
@@ -1213,6 +1215,7 @@ class Finder:
 
     def search(self, q, k=10, mode="base"):
         import unicodedata as _ud; q = _ud.normalize("NFC", q or "")
+        _CE_USED[0] = time.time()   # a question in progress: the idle unload does not let go of its models meanwhile
         self.refresh()
         t0 = time.time(); p = parse(q); text = p["text"]; _QT[0] = t0
         pfut = None

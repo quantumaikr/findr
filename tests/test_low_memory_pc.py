@@ -81,10 +81,16 @@ def _starting(tmp_path, monkeypatch, port, pid=None, age=0.0):
 def test_indexer_waits_for_a_starting_engine(tmp_path, monkeypatch, capsys):
     port = _free_port()
     _starting(tmp_path, monkeypatch, port)
-    srv = []
+    srv, waiting, sleep = [], threading.Event(), time.sleep
+
+    def step(s):   # the indexer has said it waits: only now does the engine come up
+        waiting.set(); sleep(s)
+    monkeypatch.setattr(index.time, "sleep", step)
 
     def up_later():
-        time.sleep(0.8)
+        # not after a fixed time: on Windows a refused localhost connection is retried for ~2 s, so an engine that came up
+        # 0.8 s in was reached by the first try, which then never waited (CI, windows-latest)
+        waiting.wait(30); sleep(0.2)
         s = HTTPServer(("127.0.0.1", port), _Engine); srv.append(s); s.serve_forever()
     threading.Thread(target=up_later, daemon=True).start()
     try:
@@ -415,3 +421,31 @@ def test_cli_serve_hands_the_load_to_the_engine():
     body = src[src.index("def cmd_serve("):src.index("def cmd_mcp(")]
     assert "search.serve(lambda: search.Finder(" in body and "search.Finder(str(a.db))\n" not in body.replace("lambda: search.Finder(str(a.db))", "")
     assert "_mark_starting(a.port)" in body
+
+
+def test_lane2_model_read_once_against_the_idle_unload():
+    """review of #198: the idle unload may set _l2enc to None between the check and the use; it is read once"""
+    class Racy:
+        l2target = "embeddinggemma-2"
+        reads = 0
+
+        @property
+        def _l2enc(self):
+            Racy.reads += 1
+            return ("embeddinggemma-2", "the model") if Racy.reads == 1 else None
+    assert search.Finder.lane2_enc(Racy()) == "the model"
+
+
+def test_a_question_marks_the_reranker_used_at_its_start(monkeypatch):
+    """review of #198: a long question started before the idle limit is not unloaded under it"""
+    class Stop(Exception):
+        pass
+
+    class F:
+        def refresh(self):
+            raise Stop
+    monkeypatch.setattr(search, "_CE_USED", [1.0])
+    with pytest.raises(Stop):
+        search.Finder.search(F(), "회의록")
+    assert time.time() - search._CE_USED[0] < 5
+    assert search.idle_unload(minutes=1) is False
