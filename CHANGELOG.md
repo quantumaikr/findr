@@ -1,5 +1,10 @@
 # 바뀐 점
 
+## 다음 판 (Unreleased)
+- 인증서·열쇠·비밀번호 파일은 읽지 않음(#200): NPKI·GPKI·EPKI 폴더(대소문자 구분 없음), `signCert.der`·`kmCert.der`·`signPri.key`·`kmPri.key`, `*.pfx`·`*.p12`·`*.ppk`·`*.kdb`·`*.1pux`, `passwords*.csv`·`logins.csv`·브라우저가 내보낸 비밀번호 CSV(`Chrome Passwords.csv`, `Chrome 비밀번호.csv` 등)와 브라우저의 비밀번호 저장 파일(`logins.json`·`key4.db`·`Login Data`), 비밀번호 관리 앱(Bitwarden·1Password·LastPass·KeePass·Dashlane 등)의 내보내기 파일, 경로에 공동인증서·공인인증서가 든 것. 이미 색인된 것은 다음 색인 때 저장된 글이 지워지고 검색·AI 도구에 나오지 않음(tier 0)
+- AI 도구(MCP): `search_files`·`read_file`·`list_folder`·`versions`가 findr 데이터 폴더 안의 파일을 색인에 있어도 돌려주지 않고 "색인에 없음"과 같게 답함. 링크·대소문자·`..`로 돌아가도 같음. 더 뺄 폴더는 `FINDR_MCP_DENY`(경로 구분자 `os.pathsep`)로 지정(#200)
+- 제외 폴더: 데이터 폴더 안의 폴더를 검색 폴더로 고르면 데이터 폴더 전체가 색인에 들어가던 문제 수정. 고른 폴더(와 그곳까지 가는 길)만 남고 색인·모델·기록·설정은 계속 빠짐(#200)
+
 ## 0.2.23 (2026-11-13)
 0.2.22는 Windows 설치 파일을 만들지 못해 배포하지 않았고, 그 내용을 모두 이 판에 담았습니다.
 다른 프로그램을 쓰면서 검색해도 PC와 findr 창이 멈추지 않도록 메모리와 CPU 사용을 줄였고, Windows의 AMD·Intel 그래픽으로 재정렬을 빠르게 할 수 있습니다. 지우거나 옮긴 파일을 바로 반영하고, 처음 설치할 때 메뉴를 눌러도 설치가 꼬이지 않습니다.

@@ -33,8 +33,20 @@ DOC = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".hwp", ".doc", ".ppt", ".xls
 AUD = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".wma", ".ogg"}   # transcribed locally by stt_cache.py (faster-whisper)
 OLD = {".hwp", ".doc", ".ppt", ".xls"}   # old binary formats: converted locally by LibreOffice (+ H2Orestart for hwp), cached
 SECRET = re.compile(r"^(\.env(\..*)?|\.netrc|\.pgpass|\.git-credentials|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|credentials(\.json|\.ya?ml|\.txt)?"
-                    r"|secrets?\.(json|ya?ml|toml|txt|env)|.*\.(pem|pfx|p12|kdbx|keystore|jks)"
-                    r"|\.(bash|zsh|sh|python|psql|mysql|node_repl|lesshst)_?history|\.history|ConsoleHost_history\.txt)$", re.I)   # shell histories hold typed tokens
+                    r"|secrets?\.(json|ya?ml|toml|txt|env)|.*\.(pem|pfx|p12|kdbx|kdb|keystore|jks|ppk|1pux|1pif)"
+                    r"|\.(bash|zsh|sh|python|psql|mysql|node_repl|lesshst)_?history|\.history|ConsoleHost_history\.txt"   # shell histories hold typed tokens
+                    r"|(sign|km)(Cert\.der|Pri\.key)"   # a Korean joint certificate (공동인증서): the certificate and its private key
+                    # browsers' saved passwords: their CSV exports (Chrome / Edge / Safari 'Passwords.csv', 'Chrome 비밀번호.csv',
+                    # Firefox 'logins.csv') and the stores themselves (Firefox logins.json + key4.db, Chrome 'Login Data')
+                    r"|.*(password|비밀번호).*\.csv|logins( ?\(\d+\))?\.csv|logins\.json|key[34]\.db|signons\.sqlite|Login Data( For Account)?"
+                    # password-manager exports: the manager's name and export / vault / backup in the name
+                    # (bitwarden_export_….json, lastpass_vault_export.csv, 1PasswordExport-….csv, dashlane-credential-export.csv)
+                    r"|(?=.*(bitwarden|lastpass|1password|keepass|dashlane|nordpass|roboform|enpass|proton ?pass))"
+                    r"(?=.*(export|vault|backup)).*\.(csv|json|xml|txt|zip|pgp))$", re.I)
+# folders of certificates, and any path naming them, are never read either (see secret_path): the NPKI / GPKI / EPKI folders
+# that Korean banking, government and school sign-ins keep (with signCert.der, signPri.key), and copies made by hand
+CERT_DIRS = {"npki", "gpki", "epki"}
+CERT_WORDS = ("공동인증서", "공인인증서")
 # '.key' is both a cryptographic key and an Apple Keynote deck: Keynote is a ZIP, a key file is not (see is_secret)
 # values that look like keys are masked inside indexed text (a key pasted into a note or log never reaches the index)
 KEYLIKE = re.compile(r"(sk-[A-Za-z0-9_\-]{20,}|sk-ant-[A-Za-z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|hf_[A-Za-z0-9]{30,}"
@@ -81,9 +93,16 @@ def real_ext(p: Path):
     return Path(name).suffix.lower() if name != p.name else p.suffix.lower()
 
 
+def secret_path(s):
+    """a path inside a certificate folder (NPKI, GPKI, EPKI, any case) or naming 공동인증서 / 공인인증서 anywhere.
+    Both separators: a Windows path is checked the same on any PC (and the index may hold one from another)"""
+    s = nfc(str(s))
+    return any(x.casefold() in CERT_DIRS for x in re.split(r"[\\/]+", s)[:-1]) or any(w in s for w in CERT_WORDS)
+
+
 def is_secret(p: Path):
     """key and credential files are never read; a '.key' file is a secret unless it is a Keynote deck (a ZIP)"""
-    if SECRET.search(p.name) or SECRET.search(BAK.sub("", p.name)):
+    if SECRET.search(p.name) or SECRET.search(BAK.sub("", p.name)) or secret_path(p):
         return True
     if real_ext(p) == ".key":
         try:
@@ -494,13 +513,26 @@ def _main():
     # other copies of findr already in the index (a second clone, an older install, a worktree: #119), found by their
     # pyproject.toml rows; like the running checkout, they leave unless a chosen root is one of them or lies inside one
     copies = {Path(raw).parent for (raw,) in con.execute("SELECT path FROM files WHERE name='pyproject.toml'") if is_findr_checkout(Path(raw).parent)}
-    in_root = lambda k: any(key(Path(r).resolve().as_posix()).rstrip("/") in (k,) or key(Path(r).resolve().as_posix()).startswith(k + "/") for r in roots)
+    rkeys = [(key(Path(r).resolve().as_posix()).rstrip("/"), key(Path(r).as_posix()).rstrip("/")) for r in roots]
+    # a chosen folder inside one of them (an app that embeds findr keeps the person's files in its data folder) no longer lets
+    # the whole data folder in: the rest of it (index, models, logs, settings) stays out, folder by folder (#200)
+    held = {}   # own folder -> the chosen folders inside it, as resolved and as given
     for d in [*own_dirs(), *copies]:
         k = key(d.as_posix()).rstrip("/")
-        if not in_root(k):
+        inside = [(rs, rg) for rs, rg in rkeys if rs == k or rs.startswith(k + "/")]
+        if not inside:
             excl.add(k)
-    if excl:   # folders this PC chose not to search (exclude.txt): files already indexed under them leave the index
-        ids = [i for i, raw in con.execute("SELECT id, path FROM files") if (s := key(raw)) in excl or any(s.startswith(x + "/") for x in excl)]
+        elif all(rs != k for rs, _ in inside):   # a chosen root that is the folder itself keeps all of it
+            held[k] = [x for pair in inside for x in pair]
+
+    def left_out(s):
+        """an excluded folder or anything under it; inside a held folder, all but the chosen folders and the way down to them"""
+        if s in excl or any(s.startswith(x + "/") for x in excl):
+            return True
+        return any((s == k or s.startswith(k + "/")) and not any(s == r or s.startswith(r + "/") or r.startswith(s + "/") for r in keep)
+                   for k, keep in held.items())
+    if excl or held:   # folders this PC chose not to search (exclude.txt): files already indexed under them leave the index
+        ids = [i for i, raw in con.execute("SELECT id, path FROM files") if left_out(key(raw).rstrip("/"))]
         for fid in ids:
             drop(con, fid)
         if ids:
@@ -554,14 +586,16 @@ def _main():
                 except ValueError:
                     rel = "?"   # not under the root as written (a different spelling): below the top all the same
                 dns[:] = [d for d in dns if not skip_dir(rel, d)]
-            if excl:
-                dns[:] = [d for d in dns if key((Path(dp) / d).as_posix()) not in excl]
+            if excl or held:
+                dns[:] = [d for d in dns if not left_out(key((Path(dp) / d).as_posix()))]
             # a copy of findr met during the walk (#119): only folders holding a pyproject.toml are looked at, which is rare
             dns[:] = [d for d in dns if not (os.path.isfile(os.path.join(dpl, d, "pyproject.toml")) and is_findr_checkout(Path(dp) / d))]
             for fn in fns:
                 if not a.with_libs and JUNK.search(fn):
                     continue
                 p = Path(dp) / fn
+                if held and left_out(key(p.as_posix())):
+                    continue   # the data folder's own files on the way down to a chosen folder inside it
                 try:
                     st = os.stat(os.path.join(dpl, fn))
                 except OSError:

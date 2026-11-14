@@ -16,9 +16,15 @@ kind filter, a folder view and a version view would have ended most of them in o
 It asks the running search engine when it is up (full quality: meaning, reranking, odds). Without it, it searches the
 index directly by names and words. read_file returns only files in the index, from the text findr stored; it never opens
 other paths. What the tools return goes to the assistant that called them, so the person's assistant settings decide
-whether it leaves the PC."""
+whether it leaves the PC.
+
+Nothing under findr's data folder (paths.HOME), or under the folders in FINDR_MCP_DENY (separated by os.pathsep), is ever
+named, listed or read by these tools, even when it is in the index: an app that embeds findr may keep its own files there.
+The tools answer for such a path exactly as for one that is not in the index (#200)."""
+import functools
 import json
 import os
+import posixpath
 import re
 import sqlite3
 import unicodedata
@@ -56,25 +62,85 @@ def _engine_up():
         return False
 
 
-def _engine_search(query, limit):
-    """results from the running engine, or None when it is not up"""
+def _engine_search(query, limit, ask=None):
+    """results from the running engine, or None when it is not up. Results in the data folder or a FINDR_MCP_DENY folder
+    are left out; when some were, the engine is asked once more for a few more, so the answer still holds `limit`"""
     if not _engine_up():
         return None
     op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     import base64
     k = _key()   # the page's password: as the app's cookie and as HTTP Basic (any user name), whichever the engine takes
-    req = urllib.request.Request(f"{ENGINE}/api?" + urllib.parse.urlencode({"q": query, "k": limit, **({"lang": "en"} if lang() == "en" else {})}),
+    req = urllib.request.Request(f"{ENGINE}/api?" + urllib.parse.urlencode({"q": query, "k": ask or limit, **({"lang": "en"} if lang() == "en" else {})}),
                                  headers={"Cookie": f"findr_t={k}", "Authorization": "Basic " + base64.b64encode(f"findr:{k}".encode()).decode()})
     try:
         r = json.loads(op.open(req, timeout=60).read())
     except Exception:
         return None
+    got, roots = r.get("results") or [], _deny_roots()
+    kept = [x for x in got if not _denied(x.get("path"), roots)]
+    if len(kept) < len(got) and len(kept) < limit and ask is None and len(got) >= limit:
+        more = _engine_search(query, limit, ask=min(50, limit + 2 * (len(got) - len(kept)) + 5))
+        if more is not None:
+            return more
     out = []
-    for x in (r.get("results") or [])[:limit]:
+    for x in kept[:limit]:
         out.append({"name": x.get("name"), "path": x.get("path"), "modified": x.get("date"),
                     "chance": round(x["prob"], 2) if x.get("prob") is not None else None,
                     "excerpt": (x.get("snippet") or "")[:300]})
     return {"results": out, "note": r.get("note") or "", "engine": "full"}
+
+
+@functools.lru_cache(maxsize=65536)
+def _real_dir(d):
+    """a folder as the disk has it: links, junctions and Windows short names resolved. Kept per folder (a folder of a
+    hundred files is resolved once), emptied at each tool call so a link changed meanwhile is seen"""
+    try:
+        return os.path.realpath(d)
+    except (OSError, ValueError):
+        return os.path.abspath(d)
+
+
+def _canon(p):
+    """one spelling for comparing paths: absolute, links resolved, '..' folded, NFC, '/' and case folded. Case is folded
+    on every OS: Windows and macOS ignore it, and on Linux the cost is at most a path left out that need not be"""
+    s = unicodedata.normalize("NFC", os.path.expanduser(str(p or "")))
+    if re.match(r"^[A-Za-z]:[\\/]|^[\\/]{2}[^\\/]", s) and os.name != "nt":
+        s = s.replace("\\", "/")   # a Windows path seen on another OS (an index copied over): compared as written
+    elif os.path.isabs(s):
+        s = os.path.normpath(s)
+        d, name = os.path.split(s)
+        full = os.path.join(_real_dir(d), name) if name else _real_dir(s)
+        if name and os.path.islink(full):
+            full = _real_dir(full)   # a file that is a link: where it points
+        s = full
+    s = s.replace("\\", "/")
+    if s.startswith("//?/UNC/"):
+        s = "//" + s[8:]
+    elif s.startswith("//?/"):
+        s = s[4:]
+    lead = "//" if s.startswith("//") else ""
+    return (lead + posixpath.normpath(s).lstrip("/") if lead else posixpath.normpath(s)).rstrip("/").casefold() or "/"
+
+
+def _deny_roots():
+    """findr's data folder and the folders in FINDR_MCP_DENY, each in every form the index may hold it (C:\\ and /mnt/c/)"""
+    out = set()
+    for d in [str(paths.HOME), *os.environ.get("FINDR_MCP_DENY", "").split(os.pathsep)]:
+        if d.strip():
+            out |= {_canon(f) for f in _path_forms(d.strip())}
+    return out
+
+
+def _denied(p, roots=None):
+    """True for a path in or under the data folder or a FINDR_MCP_DENY folder ('..' cannot step out of the check)"""
+    if not p:
+        return False
+    roots = _deny_roots() if roots is None else roots
+    for f in _path_forms(str(p)):
+        c = _canon(f)
+        if any(c == r or c.startswith(r.rstrip("/") + "/") for r in roots):
+            return True
+    return False
 
 
 def _db():
@@ -82,6 +148,9 @@ def _db():
         return None
     con = sqlite3.connect(f"file:{paths.DB}?mode=ro", uri=True, timeout=10)
     con.create_function("nfc", 1, lambda s: unicodedata.normalize("NFC", s) if s else s, deterministic=True)
+    _real_dir.cache_clear()
+    roots = _deny_roots()
+    con.create_function("denied", 1, lambda s: 1 if _denied(s, roots) else 0, deterministic=True)
     return con
 
 
@@ -111,13 +180,13 @@ def _index_search(query, limit, exts=None, folder=""):
     # every word in the name; inside a filter, any word will do (the filter already narrows it)
     join = " OR " if (exts or folder) else " AND "
     namec = ("(" + join.join(["lower(nfc(name)) LIKE ?"] * len(words)) + ")") if words else "1"
-    sql = f"SELECT id, path, name, mtime FROM files WHERE tier IN (1,3) AND {namec}{extra} ORDER BY mtime DESC LIMIT ?"
+    sql = f"SELECT id, path, name, mtime FROM files WHERE tier IN (1,3) AND {namec}{extra} AND NOT denied(path) ORDER BY mtime DESC LIMIT ?"
     rows = con.execute(sql, [f"%{w.lower()}%" for w in words] + xargs + [limit]).fetchall()
     try:   # words inside documents (3-letter index)
         fq = " OR ".join('"' + w.replace('"', "") + '"' for w in words if len(w) >= 3)
         if fq:
             rows += con.execute("""SELECT f.id, f.path, f.name, f.mtime FROM fts JOIN chunks c ON c.id = fts.rowid JOIN files f ON f.id = c.file
-                                   WHERE fts MATCH ? AND f.tier IN (1,3) ORDER BY rank LIMIT ?""", (fq, limit * 3)).fetchall()   # as the name search: no library or secret files
+                                   WHERE fts MATCH ? AND f.tier IN (1,3) AND NOT denied(f.path) ORDER BY rank LIMIT ?""", (fq, limit * 3)).fetchall()   # as the name search: no library or secret files
     except sqlite3.OperationalError:
         pass
     import datetime
@@ -266,13 +335,15 @@ def list_folder(path: str, limit: int = 50) -> dict:
         return {"error": "findr has no index on this PC yet"}
     limit = max(1, min(int(limit or 50), 200))
     p = _norm(path)
-    if con.execute("SELECT 1 FROM files WHERE replace(nfc(path), '\\', '/') = ?", (p,)).fetchone():
+    if _denied(path):
+        return {"folder": p, "files": [], "folders": [], "note": "findr has nothing indexed in this folder"}
+    if con.execute("SELECT 1 FROM files WHERE replace(nfc(path), '\\', '/') = ? AND NOT denied(path)", (p,)).fetchone():
         p = p.rsplit("/", 1)[0]   # a file: its folder
     pre = p + "/"
     esc = pre.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     files, sub, here = [], {}, 0
     for fp, name, size, mt in con.execute("SELECT path, name, size, mtime FROM files WHERE tier IN (1,3) AND "
-                                          "replace(nfc(path), '\\', '/') LIKE ? ESCAPE '\\' ORDER BY mtime DESC", (esc + "%",)):
+                                          "replace(nfc(path), '\\', '/') LIKE ? ESCAPE '\\' AND NOT denied(path) ORDER BY mtime DESC", (esc + "%",)):
         rest = _norm(fp)[len(pre):]
         if "/" in rest:
             d = rest.split("/", 1)[0]; sub[d] = sub.get(d, 0) + 1
@@ -323,7 +394,7 @@ def _similar(con, fid, name, ext, folder, head, mt, seen):
     new name). Each with why and how close"""
     parent = folder.rsplit("/", 1)[0] if "/" in folder else ""
     pre = (parent or folder) + "/"
-    rows = con.execute("SELECT id, name, ext, path, mtime FROM files WHERE tier IN (1,3) AND replace(nfc(path), '\\', '/') LIKE ? ESCAPE '!'",
+    rows = con.execute("SELECT id, name, ext, path, mtime FROM files WHERE tier IN (1,3) AND replace(nfc(path), '\\', '/') LIKE ? ESCAPE '!' AND NOT denied(path)",
                        (pre.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%",)).fetchall()
     def place(p2):
         d = _norm(p2).rsplit("/", 1)[0]
@@ -365,7 +436,8 @@ def versions(path: str) -> dict:
     if con is None:
         return {"error": "findr has no index on this PC yet"}
     p = _norm(path)
-    row = con.execute("SELECT id, name, ext, size, path FROM files WHERE replace(nfc(path), '\\', '/') = ?", (p,)).fetchone()
+    row = None if _denied(path) else con.execute("SELECT id, name, ext, size, path FROM files WHERE replace(nfc(path), '\\', '/') = ? "
+                                                 "AND tier > 0 AND NOT denied(path)", (p,)).fetchone()
     if not row:
         return {"error": "not a file in findr's index; use a path returned by search_files"}
     fid, name, ext, size, fp = row
@@ -374,9 +446,9 @@ def versions(path: str) -> dict:
     out, seen = [], {fid}
     if size:
         for f2, n2, p2, mt in con.execute("SELECT f.id, f.name, f.path, f.mtime FROM files f WHERE f.ext=? AND f.size=? AND f.id<>? "
-                                          "AND (SELECT text FROM chunks c WHERE c.file=f.id AND c.n=0) IS ?", (ext, size, fid, head or None)):
+                                          "AND f.tier IN (1,3) AND NOT denied(f.path) AND (SELECT text FROM chunks c WHERE c.file=f.id AND c.n=0) IS ?", (ext, size, fid, head or None)):
             out.append({"relation": "copy", "name": n2, "path": p2, "modified": _day(mt)}); seen.add(f2)
-    for f2, n2, p2, mt in con.execute("SELECT id, name, path, mtime FROM files WHERE tier IN (1,3) AND nfc(name) LIKE ?", (f"%{st[:20]}%",)):
+    for f2, n2, p2, mt in con.execute("SELECT id, name, path, mtime FROM files WHERE tier IN (1,3) AND nfc(name) LIKE ? AND NOT denied(path)", (f"%{st[:20]}%",)):
         if f2 in seen or _stem(n2) != st:
             continue
         seen.add(f2)
@@ -398,7 +470,8 @@ def read_file(path: str, max_chars: int = 4000) -> dict:
     if con is None:
         return {"error": "findr has no index on this PC yet"}
     max_chars = max(200, min(int(max_chars or 4000), 20000))
-    row = con.execute("SELECT id, name FROM files WHERE path = ? OR nfc(path) = ?", (path, unicodedata.normalize("NFC", path))).fetchone()
+    row = None if _denied(path) else con.execute("SELECT id, name FROM files WHERE (path = ? OR nfc(path) = ?) AND tier > 0 AND NOT denied(path)",
+                                                 (path, unicodedata.normalize("NFC", path))).fetchone()
     if not row:
         return {"error": "not a file in findr's index; use a path returned by search_files"}
     text, n = [], 0
