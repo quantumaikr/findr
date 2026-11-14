@@ -52,19 +52,37 @@ def _key():
 _DOWN = [0.0]   # until when the engine is taken as not running
 
 
+LOADING_RETRY = 5   # seconds before an engine that is still loading is asked again
+
+
 def _engine_up():
     """a quick look before asking: on Windows a refused localhost connection takes ~2 s (it retries), so with the app
-    closed every search_files call waited 2 s before the index search. Not up: look again after 15 s"""
+    closed every search_files call waited 2 s before the index search. Not up: look again after 15 s. An engine whose
+    port is open but which is still loading its index and models (#198 opens the port first) is taken as down for
+    LOADING_RETRY s: its /api would hold the call until it is loaded (minutes on a slow PC). /healthz?json=1 says which"""
     import socket
     import time
     if time.time() < _DOWN[0]:
         return False
     try:
         socket.create_connection(("127.0.0.1", int(ENGINE.rsplit(":", 1)[1])), timeout=0.3).close()
-        return True
     except OSError:
         _DOWN[0] = time.time() + 15
         return False
+    try:
+        op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        raw = op.open(f"{ENGINE}/healthz?json=1", timeout=2).read()
+    except Exception:   # noqa: BLE001  (open but not answering: busy or hung)
+        _DOWN[0] = time.time() + LOADING_RETRY
+        return False
+    try:
+        h = json.loads(raw)
+    except ValueError:
+        return True   # an older engine answers 'ok' only: it loads before it opens the port
+    if isinstance(h, dict) and h.get("loaded") is False:
+        _DOWN[0] = time.time() + LOADING_RETRY
+        return False
+    return True
 
 
 def _engine_search(query, limit, ask=None):
