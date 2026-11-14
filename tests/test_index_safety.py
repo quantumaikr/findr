@@ -36,9 +36,9 @@ def test_unplugged_root_keeps_its_files(tmp_path):
 def test_underscore_folder_is_not_its_neighbour(tmp_path):
     for d, f in (("my_docs", "a.txt"), ("my-docs", "b.txt")):
         (tmp_path / d).mkdir(); (tmp_path / d / f).write_text("x", encoding="utf-8")
-    db = tmp_path / "i.db"
-    run([tmp_path / "my-docs"], db, tmp_path)
-    run([tmp_path / "my_docs"], db, tmp_path)   # used to claim my-docs' files as 'gone' (LIKE: _ is any character)
+    db, home = tmp_path / "i.db", tmp_path / "findr-data"   # not their parent: inside the data folder only chosen folders stay (#200)
+    run([tmp_path / "my-docs"], db, home)
+    run([tmp_path / "my_docs"], db, home)   # used to claim my-docs' files as 'gone' (LIKE: _ is any character)
     assert names(db) == ["a.txt", "b.txt"]
 
 

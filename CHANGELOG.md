@@ -14,6 +14,10 @@
 - docx 쪽수: `docProps/app.xml`의 `<Pages>`를 `pages`로, 없으면 글자 수로 어림해 `pages_estimated: true`로 표시
 ## 이번 판 (미출시)
 - 파일 사이의 관계(#203): MCP 도구 `file_relations`와 `findr relations 경로`(JSON)가 (1) 파일별 본문의 특징 낱말(이미 읽어 둔 글의 tf-idf, 조사를 뗀 낱말), (2) 안정적인 파일 id와 버전 묶음 id, (3) 경로로 찾는 같은 내용 사본(sha1)을 돌려줌. 파일 id는 다시 색인하거나 그 자리에서 고치거나 옮기거나 이름을 바꿔도 같고, 사본은 새 id를 가짐. 버전 묶음 id는 `versions`가 보여 주는 묶음(비슷한 파일 제외)을 따름. `versions`의 결과에는 `file_id`·`family_id`가 더해졌을 뿐 기존 항목은 그대로. 색인 파일은 표 3개(`file_uid`, `file_uid_gone`, `file_terms`)를 처음 쓸 때 만들어 그 자리에서 올라가며 다시 읽지 않음
+## 다음 판 (Unreleased)
+- 인증서·열쇠·비밀번호 파일은 읽지 않음(#200): NPKI·GPKI·EPKI 폴더(대소문자 구분 없음), `signCert.der`·`kmCert.der`·`signPri.key`·`kmPri.key`, `*.pfx`·`*.p12`·`*.ppk`·`*.kdb`·`*.1pux`, `passwords*.csv`·`logins.csv`·브라우저가 내보낸 비밀번호 CSV(`Chrome Passwords.csv`, `Chrome 비밀번호.csv` 등)와 브라우저의 비밀번호 저장 파일(`logins.json`·`key4.db`·`Login Data`), 비밀번호 관리 앱(Bitwarden·1Password·LastPass·KeePass·Dashlane 등)의 내보내기 파일, 경로에 공동인증서·공인인증서가 든 것. 이미 색인된 것은 다음 색인 때 저장된 글이 지워지고 검색·AI 도구에 나오지 않음(tier 0)
+- AI 도구(MCP): `search_files`·`read_file`·`list_folder`·`versions`가 findr 데이터 폴더 안의 파일을 색인에 있어도 돌려주지 않고 "색인에 없음"과 같게 답함. 링크·대소문자·`..`로 돌아가도 같음. 더 뺄 폴더는 `FINDR_MCP_DENY`(경로 구분자 `os.pathsep`)로 지정(#200)
+- 제외 폴더: 데이터 폴더 안의 폴더를 검색 폴더로 고르면 데이터 폴더 전체가 색인에 들어가던 문제 수정. 고른 폴더(와 그곳까지 가는 길)만 남고 색인·모델·기록·설정은 계속 빠짐(#200)
 
 ## 0.2.23 (2026-11-13)
 0.2.22는 Windows 설치 파일을 만들지 못해 배포하지 않았고, 그 내용을 모두 이 판에 담았습니다.
