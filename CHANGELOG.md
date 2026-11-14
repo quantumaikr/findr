@@ -1,20 +1,17 @@
 # 바뀐 점
 
-## Unreleased
+## 다음 판 (Unreleased)
+- 8GB PC 메모리(#198): 색인 명령의 부모 프로세스가 torch를 불러 두지 않음. 엔진이 켜지는 중이면 색인기가 모델을 따로 불러오지 않고 기다림(`FINDR_EMBED_WAIT`, 기본 180초). 12.5GB 미만 PC에서 메모리 대기를 1.2GB 여유에서 풀고(`FINDR_MEM_BACK_GB`), 모델을 들고 있지 않으면 최대 120초만 기다리며, 기다리는 중임을 `progress.json`(`memwait`)과 검색 화면에 알림. 이름 단계가 끝나면 모델을 내림. 12.5GB 미만 PC에서는 재정렬 모델을 10분 쓰지 않으면 내림(`FINDR_IDLE_UNLOAD`). 색인 중이거나 여유 2GB 미만이면 DirectML 측정을 미룸. `findr serve`가 모델을 불러오기 전에 접속을 열고, `/healthz`가 버전·시작 시각·pid를 알려 줌(`?json=1`)
 - 설치본에 `xling_extra.json`이 빠지던 문제: 패키지 데이터를 `*.json`으로 넓히고, `findr/` 아래 데이터 파일이 모두 목록에 드는지 시험함(#199)
 - `findr uninstall`: 남길 파일에 `findr-desktop.exe` 이름을 고정하지 않음. 폴더의 실행 파일(.exe)은 엔진이 만들지 않았으므로 지우지 않고, 앱이 `FINDR_APP_EXE`로 알려 준 자기 파일도 남김(#199)
 - `search.snip()`: 미리보기 글이 원문에서 시작하는 위치를 결과의 `snippet_start`(MCP는 `excerpt_start`)로 함께 줌. 기존 `snippet`·반환형은 그대로. 숫자 덩어리(1,234,567 / 010-1234-5678 / 2026.11.14) 가운데서 앞뒤를 자르지 않음(#201)
-## 다음 판 (Unreleased)
 - 메일 파일(#202): `euc-kr`·`ks_c_5601-1987`·`ks_c_5601`·`x-windows-949`로 표시된 메일을 cp949로 읽어 드문 글자(똠 등)가 깨지지 않음(머리글·본문 모두). 색인 글에 `Message-ID`·`In-Reply-To`·`References`를 넣음. 첨부 속 글자(pdf·docx·xlsx·pptx·hwp·hwpx·txt 등)도 색인함(첨부 10개·개당 30MB·글 10만 자까지, 압축·중첩 메일은 이름만). Apple Mail `.emlx`와 `.mbox`(Thunderbird, Apple Mail 내보내기의 `X.mbox/mbox`) 읽기: 색인은 파일 하나에 한 항목이라 mbox 하나가 한 항목이 되고 그 안의 메일들을 차례로 이어 붙임(메일당 6만 자, 5,000통·읽는 시간 45초까지). 깊게 겹친 multipart는 깊이 12·부분 300개까지만 따라가고, 읽기에 실패하면(RecursionError 포함) 이름만 색인함
-## 다음 판 (Unreleased)
 대화에 붙인 파일을 읽을 때 비던 곳을 메웠습니다(#204). 모두 `read_file`(MCP)에서, 색인에 글이 없을 때 파일을 지금 읽어 답합니다.
 - HWP 3.x, 암호 걸린 HWP 5, 암호 걸린 PDF·docx·xlsx·pptx·doc: 빈 글 대신 `unreadable`과 note에 읽지 못하는 까닭("cannot read: HWP 3.x file", "password-protected …")을 돌려 줌
 - 스캔 PDF: 깊은 읽기는 앞 3쪽이 아니라 `FINDR_DEEP_READ_PAGES`(기본 200쪽)·`FINDR_DEEP_READ_SECONDS`(기본 180초)까지 OCR하고, `ocr: {pages_read, pages_total}`로 몇 쪽 중 몇 쪽을 읽었는지 알림. 색인은 그대로 한도를 지키며 깊은 계산의 쪽 수만 `FINDR_OCR_DEEP_PAGES`(기본 50)로 바꿀 수 있음
 - HEIC: 깊은 읽기에서 OCR. pillow-heif(findr 의존성)가 없으면 macOS는 sips로 바꿔 읽고, 둘 다 없으면 설치 안내를 돌려 줌
 - docx 쪽수: `docProps/app.xml`의 `<Pages>`를 `pages`로, 없으면 글자 수로 어림해 `pages_estimated: true`로 표시
-## 이번 판 (미출시)
 - 파일 사이의 관계(#203): MCP 도구 `file_relations`와 `findr relations 경로`(JSON)가 (1) 파일별 본문의 특징 낱말(이미 읽어 둔 글의 tf-idf, 조사를 뗀 낱말), (2) 안정적인 파일 id와 버전 묶음 id, (3) 경로로 찾는 같은 내용 사본(sha1)을 돌려줌. 파일 id는 다시 색인하거나 그 자리에서 고치거나 옮기거나 이름을 바꿔도 같고, 사본은 새 id를 가짐. 버전 묶음 id는 `versions`가 보여 주는 묶음(비슷한 파일 제외)을 따름. `versions`의 결과에는 `file_id`·`family_id`가 더해졌을 뿐 기존 항목은 그대로. 색인 파일은 표 3개(`file_uid`, `file_uid_gone`, `file_terms`)를 처음 쓸 때 만들어 그 자리에서 올라가며 다시 읽지 않음
-## 다음 판 (Unreleased)
 - 인증서·열쇠·비밀번호 파일은 읽지 않음(#200): NPKI·GPKI·EPKI 폴더(대소문자 구분 없음), `signCert.der`·`kmCert.der`·`signPri.key`·`kmPri.key`, `*.pfx`·`*.p12`·`*.ppk`·`*.kdb`·`*.1pux`, `passwords*.csv`·`logins.csv`·브라우저가 내보낸 비밀번호 CSV(`Chrome Passwords.csv`, `Chrome 비밀번호.csv` 등)와 브라우저의 비밀번호 저장 파일(`logins.json`·`key4.db`·`Login Data`), 비밀번호 관리 앱(Bitwarden·1Password·LastPass·KeePass·Dashlane 등)의 내보내기 파일, 경로에 공동인증서·공인인증서가 든 것. 이미 색인된 것은 다음 색인 때 저장된 글이 지워지고 검색·AI 도구에 나오지 않음(tier 0)
 - AI 도구(MCP): `search_files`·`read_file`·`list_folder`·`versions`가 findr 데이터 폴더 안의 파일을 색인에 있어도 돌려주지 않고 "색인에 없음"과 같게 답함. 링크·대소문자·`..`로 돌아가도 같음. 더 뺄 폴더는 `FINDR_MCP_DENY`(경로 구분자 `os.pathsep`)로 지정(#200)
 - 제외 폴더: 데이터 폴더 안의 폴더를 검색 폴더로 고르면 데이터 폴더 전체가 색인에 들어가던 문제 수정. 고른 폴더(와 그곳까지 가는 길)만 남고 색인·모델·기록·설정은 계속 빠짐(#200)
