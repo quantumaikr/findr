@@ -26,11 +26,45 @@ def test_engine_down_is_seen_quickly_and_remembered(monkeypatch):
     assert mcp_server._engine_search("회의록", 5) is None and calls == []
 
 
-def test_engine_up_is_asked(monkeypatch):
-    srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(1)
-    monkeypatch.setattr(mcp_server, "ENGINE", f"http://127.0.0.1:{srv.getsockname()[1]}")
+def _healthz(body):
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            b = body.encode()
+            self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+    s = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    return s
+
+
+@pytest.mark.parametrize("body", ['{"ok": true, "loaded": true, "ready": false}', "ok"])   # an older engine: 'ok' only
+def test_engine_up_is_asked(monkeypatch, body):
+    srv = _healthz(body)
+    monkeypatch.setattr(mcp_server, "ENGINE", f"http://127.0.0.1:{srv.server_address[1]}")
     monkeypatch.setattr(mcp_server, "_DOWN", [0.0])
     try:
         assert mcp_server._engine_up() is True
     finally:
-        srv.close()
+        srv.shutdown(); srv.server_close()
+
+
+def test_an_engine_still_loading_is_taken_as_down_briefly(monkeypatch):
+    """review of #198: the port opens before the index and models are in, and /api then holds the call until they are (up
+    to 10 minutes); the MCP server reads /healthz?json=1 and searches the index meanwhile"""
+    srv = _healthz('{"ok": true, "loaded": false, "ready": false}')
+    monkeypatch.setattr(mcp_server, "ENGINE", f"http://127.0.0.1:{srv.server_address[1]}")
+    monkeypatch.setattr(mcp_server, "_DOWN", [0.0])
+    try:
+        t = time.time()
+        assert mcp_server._engine_up() is False and time.time() - t < 3
+        assert 0 < mcp_server._DOWN[0] - time.time() <= mcp_server.LOADING_RETRY
+        calls = []
+        monkeypatch.setattr(urllib.request.OpenerDirector, "open", lambda *a, **k: calls.append(1))
+        assert mcp_server._engine_search("회의록", 5) is None and calls == []
+    finally:
+        srv.shutdown(); srv.server_close()

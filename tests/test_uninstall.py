@@ -34,3 +34,21 @@ def test_the_windows_app_installed_in_the_same_folder_stays_for_its_uninstaller(
         (h / n).write_text("app")
     r = run(h, "--yes")
     assert r.returncode == 0 and sorted(p.name for p in h.iterdir()) == ["engine", "findr-desktop.exe", "uninstall.exe", "uv.exe"]
+
+
+def test_an_app_with_another_executable_name_is_kept_and_other_exes_are_never_deleted(tmp_path):
+    h = tmp_path / "findr"; (h / "runtime").mkdir(parents=True); (h / "index.db").write_text("x")
+    for n in ("sample-app.exe", "helper.EXE", "uninstall.exe"):
+        (h / n).write_text("app")
+    (h / "settings.json").write_text("{}")
+    r = run(h, "--yes")
+    assert r.returncode == 0 and sorted(p.name for p in h.iterdir()) == ["helper.EXE", "sample-app.exe", "uninstall.exe"]
+
+
+def test_the_running_apps_own_file_named_by_env_is_kept(tmp_path):
+    h = tmp_path / "findr"; (h / "runtime").mkdir(parents=True); (h / "index.db").write_text("x")
+    (h / "sample-app.bin").write_text("app"); (h / "other.bin").write_text("x")
+    env = dict(os.environ, FINDR_HOME=str(h), FINDR_APP_EXE=str(h / "sample-app.bin"), PYTHONUTF8="1")
+    r = subprocess.run([sys.executable, "-m", "findr", "uninstall", "--yes"], cwd=ROOT, env=env, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=120)
+    assert r.returncode == 0 and sorted(p.name for p in h.iterdir()) == ["sample-app.bin"]

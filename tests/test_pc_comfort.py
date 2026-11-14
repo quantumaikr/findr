@@ -46,6 +46,10 @@ def test_read_all_keeps_order_and_reads_only_a_little_ahead(tmp_path, monkeypatc
 def test_indexer_lets_go_and_waits_when_memory_runs_out(monkeypatch, capsys):
     seq = iter([0.5, 0.6, 1.5, 2.4])
     monkeypatch.setattr(index, "mem_free_gb", lambda: next(seq))
+    # a 16 GB PC: it goes on at 2 GB free. The level depends on the PC's RAM (#198: 1.2 GB on 12 GB or less), and the
+    # macOS CI runner has 7 GB, where 1.5 GB is already enough (test_an_8gb_pc_resumes_at_its_own_level covers that)
+    monkeypatch.delenv("FINDR_MEM_BACK_GB", raising=False)
+    monkeypatch.setattr(index, "ram_gb", lambda: 16.0)
     monkeypatch.setattr(index.time, "sleep", lambda s: None)
     dropped = []
     index._RELEASE.append(lambda: dropped.append(1))

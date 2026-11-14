@@ -7,7 +7,10 @@ import index
 EXAMPLES = ["sk-" + "a" * 24, "sk-ant-" + "b" * 24, "AKIA" + "A" * 16, "gh" + "p_" + "c" * 32, "gh" + "o_" + "d" * 32, "hf_" + "e" * 32,
             "xoxb-" + "1" * 12, "AIza" + "f" * 35, "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----",
             "API_KEY=" + "g" * 16, "apikey: " + "h" * 16, "Secret = '" + "i" * 16, "PASSWORD=" + "j" * 16, "passwd:" + "k" * 16,
-            "token=" + "l" * 16]
+            "token=" + "l" * 16, "sk_" + "live_" + "m" * 20, "rk_" + "test_" + "m" * 20, "github_" + "pat_" + "n" * 24,
+            "gl" + "pat-" + "o" * 20, "xo" + "xp-" + "p" * 12, "Bearer " + "q" * 20, "eyJ" + "r" * 8 + ".eyJ" + "s" * 8 + "." + "t" * 8,
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----\nabc", "Private-Lines: 1\nAAAA" + "u" * 20, "https://kim:" + "v" * 8 + "@example.com",
+            '{"client_secret": "' + "w" * 16 + '"}', "DB_PWD=" + "x" * 16, "private_key: " + "y" * 16]
 
 
 def _db():

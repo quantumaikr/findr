@@ -29,21 +29,108 @@ TEXT = {".md", ".txt", ".py", ".pyi", ".js", ".ts", ".jsx", ".tsx", ".json", ".j
         ".cfg", ".csv", ".tsv", ".log", ".html", ".htm", ".css", ".sh", ".ps1", ".bat", ".cmd", ".c", ".h", ".cpp", ".hpp",
         ".cu", ".cuh", ".java", ".go", ".rs", ".sql", ".xml", ".rst", ".ipynb", ".jinja", ".tex", ".r", ".m", ".lua", ""}
 DOC = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".hwp", ".doc", ".ppt", ".xls", ".key",
-       ".xlsb", ".ods", ".rtf", ".eml", ".pages", ".numbers"}   # moretext.py (sheets, RTF, e-mail), keynote_text (iWork)
+       ".xlsb", ".ods", ".rtf", ".eml", ".emlx", ".mbox", ".pages", ".numbers"}   # moretext.py (sheets, RTF, e-mail), keynote_text (iWork)
 AUD = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".wma", ".ogg"}   # transcribed locally by stt_cache.py (faster-whisper)
 OLD = {".hwp", ".doc", ".ppt", ".xls"}   # old binary formats: converted locally by LibreOffice (+ H2Orestart for hwp), cached
-SECRET = re.compile(r"^(\.env(\..*)?|\.netrc|\.pgpass|\.git-credentials|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|credentials(\.json|\.ya?ml|\.txt)?"
-                    r"|secrets?\.(json|ya?ml|toml|txt|env)|.*\.(pem|pfx|p12|kdbx|keystore|jks)"
-                    r"|\.(bash|zsh|sh|python|psql|mysql|node_repl|lesshst)_?history|\.history|ConsoleHost_history\.txt)$", re.I)   # shell histories hold typed tokens
+SECRET = re.compile(r"^(\.env(\..*)?|\.envrc|\.netrc|_netrc|\.pgpass|pgpass\.conf|\.npmrc|\.pypirc|\.git-credentials|kubeconfig(\.ya?ml)?"
+                    r"|id_(rsa|dsa|ecdsa|ed25519)(_sk)?(\.pub)?|credentials(\.json|\.ya?ml|\.txt|\.csv)?|.*_credentials\.csv|.*_accesskeys\.csv"
+                    r"|secrets?\.(json|ya?ml|toml|txt|env)|.*\.(pem|pfx|p12|kdbx|kdb|keystore|jks|ppk|1pux|1pif)"
+                    r"|\.(bash|zsh|sh|python|psql|mysql|node_repl|lesshst)_?history|\.history|ConsoleHost_history\.txt"   # shell histories hold typed tokens
+                    r"|(sign|km)(Cert\.der|Pri\.key)"   # a Korean joint certificate (공동인증서): the certificate and its private key
+                    # browsers' saved passwords: their CSV exports (Chrome / Edge / Safari 'Passwords.csv', 'Chrome 비밀번호.csv',
+                    # Firefox 'logins.csv') and the stores themselves (Firefox logins.json + key4.db, Chrome 'Login Data'). Other CSV
+                    # names with password / 비밀번호 in them are secret only when their header row is a credential export (CRED_CSV)
+                    r"|passwords.*\.csv|(password|비밀번호)( ?\(\d+\))?\.csv|((microsoft )?edge|chrome|safari|firefox|brave|opera|vivaldi|whale|네이버 웨일|웨일|"
+                    r"google|구글) ?(passwords?|비밀번호)( ?\(\d+\))?\.csv"
+                    r"|logins( ?\(\d+\))?\.csv|logins\.json|key[34]\.db|signons\.sqlite|Login Data( For Account)?"
+                    # password-manager exports: the manager's name and export / vault / backup in the name
+                    # (bitwarden_export_….json, lastpass_vault_export.csv, 1PasswordExport-….csv, dashlane-credential-export.csv)
+                    r"|(?=.*(bitwarden|lastpass|1password|keepass|dashlane|nordpass|roboform|enpass|proton ?pass))"
+                    r"(?=.*(export|vault|backup)).*\.(csv|json|xml|txt|zip|pgp))$", re.I)
+# folders of certificates, and any path naming them, are never read either (see secret_path): the NPKI / GPKI / EPKI folders
+# that Korean banking, government and school sign-ins keep (with signCert.der, signPri.key), and copies made by hand
+CERT_DIRS = {"npki", "gpki", "epki"}
+# a folder named with these words (a certificate backup made by hand) hides the certificate files in it, not its other files
+# ('공동인증서 발급 안내.pdf' and a guide in such a folder are ordinary documents)
+CERT_WORDS = ("공동인증서", "공인인증서")
+CERT_EXTS = {".der", ".key", ".pfx", ".p12", ".cer", ".crt", ".pem"}
+# a CSV whose name says password / 비밀번호 but is not one of the known export names: secret when its header row is a
+# credential export (a password column with a user name or site column); 'password_policy_review.csv' with other columns is read
+CRED_NAME = re.compile(r"(password|비밀번호|passwd).*\.csv$", re.I)
+# column names compared without spaces, '_' and '-' ('User Name', 'login_username', 'e-mail')
+_CRED_PW = {"password", "passwd", "pwd", "pass", "passcode", "loginpassword", "비밀번호", "비번", "암호", "패스워드", "secret"}
+_CRED_ID = {"username", "user", "userid", "login", "loginusername", "loginname", "email", "mail", "account", "id", "아이디", "사용자",
+            "사용자이름", "계정", "url", "uri", "loginuri", "website", "site", "origin", "originurl", "hostname", "host", "사이트",
+            "웹사이트", "주소", "이메일", "name", "title"}
+_CRED_PW_IN = ("password", "passwd", "비밀번호", "패스워드")   # inside a longer column name ('Password (encrypted)')
+_CRED_ID_IN = ("username", "login", "아이디", "url")
+# kinds of file whose first line is looked at: a password export saved as .txt or .tsv is one too
+CRED_EXTS = {".csv", ".tsv", ".txt"}
+# copy markers people's systems add to a name: 'Copy of x', 'x 2', 'x (1)', 'x copy', 'x - Copy', 'x - 복사본', 'x 복사본'
+_COPY_PRE = re.compile(r"^(?:copy of |사본 - |복사본 - )+", re.I)
+_COPY_SUF = re.compile(r"(?:\s*-\s*(?:복사본|사본|copy)(?:\s*\(\d+\))?|\s+(?:복사본|사본|copy)(?:\s+\d{1,3})?|\s*\(\d{1,3}\)|\s+\d{1,3})$", re.I)
+_SECOND_EXT = re.compile(r"^(.+\.[^.]+)\.(txt|text|bak|old|orig|backup|copy|download|crdownload|part)$", re.I)
 # '.key' is both a cryptographic key and an Apple Keynote deck: Keynote is a ZIP, a key file is not (see is_secret)
 # values that look like keys are masked inside indexed text (a key pasted into a note or log never reaches the index)
+# the name of a setting that holds a secret, with words before it (AWS_SECRET_ACCESS_KEY, client_secret, DB_PASSWORD) and
+# at most two after it (DB_PASSWORD_PROD); 'tokenizer' or 'max_tokens' is not one
+_KV_NAME = (r"(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[_.\-]){0,4}(?i:api[_-]?key|secret(?:[_-]?access)?(?:[_-]?key)?|password|passwd|pwd"
+            r"|token|private[_-]?key)(?:[_.\-][A-Za-z0-9]+){0,2}(?![A-Za-z0-9])")
+# PEM / PGP private key: to its END line; with none (a note cut short), to the end of the text or to the first blank line
+# that is not followed by more key lines (a PGP block has one blank line after its headers)
+_PEM = (r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----(?:[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"
+        r"|[\s\S]*?(?=\n[ \t]*\r?\n(?![ \t]*[A-Za-z0-9+/=]{20,}[ \t]*(?:\r?\n|$))|\Z))")
 KEYLIKE = re.compile(r"(sk-[A-Za-z0-9_\-]{20,}|sk-ant-[A-Za-z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|hf_[A-Za-z0-9]{30,}"
-                     r"|xox[abpr]-[A-Za-z0-9\-]{10,}|AIza[0-9A-Za-z_\-]{35}|-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"
-                     r"|(?i:(api[_-]?key|secret|password|passwd|token)\s*[:=]\s*['\"]?)[^\s'\"]{12,})")
+                     r"|github_pat_[A-Za-z0-9_]{22,}|glpat-[A-Za-z0-9_\-]{20,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}"
+                     r"|xox[abposr]-[A-Za-z0-9\-]{10,}|AIza[0-9A-Za-z_\-]{35}|" + _PEM +
+                     r"|Private-Lines:\s*\d+(?:\s+[A-Za-z0-9+/=]{4,}(?![\-:A-Za-z0-9+/=]))+"   # a PuTTY key's private part
+                     r"|(?i:bearer)\s+[A-Za-z0-9\-._~+/]{16,}=*"
+                     r"|eyJ[A-Za-z0-9_\-]{5,}\.eyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]*"   # a JWT
+                     r"|(?P<url>\b[A-Za-z][A-Za-z0-9+.\-]*://[^\s:/@'\"<>]+:)[^\s@/'\"<>]+(?=@)"   # scheme://user:PASSWORD@host
+                     r"|" + _KV_NAME + r"['\"]?\s*[:=]\s*['\"]?[^\s'\"]{12,})")
 # a fixed piece of text every KEYLIKE match contains: SQLite LIKE (ASCII case-insensitive, '_' any one character) keeps only the
 # chunks that may hold one, so the regex runs on a few rows instead of all of them (a run with no change scanned 920k chunks
 # in Python for 58 s, #67). Keep in step with KEYLIKE: tests/test_mask_prefilter.py checks every alternative is covered
-KEYLIKE_HINTS = ("sk-", "akia", "gh_", "hf_", "xox", "aiza", "private key", "api", "secret", "password", "passwd", "token")
+KEYLIKE_HINTS = ("sk-", "akia", "gh_", "hf_", "xox", "aiza", "private key", "api", "secret", "password", "passwd", "token",
+                 "github_pat", "glpat", "k_live", "k_test", "private-lines", "bearer", "eyj", "://", "pwd", "private_key", "privatekey")
+
+
+def _mask_one(m):
+    return (m.group("url") or "") + "[가림]"
+
+
+def mask(text):
+    """values that look like keys, passwords and tokens replaced by [가림]: what the index stores and every text findr
+    returns (read_file, excerpts, the search page). A URL keeps its address, only the password in it is masked. A mail's
+    attachment block ('[첨부 name]' and its text) that the secret rules mark keeps its name only (text an index made
+    before a rule may still hold)"""
+    if not text:
+        return text
+    text = KEYLIKE.sub(_mask_one, text)
+    return _ATT_BLOCK.sub(_att_one, text) if "[첨부 " in text else text
+
+
+_ATT_BLOCK = re.compile(r"\[첨부 ([^\]\n]{1,300})\]\n(.*?)(?=\n\[첨부 [^\]\n]{1,300}\]\n|\Z)", re.S)
+
+
+def _att_one(m):
+    try:
+        bad = is_secret(Path(m.group(1)), head=m.group(2)[:4096].encode("utf-8", "replace"))
+    except Exception:   # noqa: BLE001
+        bad = True
+    return f"[첨부 {m.group(1)}]\n" if bad else m.group(0)
+
+
+def mask_obj(o, keep=frozenset({"path", "name", "date", "modified", "folder", "fid", "route", "kind", "ext", "file_id", "family_id"})):
+    """mask() on every text in a result (dicts and lists, as JSON holds them), except paths, names and other fields that
+    say which file it is (a file is opened by its path)"""
+    if isinstance(o, str):
+        return mask(o)
+    if isinstance(o, list):
+        return [mask_obj(x, keep) for x in o]
+    if isinstance(o, dict):
+        return {k: (v if k in keep else mask_obj(v, keep)) for k, v in o.items()}
+    return o
 LIB = re.compile(r"/(site-packages|python_embeded|node_modules|__pycache__|\.git|dist-packages|\.venv|venv)(/|$)")
 # folders of keys and sign-ins, never read, whatever folder was chosen (`findr index ~` read .kube/config, .docker/config.json
 # and shell histories, whose tokens the key masking does not all catch, and served them to AI tools)
@@ -81,10 +168,96 @@ def real_ext(p: Path):
     return Path(name).suffix.lower() if name != p.name else p.suffix.lower()
 
 
-def is_secret(p: Path):
-    """key and credential files are never read; a '.key' file is a secret unless it is a Keynote deck (a ZIP)"""
-    if SECRET.search(p.name) or SECRET.search(BAK.sub("", p.name)):
+def secret_path(s):
+    """a path inside a certificate folder (NPKI, GPKI, EPKI, any case), or a certificate-like file (CERT_EXTS) inside a
+    folder whose name holds 공동인증서 / 공인인증서. Both separators: a Windows path is checked the same on any PC (and the
+    index may hold one from another)"""
+    parts = re.split(r"[\\/]+", nfc(str(s)))
+    if any(x.casefold() in CERT_DIRS for x in parts[:-1]):
         return True
+    return real_ext(Path(parts[-1])) in CERT_EXTS and any(w in x for x in parts[:-1] for w in CERT_WORDS)
+
+
+def cred_header(head):
+    """True when the first line of a CSV / TSV / text file (bytes or text) is a credential export's header: two or more
+    short columns, one a password column and one a user name or site column (English or Korean)"""
+    if isinstance(head, bytes):
+        b = head[:4096]
+        head = b.decode("utf-16", "replace") if b[:2] in (b"\xff\xfe", b"\xfe\xff") else _decode_text(b)
+    line = next((x for x in (head or "").lstrip("\ufeff").splitlines() if x.strip()), "")
+    cols = [unicodedata.normalize("NFC", c).strip().strip('"\'').strip().casefold() for c in re.split(r"[,;\t|]", line)]
+    cols = [re.sub(r"[\s_\-]+", "", c) for c in cols if c]
+    if len(cols) < 2 or any(len(c) > 40 for c in cols):
+        return False   # a sentence, not a header
+    pw = [c for c in cols if c in _CRED_PW or any(w in c for w in _CRED_PW_IN)]
+    who = [c for c in cols if c not in pw and (c in _CRED_ID or any(w in c for w in _CRED_ID_IN))]
+    return bool(pw) and bool(who)
+
+
+def name_forms(name):
+    """the forms of a file name the secret rules are tried on: NFC and case-folded, with trailing spaces and dots dropped
+    (Windows ignores them: '.env ' is '.env'), backup endings, a second extension ('passwords.csv.txt') and copy markers
+    ('Copy of logins.csv', 'logins 2.csv', '비밀번호 - 복사본.csv') taken off"""
+    n = nfc(str(name or "")).casefold()
+    n = n.rstrip(" .") or n
+    forms, todo = [], [n]
+    while todo and len(forms) < 24:
+        x = todo.pop()
+        if not x or x in forms:
+            continue
+        forms.append(x)
+        todo.append(BAK.sub("", x).rstrip(" ."))
+        m = _SECOND_EXT.match(x)
+        if m:
+            todo.append(m.group(1).rstrip(" ."))
+        stem, ext = os.path.splitext(x)
+        if ext and " " in ext:   # 'logins.csv 2' is not an extension
+            stem, ext = x, ""
+        s2 = _COPY_SUF.sub("", _COPY_PRE.sub("", stem)).rstrip(" .")
+        if s2 and s2 != stem:
+            todo.append(s2 + ext)
+        s3 = _COPY_PRE.sub("", x)
+        if s3 and s3 != x:
+            todo.append(s3)
+    return forms
+
+
+_SECRET_DIRS_CF = {d.casefold() for d in SECRET_DIRS}
+
+
+def secret_name(p):
+    """the rules that need only the path (names, certificate folders, folders of keys such as .ssh and .kube): what a
+    secret file is, without opening it"""
+    if any(SECRET.search(f) for f in name_forms(p.name)) or secret_path(p):
+        return True
+    parts = re.split(r"[\\/]+", nfc(str(p)))
+    return any(x.casefold().rstrip(" .") in _SECRET_DIRS_CF for x in parts[:-1])
+
+
+def _head(p):
+    try:
+        with open(p, "rb") as f:
+            return f.read(4096)
+    except OSError:
+        return b""   # nothing to read: nothing to hide either
+
+
+def is_secret(p: Path, head=None, sniff=True, follow=True):
+    """key and credential files are never read; a '.key' file is a secret unless it is a Keynote deck (a ZIP); a CSV, TSV
+    or text file whose first line is a credential export's header is secret whatever its name. `head`: the file's first
+    bytes when they are at hand (a mail attachment); otherwise they are read from `p`. sniff=False reads the first line
+    only of a file whose name speaks of passwords (the scan of names: the content stage looks at the others).
+    follow: a link is judged by where it points as well (a harmless name linking to a key, or into .ssh)"""
+    if secret_name(p):
+        return True
+    if follow and head is None:
+        t = link_target(p)
+        if t is not None and is_secret(Path(t), sniff=sniff, follow=False):
+            return True
+    forms = name_forms(p.name)
+    if any(real_ext(Path(f)) in CRED_EXTS for f in forms) and (head is not None or sniff or any(CRED_NAME.search(f) for f in forms)):
+        if cred_header(_head(p) if head is None else head):
+            return True
     if real_ext(p) == ".key":
         try:
             with open(p, "rb") as f:
@@ -94,9 +267,20 @@ def is_secret(p: Path):
     return False
 
 
-def tier(p: Path):
+def link_target(p):
+    """where a path really leads when it is, or goes through, a link (or a junction, a Windows short name); None when it
+    leads where it says"""
+    try:
+        a = os.path.abspath(str(p))
+        r = os.path.realpath(a)
+    except (OSError, ValueError):
+        return None
+    return None if os.path.normcase(r) == os.path.normcase(a) else r
+
+
+def tier(p: Path, sniff=False):
     s = p.as_posix(); ext = real_ext(p)
-    if is_secret(p):
+    if is_secret(p, sniff=sniff, follow=os.path.islink(p)):   # the walk does not go through linked folders: only the file itself can be a link
         return 0
     if ext in AUD:
         return 1 if transcript(p) is not None else 3
@@ -107,12 +291,18 @@ def tier(p: Path):
     return 1
 
 
+try:
+    from . import relations, samepath
+except ImportError:
+    import relations
+    import samepath
+
 try:   # old office formats: content sniffing + Word 97 piece table before LibreOffice (orders of magnitude faster)
     from .officetext import sniff_text, doc_text, hwp_text
-    from .moretext import sheet_text, rtf_text, eml_text
+    from .moretext import sheet_text, rtf_text, eml_text, emlx_text, mbox_text
 except ImportError:
     from officetext import sniff_text, doc_text, hwp_text
-    from moretext import sheet_text, rtf_text, eml_text
+    from moretext import sheet_text, rtf_text, eml_text, emlx_text, mbox_text
 
 
 def _long(s: str) -> str:
@@ -146,6 +336,10 @@ def extract(p: Path, limit):
             return rtf_text(p, limit) or ""
         if ext == ".eml":
             return eml_text(p, limit) or ""
+        if ext == ".emlx":
+            return emlx_text(p, limit) or ""
+        if ext == ".mbox" or (p.name == "mbox" and p.parent.suffix.lower() == ".mbox"):   # Apple Mail export: X.mbox/mbox
+            return mbox_text(p, limit) or ""
         if ext in (".pages", ".numbers"):   # iWork shares Keynote's container: snappy-framed protobuf in Index/*.iwa
             return keynote_text(p, limit)
         if ext in OLD:
@@ -201,8 +395,10 @@ def transcript(p: Path):
 # What the readers can read changes between versions. An unchanged file (same size, mtime and tier) is never read again,
 # so files these readers newly handle are queued once when the reader version goes up.
 #   2: .xls/.xlsb/.ods without LibreOffice (#29), distribution(배포용) .hwp (#28)
-READERS = 2
+#   3: mail attachments under the secret rules and nested mail by name only; password exports found by their first line
+READERS = 3
 REREAD_EXT = {2: (".xls", ".xlsb", ".ods", ".hwp")}
+REREAD_ALL = {3: (".eml", ".emlx", ".mbox")}   # read again even with text stored: what they stored may now be left out
 
 
 def reread_for_new_readers(con):
@@ -212,7 +408,17 @@ def reread_for_new_readers(con):
         return 0
     exts = sorted({e for v, es in REREAD_EXT.items() if v > have for e in es})
     n = con.execute(f"""UPDATE files SET pending=1 WHERE tier=1 AND ext IN ({','.join('?' * len(exts))})
-                        AND NOT EXISTS (SELECT 1 FROM chunks c WHERE c.file=files.id AND length(c.text) > 0)""", exts).rowcount
+                        AND NOT EXISTS (SELECT 1 FROM chunks c WHERE c.file=files.id AND length(c.text) > 0)""", exts).rowcount if exts else 0
+    every = sorted({e for v, es in REREAD_ALL.items() if v > have for e in es})
+    if every:
+        n += con.execute(f"UPDATE files SET pending=1 WHERE tier=1 AND ext IN ({','.join('?' * len(every))})", every).rowcount
+    if have < 3:   # text files already read whose first line is a password export's header: read again (the content stage keeps the name only)
+        hit = [fid for fid, name, t in con.execute("""SELECT f.id, f.name, c.text FROM files f JOIN chunks c ON c.file=f.id AND c.n=0
+                                                      WHERE f.tier=1 AND f.ext IN ('.csv', '.tsv', '.txt', '')""")
+               if t and any(real_ext(Path(x)) in CRED_EXTS for x in name_forms(name)) and cred_header(t[:4096])]
+        for fid in hit:
+            con.execute("UPDATE files SET pending=1 WHERE id=?", (fid,))
+        n += len(hit)
     con.execute("INSERT OR REPLACE INTO meta VALUES('readers', ?)", (str(READERS),)); con.commit()
     if n:
         print(f"FINDR_REREAD {n} files a newer reader can read ({', '.join(exts)})", flush=True)
@@ -337,7 +543,7 @@ def convert_old(p: Path):
 
 def chunks(text):
     text = text.encode("utf-8", "replace").decode("utf-8")   # a lone surrogate from any reader would stop the whole index
-    text = KEYLIKE.sub("[가림]", text)
+    text = mask(text)
     text = re.sub(r"[ \t]{3,}", "  ", text).strip()
     if not text:
         return []
@@ -494,13 +700,61 @@ def _main():
     # other copies of findr already in the index (a second clone, an older install, a worktree: #119), found by their
     # pyproject.toml rows; like the running checkout, they leave unless a chosen root is one of them or lies inside one
     copies = {Path(raw).parent for (raw,) in con.execute("SELECT path FROM files WHERE name='pyproject.toml'") if is_findr_checkout(Path(raw).parent)}
-    in_root = lambda k: any(key(Path(r).resolve().as_posix()).rstrip("/") in (k,) or key(Path(r).resolve().as_posix()).startswith(k + "/") for r in roots)
-    for d in [*own_dirs(), *copies]:
+    owns = list(dict.fromkeys([*own_dirs(), *copies]))
+    samepath.clear()
+    own_ids = samepath.ids_of(owns)
+
+    def as_own(r):
+        """a chosen folder spelled as the own folder it is in or is (by identity: a firmlink, another letter case, a link)"""
+        d = samepath.under(r, own_ids, follow=False)
+        if d is None:
+            return None
+        for a in samepath.ancestors(r):
+            if samepath.ident(a) == samepath.ident(str(d)):
+                rel = os.path.relpath(os.path.abspath(str(r)), a)
+                return key((Path(d) if rel == "." else Path(d) / rel).as_posix()).rstrip("/")
+        return None
+    rkeys = [(key(Path(r).resolve().as_posix()).rstrip("/"), key(Path(r).as_posix()).rstrip("/")) for r in roots]
+    rkeys += [(o, key(Path(r).as_posix()).rstrip("/")) for r in roots if (o := as_own(r)) and o not in {x for x, _ in rkeys}]
+    # a chosen folder inside one of them (an app that embeds findr keeps the person's files in its data folder) no longer lets
+    # the whole data folder in: the rest of it (index, models, logs, settings) stays out, folder by folder (#200)
+    held = {}   # own folder -> the chosen folders inside it, as resolved and as given
+    for d in owns:
         k = key(d.as_posix()).rstrip("/")
-        if not in_root(k):
+        inside = [(rs, rg) for rs, rg in rkeys if rs == k or rs.startswith(k + "/")]
+        if not inside:
             excl.add(k)
-    if excl:   # folders this PC chose not to search (exclude.txt): files already indexed under them leave the index
-        ids = [i for i, raw in con.execute("SELECT id, path FROM files") if (s := key(raw)) in excl or any(s.startswith(x + "/") for x in excl)]
+            # the same folder as a chosen folder above it spells it (/System/Volumes/Data/..., another case): its rows
+            # already in the index under that spelling leave too, and the walk leaves it out by text as well as identity
+            for r in roots:
+                v = samepath.variant(d, r)
+                if v:
+                    excl.add(key(Path(v).as_posix()).rstrip("/"))
+        elif all(rs != k for rs, _ in inside):   # a chosen root that is the folder itself keeps all of it
+            held[k] = [x for pair in inside for x in pair]
+    # the same folders by identity, for spellings no text compare can see (hard links, bind mounts, case, firmlinks)
+    excl_ids = {i: d for i, d in own_ids.items() if key(Path(d).as_posix()).rstrip("/") in excl}
+    held_ids = {i: d for i, d in own_ids.items() if key(Path(d).as_posix()).rstrip("/") in held}
+    root_ids = samepath.ids_of(roots)
+
+    def own_by_identity(full, sp):
+        """a folder met in the walk that is one of findr's own under another spelling: an excluded one is left out; a held
+        one only when not spelled as held (the chosen folders inside it are walked as their own roots)"""
+        i = samepath.ident(full)
+        if i is None:
+            return False
+        if i in excl_ids:
+            return True
+        return i in held_ids and sp != key(Path(held_ids[i]).as_posix()).rstrip("/")
+
+    def left_out(s):
+        """an excluded folder or anything under it; inside a held folder, all but the chosen folders and the way down to them"""
+        if s in excl or any(s.startswith(x + "/") for x in excl):
+            return True
+        return any((s == k or s.startswith(k + "/")) and not any(s == r or s.startswith(r + "/") or r.startswith(s + "/") for r in keep)
+                   for k, keep in held.items())
+    if excl or held:   # folders this PC chose not to search (exclude.txt): files already indexed under them leave the index
+        ids = [i for i, raw in con.execute("SELECT id, path FROM files") if left_out(key(raw).rstrip("/"))]
         for fid in ids:
             drop(con, fid)
         if ids:
@@ -554,14 +808,18 @@ def _main():
                 except ValueError:
                     rel = "?"   # not under the root as written (a different spelling): below the top all the same
                 dns[:] = [d for d in dns if not skip_dir(rel, d)]
-            if excl:
-                dns[:] = [d for d in dns if key((Path(dp) / d).as_posix()) not in excl]
+            if excl or held:
+                dns[:] = [d for d in dns if not left_out(key((Path(dp) / d).as_posix()))]
+            if excl_ids or held_ids:
+                dns[:] = [d for d in dns if not own_by_identity(os.path.join(dpl, d), key((Path(dp) / d).as_posix()))]
             # a copy of findr met during the walk (#119): only folders holding a pyproject.toml are looked at, which is rare
             dns[:] = [d for d in dns if not (os.path.isfile(os.path.join(dpl, d, "pyproject.toml")) and is_findr_checkout(Path(dp) / d))]
             for fn in fns:
                 if not a.with_libs and JUNK.search(fn):
                     continue
                 p = Path(dp) / fn
+                if held and left_out(key(p.as_posix())):
+                    continue   # the data folder's own files on the way down to a chosen folder inside it
                 try:
                     st = os.stat(os.path.join(dpl, fn))
                 except OSError:
@@ -575,7 +833,15 @@ def _main():
                     continue
                 seen.add(s)
                 tick("names", k, len(roots), scanned=scanned + len(seen), folder=_short(dpl)[len(str(root)):].lstrip("/\\")[:80] or root.name)
+                if os.path.islink(os.path.join(dpl, fn)):   # a link: where it leads decides too
+                    t_ = samepath.unfirm(os.path.realpath(os.path.join(dpl, fn)))
+                    if samepath.under(t_, excl_ids, follow=False) or left_out(key(Path(t_).as_posix())):
+                        continue   # into findr's own folders: not the person's file
                 tr = tier(p)
+                if tr in (1, 2) and os.path.islink(os.path.join(dpl, fn)) and samepath.under(t_, root_ids, follow=False) is None:
+                    tr = 3   # leads outside the chosen folders: found by its name, never read
+                if tr == 1 and s in known and known[s][3] == 0:
+                    tr = tier(p, sniff=True)   # found secret by its first line when read: still so unless that changed
                 if tr in (1, 2) and cloud_only(st):
                     tr = 3   # OneDrive 'online-only': reading it would download it; found by name until it is on the PC
                 if s in known and known[s][0] == st.st_size and abs(known[s][1] - st.st_mtime) < 1 and known[s][3] == tr:
@@ -668,6 +934,8 @@ def progress(stage, done, total, **kw):
             st[stage] = "now"
     p = {"stage": stage, "done": done, "total": total, "t": time.time(), "pid": os.getpid(), "started": _P["started"],
          "stages": st, "files": _P.get("files"), "paused": _P.get("paused", False), **kw}
+    if _P.get("memwait"):   # waiting for memory (memory_wait): the reason the numbers stand still
+        p["memwait"] = _P["memwait"]
     try:
         f = Path(d, "progress.json"); tmp = f.with_suffix(".tmp")
         tmp.write_text(json.dumps(p), encoding="utf-8"); os.replace(tmp, f)   # a reader never sees half a file
@@ -697,8 +965,15 @@ def tick(stage, done, total, every=0.7, **kw):
 
 MEM_LOW_GB = 0.8     # free memory below this: the indexer lets go of what it can and waits (the engine and the person first)
 MEM_BACK_GB = 2.0    # ... and goes on once this much is free again
+# on 12 GB or less, 2 GB free never came back while the engine ran: an 8 GB laptop has about 1.5 GB free with the engine up
+# (cli._lane2), and the meaning stage waited at 0% for about 4 minutes, going on only when the engine stopped (#198)
+MEM_BACK_SMALL_GB = 1.2
+SMALL_RAM_GB = 12.5  # a PC sold as 12 GB reports a little less
 MEM_WAIT_MAX = 900   # never waits longer than this at a time: memory another program keeps forever does not stop indexing
-_RELEASE = []        # what the indexer can let go of under memory pressure (its own encoder); taken up again when needed
+MEM_WAIT_LIGHT = 120  # ... and not this long when the indexer held no model: its waiting frees nothing of its own
+MEM_BEAT = 30        # a waiting indexer says so in progress.json this often (the page drops a line older than 15 minutes)
+_RELEASE = []        # what the indexer can let go of under memory pressure (its own encoder); taken up again when needed.
+# Each returns True when it let go of something it held
 
 
 def mem_free_gb():
@@ -710,27 +985,61 @@ def mem_free_gb():
         return None
 
 
+def ram_gb():
+    """this PC's memory in GB (None when it cannot be read)"""
+    try:
+        from governor import ram_total_gb
+        return ram_total_gb()
+    except Exception:   # noqa: BLE001
+        return None
+
+
+def mem_back_gb():
+    """free memory at which a waiting indexer goes on: FINDR_MEM_BACK_GB, else 1.2 GB on PCs with 12 GB or less, else 2 GB.
+    Never at or below MEM_LOW_GB (it would stop again at once)"""
+    try:
+        v = float(os.environ.get("FINDR_MEM_BACK_GB") or 0)
+    except ValueError:
+        v = 0
+    if v <= 0:
+        ram = ram_gb()
+        v = MEM_BACK_SMALL_GB if ram and ram < SMALL_RAM_GB else MEM_BACK_GB
+    return max(v, MEM_LOW_GB + 0.1)
+
+
 def memory_wait():
     """when the PC is nearly out of memory: let go of the indexer's own model, and wait until memory is back. Holding alone
     frees nothing (a held process keeps what it holds, measured in a 3 GB limit); letting go of the model does, and not
-    reading more files keeps the indexer from pushing the PC into paging while the person works (field, 16 GB laptop)"""
+    reading more files keeps the indexer from pushing the PC into paging while the person works (field, 16 GB laptop).
+    The wait is in progress.json (memwait), so the app and the page can say why indexing does not move"""
     free = mem_free_gb()
     if free is None or free >= MEM_LOW_GB:
         return
+    held = False
     for f in list(_RELEASE):
         try:
-            f()
+            held = bool(f()) or held
         except Exception:   # noqa: BLE001
             pass
     import gc
     gc.collect()
-    print(f"FINDR_MEMWAIT {free:.1f} GB free: indexing waits for memory", flush=True)
-    t0 = time.time()
-    while time.time() - t0 < MEM_WAIT_MAX:
-        time.sleep(5)
-        free = mem_free_gb()
-        if free is None or free >= MEM_BACK_GB:
-            break
+    back = mem_back_gb()
+    most = MEM_WAIT_MAX if held else MEM_WAIT_LIGHT
+    print(f"FINDR_MEMWAIT {free:.1f} GB free: indexing waits for memory (until {back:.1f} GB, at most {most}s)", flush=True)
+    t0 = beat = time.time()
+    _P["memwait"] = {"free_gb": round(free, 2), "back_gb": round(back, 2), "since": t0, "max_s": most}
+    _repeat_progress()
+    try:
+        while time.time() - t0 < most:
+            time.sleep(5)
+            free = mem_free_gb()
+            if free is None or free >= back:
+                break
+            if time.time() - beat >= MEM_BEAT:
+                beat = time.time(); _P["memwait"]["free_gb"] = round(free, 2); _repeat_progress()
+    finally:
+        _P.pop("memwait", None)
+        _repeat_progress()
     print(f"FINDR_MEMBACK {free if free is not None else 0:.1f} GB free after {time.time() - t0:.0f}s", flush=True)
 
 
@@ -836,7 +1145,7 @@ def _repeat_progress():
         last = json.loads(Path(d, "progress.json").read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         last = {"stage": "names", "done": 0, "total": 0}
-    kw = {k: v for k, v in last.items() if k not in ("stage", "done", "total", "t", "pid", "started", "stages", "files", "paused")}
+    kw = {k: v for k, v in last.items() if k not in ("stage", "done", "total", "t", "pid", "started", "stages", "files", "paused", "memwait")}
     progress(last.get("stage", "names"), last.get("done", 0), last.get("total", 0), **kw)
 
 
@@ -1025,14 +1334,17 @@ def read_wave(con, root, a):
             locked += 1
             continue
         p = Path(s)
-        cs = chunks(txt)[: (1 if tr == 2 else 2000)] or [""]
+        cred = txt and any(real_ext(Path(f)) in CRED_EXTS for f in name_forms(p.name)) and cred_header(txt[:4096])
+        cs = [""] if cred else chunks(txt)[: (1 if tr == 2 else 2000)] or [""]   # a password export under any name: its name only
         con.execute("DELETE FROM fts WHERE rowid IN (SELECT id FROM chunks WHERE file=? AND n>=0)", (fid,))
         con.execute("DELETE FROM chunks WHERE file=? AND n>=0", (fid,))
+        if cred:
+            con.execute("UPDATE files SET tier=0 WHERE id=?", (fid,))
         rel = s[len(root.as_posix()):]
         for n, c in enumerate(cs):
             cid = con.execute("INSERT INTO chunks(file,n,text) VALUES(?,?,?)", (fid, n, c)).lastrowid
             con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(p.name), nfc(rel), nfc(c)))
-        part = first and tr == 1 and ext not in DATA and (len(txt) >= GIST - 64 or (ext not in RICH and _size(s) > GIST))   # cut at the gist
+        part = not cred and first and tr == 1 and ext not in DATA and (len(txt) >= GIST - 64 or (ext not in RICH and _size(s) > GIST))   # cut at the gist
         # (plain text is read by bytes: Korean takes 3 per character, so the file size tells): the deep run reads the rest
         con.execute("UPDATE files SET pending=? WHERE id=?", (2 if part else 0, fid))
         if (i + 1) % 200 == 0:
@@ -1258,11 +1570,12 @@ def photos_to_read(rows, deep, engine):
     return first
 
 
-def ocr_wave(con, root, first_pages=None, deep_pages=50):
+def ocr_wave(con, root, first_pages=None, deep_pages=None):
     """scanned PDFs and screenshots now; every photo on a deep run. Each file is read once (files.ocr).
     First pass: the first OCR_FIRST_PAGES pages of a PDF (files.ocr = 3 when pages are left); a deep run reads the rest.
     A copy of a file already read gets that file's text instead of a second OCR."""
     deep = int(os.environ.get("FINDR_FIRST_PIECES") or 0) == 0
+    deep_pages = deep_pages or int(os.environ.get("FINDR_OCR_DEEP_PAGES") or 50)   # indexing stays bounded; one file asked for is read further (deepread.py)
     first_pages, side = first_pages or OCR_FIRST_PAGES, OCR_SIDE
     if ocr_engine() == "none":
         return   # nothing to read with (FINDR_WARN at the start of the run says what to install)
@@ -1337,7 +1650,7 @@ def ocr_wave(con, root, first_pages=None, deep_pages=50):
             p_ = Path(s); rel = s[len(root.as_posix()):]
             con.execute("DELETE FROM fts WHERE rowid IN (SELECT id FROM chunks WHERE file=? AND n>=0)", (fid,))
             con.execute("DELETE FROM chunks WHERE file=? AND n>=0", (fid,))
-            for n, c in enumerate((texts if texts is not None else chunks(txt))[:2000] or [""]):
+            for n, c in enumerate(([mask(t) for t in texts] if texts is not None else chunks(txt))[:2000] or [""]):
                 cid = con.execute("INSERT INTO chunks(file,n,text) VALUES(?,?,?)", (fid, n, c)).lastrowid
                 con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(p_.name), nfc(rel), nfc(c)))
             got += 1; chars += len(txt)
@@ -1365,7 +1678,7 @@ def remask(con):
     rows = con.execute(f"SELECT c.id, c.file, c.text FROM {src} WHERE {w}", [f"%{h}%" for h in KEYLIKE_HINTS]).fetchall()
     for cid, fid, txt in rows:
         if txt and KEYLIKE.search(txt):
-            t = KEYLIKE.sub("[가림]", txt); name, path = con.execute("SELECT name, path FROM files WHERE id=?", (fid,)).fetchone()
+            t = mask(txt); name, path = con.execute("SELECT name, path FROM files WHERE id=?", (fid,)).fetchone()
             con.execute("DELETE FROM fts WHERE rowid=?", (cid,))
             con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(name), nfc(path), t))
             con.execute("UPDATE chunks SET text=?, emb=NULL WHERE id=?", (t, cid)); hit += 1
@@ -1783,10 +2096,14 @@ def reuse_moved(con, fresh, lost):
 
 # every other table that keeps rows by file id. A file id is an INTEGER PRIMARY KEY, which SQLite hands out again after the
 # highest one is deleted: a row left here would then describe the next new file (its summary, author, history)
-FILE_TABLES = ("photo_emb", "cards", "docmeta", "events")
+FILE_TABLES = ("photo_emb", "cards", "docmeta", "events", "file_uid", "file_terms")   # file_uid: after relations.tombstone keeps its id (#203)
 
 
 def drop(con, fid):
+    try:
+        relations.tombstone(con, fid)   # the file's stable id waits for it to turn up again (#203)
+    except sqlite3.Error:
+        pass
     con.execute("DELETE FROM fts WHERE rowid IN (SELECT id FROM chunks WHERE file=?)", (fid,))
     con.execute("DELETE FROM chunks WHERE file=?", (fid,)); con.execute("DELETE FROM files WHERE id=?", (fid,))
     for t in FILE_TABLES:
@@ -1810,20 +2127,39 @@ class EngineEncoder:
                     "Content-Type": "application/json"}
 
     @classmethod
-    def connect(cls, name):
+    def connect(cls, name, wait=None):
+        """the engine, or None. An engine still starting (engine_starting) is waited for, up to embed_wait() seconds: the
+        indexer that gave up at once loaded its own copy of the model next to the engine's (0.7-1.1 GB, #198)"""
         if os.environ.get("FINDR_EMBED_VIA", "auto") == "local" or not name:
             return None
+        import urllib.error
         d = os.environ.get("FINDR_DATA")
-        try:
-            pw = Path(d, ".password").read_text().strip() if d else ""
-        except OSError:
-            return None
-        e = cls(f"http://127.0.0.1:{os.environ.get('FINDR_APP_PORT') or 8096}", pw, name)
-        try:
-            e.vectors(["준비"])
-            return e
-        except Exception:   # noqa: BLE001  (no engine, another encoder, an old engine without /embed)
-            return None
+        port = int(os.environ.get("FINDR_APP_PORT") or 8096)
+        wait, explicit = (embed_wait() if wait is None else wait), bool(os.environ.get("FINDR_EMBED_WAIT")) or wait is not None
+        t0, said = time.time(), False
+        while True:
+            try:
+                pw = Path(d, ".password").read_text().strip() if d else ""
+            except OSError:
+                pw = None   # a first start makes the password file
+            if pw is not None:
+                e = cls(f"http://127.0.0.1:{port}", pw, name)
+                try:
+                    e.vectors(["준비"])
+                    if said:
+                        print(f"FINDR_EMBED_WAIT the engine is up after {time.time() - t0:.0f}s", flush=True)
+                    return e
+                except urllib.error.HTTPError as x:   # it answered: another encoder (409), an old engine without /embed
+                    if x.code != 503:
+                        return None
+                except Exception:   # noqa: BLE001  (no engine yet)
+                    pass
+            if time.time() - t0 >= wait or not (explicit or engine_starting(port)):
+                return None
+            if not said:
+                said = True
+                print(f"FINDR_EMBED_WAIT the engine is starting: waiting up to {wait:.0f}s instead of loading a second copy", flush=True)
+            time.sleep(EMBED_WAIT_STEP)
 
     def vectors(self, texts):
         import base64
@@ -1838,6 +2174,44 @@ class EngineEncoder:
             r = json.loads(urllib.request.urlopen(req, timeout=300).read())
             out.append(np.frombuffer(base64.b64decode(r["vecs"]), np.float16).reshape(-1, r["dim"]))
         return np.concatenate(out) if out else np.zeros((0, 1), np.float16)
+
+
+EMBED_WAIT_START = 180   # seconds a starting engine is waited for: a forced restart came back in 16-24 s (#198); a slow PC's
+# first start loads torch and the models for a minute or more
+EMBED_WAIT_STEP = 2
+STARTING_FILE = "engine_starting.json"   # written by `findr serve` at its start, removed once its models are loaded
+
+
+def embed_wait():
+    """seconds to wait for the engine: FINDR_EMBED_WAIT (0: never), else EMBED_WAIT_START, used only while an engine says it
+    is starting"""
+    try:
+        return max(0.0, float(os.environ.get("FINDR_EMBED_WAIT") or EMBED_WAIT_START))
+    except ValueError:
+        return float(EMBED_WAIT_START)
+
+
+def engine_starting(port=None, now=None):
+    """an engine of this data folder is starting: its mark is there, recent, for this port, and its process is alive"""
+    d = os.environ.get("FINDR_DATA")
+    if not d:
+        return False
+    try:
+        m = json.loads(Path(d, STARTING_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    now = time.time() if now is None else now
+    if not isinstance(m, dict) or now - float(m.get("t") or 0) > max(EMBED_WAIT_START, embed_wait()) + 60:
+        return False   # an engine that died while starting left its mark behind
+    if port is not None and m.get("port") and int(m["port"]) != int(port):
+        return False
+    try:
+        import psutil
+        return psutil.pid_exists(int(m.get("pid") or 0))
+    except ImportError:
+        return True
+    except (ValueError, TypeError):
+        return False
 
 
 def _meta_encoder(con):
@@ -1909,8 +2283,14 @@ def embed(con, model, names_only=False):
         if eng is not None:
             try:
                 return eng.vectors(texts)
-            except Exception as e:   # noqa: BLE001  (the engine stopped or was restarted): carry on with our own copy
-                print(f"FINDR_EMBED engine gone ({type(e).__name__}): this run computes its own vectors", flush=True); eng = None
+            except Exception as e:   # noqa: BLE001  (the engine stopped or was restarted): one that comes back is waited
+                eng = EngineEncoder.connect(name)   # for (engine_starting); else carry on with our own copy
+                if eng is not None:
+                    try:
+                        return eng.vectors(texts)
+                    except Exception:   # noqa: BLE001
+                        eng = None
+                print(f"FINDR_EMBED engine gone ({type(e).__name__}): this run computes its own vectors", flush=True)
         if enc is None:
             enc = local()
         import torch
@@ -1924,13 +2304,27 @@ def embed(con, model, names_only=False):
 
     def let_go():
         nonlocal enc
-        enc = None   # vecs() loads it again when the next batch needs it
+        held, enc = enc is not None, None   # vecs() loads it again when the next batch needs it
+        return held
 
     if eng is None:
         enc = local()
     _RELEASE.append(let_go)
+    try:
+        _embed_batches(con, groups, n_rows, later, name, names_only, eng, vecs)
+    finally:
+        # the model goes with the stage: the names stage's copy stayed through reading every file's content (0.9 GB on an
+        # 8 GB laptop, #198); the next stage loads it again only when it has pieces to embed
+        if let_go in _RELEASE:
+            _RELEASE.remove(let_go)
+        if let_go():
+            from governor import give_back
+            give_back()
+
+
+def _embed_batches(con, groups, n_rows, later, name, names_only, eng, vecs):
     print(f"FINDR_EMBED_VIA {'engine' if eng is not None else 'local'} ({name})", flush=True)
-    uniq = list(groups.values()); del groups   # [chunk ids with one input], in the order above
+    uniq = list(groups.values()); groups.clear()   # [chunk ids with one input], in the order above
     t0 = last = time.time(); warned = False
     stage = "namevec" if names_only else "meaning"
     progress(stage, 0, len(uniq))   # the stage shows at once, not after its first batch
@@ -1954,8 +2348,6 @@ def embed(con, model, names_only=False):
                 print("FINDR_SLOW 이 PC에서는 큰 모델이 느립니다. 작은 모델로 바꾸면 훨씬 빨라집니다:  findr setup --lite", flush=True)
     con.commit(); print(f"FINDR_EMBED {n_rows} chunks {time.time() - t0:.0f}s (computed {len(uniq)}, identical skipped {n_rows - len(uniq)}"
                         + (f", later pieces left for a deep run {later})" if later else ")"))
-    if let_go in _RELEASE:
-        _RELEASE.remove(let_go)
 
 
 def user_idle_seconds():

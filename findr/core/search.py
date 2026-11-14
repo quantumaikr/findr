@@ -657,8 +657,9 @@ class Finder:
         loaded (no model folder, not enough memory) the lane goes off for this run, with one line on standard error"""
         if getattr(self, "_l2off", False):
             return None
-        if getattr(self, "_l2enc", None) is not None and self._l2enc[0] == self.l2target:
-            return self._l2enc[1]
+        got = getattr(self, "_l2enc", None)   # read once: the idle unload may set it to None between two reads
+        if got is not None and got[0] == self.l2target:
+            return got[1]
         try:
             import enc_eg2
             if self.l2target == "embeddinggemma-2" and not Path(enc_eg2.PATH).is_dir():
@@ -666,8 +667,9 @@ class Finder:
             free = _mem_free_gb()
             if free is not None and free < LANE2_FREE_GB:   # the larger model takes 1.2 GB on a CPU: not on a PC near its limit
                 raise MemoryError(f"{free:.1f} GB free")
-            self._l2enc = (self.l2target, enc_eg2.make_encoder(self.l2target, DEVICE, max_len=128))
-            return self._l2enc[1]
+            got = (self.l2target, enc_eg2.make_encoder(self.l2target, DEVICE, max_len=128))
+            self._l2enc = got
+            return got[1]
         except BaseException as e:   # noqa: BLE001
             if isinstance(e, (KeyboardInterrupt, SystemExit)):
                 raise
@@ -1086,7 +1088,7 @@ class Finder:
         rows = {r[5]: r for r in self.con.execute(f"""SELECT f.path, f.name, f.size, f.mtime, f.tier, f.id,
                     (SELECT text FROM chunks c WHERE c.file=f.id AND c.n=0) FROM files f WHERE f.id IN ({qm})""", list(fids))}
         return [{"path": winpath(r[0]), "name": r[1], "size": r[2], "date": fmt_time(r[3]),
-                 "kind": {1: "문서·코드", 2: "라이브러리", 3: "이름만"}.get(r[4], ""), "snippet": (r[6] or "")[:160], "score": 0, "fid": r[5]}
+                 "kind": {1: "문서·코드", 2: "라이브러리", 3: "이름만"}.get(r[4], ""), "snippet": (r[6] or "")[:160], "snippet_start": 0, "score": 0, "fid": r[5]}
                 for f in fids for r in [rows.get(f)] if r]
 
     def name_floor(self, q, res):
@@ -1159,7 +1161,7 @@ class Finder:
         rows = self.con.execute(f"""SELECT f.path, f.name, f.size, f.mtime, f.tier, f.id, (SELECT text FROM chunks c WHERE c.file=f.id AND c.n=0)
                                     FROM files f WHERE {' AND '.join(cond)} ORDER BY f.mtime DESC LIMIT ?""", args + [max(k, 30)]).fetchall()
         out = [{"path": winpath(path), "name": name, "size": size, "date": fmt_time(mt),
-                "kind": {1: "문서·코드", 2: "라이브러리", 3: "이름만"}.get(tr, ""), "snippet": (txt or "")[:160], "score": 0, "fid": fid}
+                "kind": {1: "문서·코드", 2: "라이브러리", 3: "이름만"}.get(tr, ""), "snippet": (txt or "")[:160], "snippet_start": 0, "score": 0, "fid": fid}
                for path, name, size, mt, tr, fid, txt in rows]
         n = self.con.execute(f"SELECT count(*) FROM files f WHERE {' AND '.join(cond)}", args).fetchone()[0]
         return {"parsed": show(p), "results": out, "ms": int(1000 * (time.time() - t0)),
@@ -1213,6 +1215,7 @@ class Finder:
 
     def search(self, q, k=10, mode="base"):
         import unicodedata as _ud; q = _ud.normalize("NFC", q or "")
+        _CE_USED[0] = time.time()   # a question in progress: the idle unload does not let go of its models meanwhile
         self.refresh()
         t0 = time.time(); p = parse(q); text = p["text"]; _QT[0] = t0
         pfut = None
@@ -1568,7 +1571,7 @@ class Finder:
             hits = sum(1 for w in words if len(w) >= 2 and w.lower() in nl)
             sc *= 1 + 0.4 * min(hits, 3)
             if path not in best or sc > best[path][0]:
-                best[path] = (sc, ctext, name, ext, size, mtime, tr, fid)
+                best[path] = (sc, ctext, name, ext, size, mtime, tr, fid, cid)
         res, seen = [], set()
         for path, v in sorted(best.items(), key=lambda x: -x[1][0]):   # copies (same name, same text) shown once
             key = (v[2], (v[1] or "")[:200])
@@ -1578,8 +1581,8 @@ class Finder:
             if len(res) == k:
                 break
         out = [{"path": winpath(path), "name": v[2], "size": v[4], "date": fmt_time(v[5]),
-                "kind": {1: "문서·코드", 2: "라이브러리", 3: "이름만"}.get(v[6], ""), "snippet": snip(v[1], words), "score": round(v[0] * 1000, 2),
-                "fid": v[7]}
+                "kind": {1: "문서·코드", 2: "라이브러리", 3: "이름만"}.get(v[6], ""), "snippet": snip_at(v[1], words)[0], "snippet_start": snip_at(v[1], words)[1],
+                "score": round(v[0] * 1000, 2), "fid": v[7], "chunk_id": v[8]}   # snippet_start counts inside chunk chunk_id
                for path, v in res]
         # say so when nothing is close in meaning and no words matched (the answer may be outside the indexed folders)
         weak = top_sim < (JWEAK if p.get("jenc") else WEAK) and not lex
@@ -1880,11 +1883,11 @@ def gone_map(res, top=GONE_TOP, wait=None, now=None):
 def _as_line(con, x, path):
     """line x under another file's path (a copy or a version of it): that file's own id, name and opening text, so
     nothing on the line still points at the gone file. None when the index does not know the path"""
-    r = con.execute("SELECT f.id, f.name, f.size, f.mtime, c.text FROM files f LEFT JOIN chunks c ON c.file=f.id AND c.n=0 "
+    r = con.execute("SELECT f.id, f.name, f.size, f.mtime, c.text, c.id FROM files f LEFT JOIN chunks c ON c.file=f.id AND c.n=0 "
                     "WHERE f.path=?", (_local(path),)).fetchone()
     if not r:
         return None
-    return {**x, "path": path, "fid": r[0], "name": r[1], "size": r[2], "snippet": (r[4] or "")[:160],
+    return {**x, "path": path, "fid": r[0], "name": r[1], "size": r[2], "snippet": (r[4] or "")[:160], "snippet_start": 0, "chunk_id": r[5],
             "date": fmt_time(r[3]) if r[3] else x.get("date")}
 
 
@@ -2250,12 +2253,71 @@ def ce_scores(q, res, d=None, nosumm=None, top=None):
     top: score only the first `top`; the rest keep their first-stage order below them"""
     d = d or os.environ.get("CE_DIR", str(Path(os.environ.get("FINDR_MODELS") or (Path.home() / ".findr" / "models")) / "rank"))
     nosumm = bool(os.environ.get("CE_NOSUMM")) if nosumm is None else nosumm
-    if d not in CE:
-        with _CE_LOCK:   # the warm-up loads it outside the search lock: a question at the same moment must not load a second copy
-            if d not in CE:
-                _ce_load(d)
-    tok, m = CE[d]
+    _CE_USED[0] = time.time()
+    with _CE_LOCK:   # the warm-up loads it outside the search lock: a question at the same moment must not load a second copy
+        if d not in CE:   # (also after an idle unload: loaded again here)
+            _ce_load(d)
+        tok, m = CE[d]
     return _ce_score(q, res, d, tok, m, nosumm, top)
+
+
+_CE_USED = [0.0]   # when the reranker was last asked
+IDLE_UNLOAD_MIN = 10   # minutes without a question before the reranker is let go on a PC with 12 GB or less: an 8 GB laptop's
+# engine held 2.1 GB idle, 0.8 GB without it (#198); the next question loads it again (a few seconds on a CPU)
+SMALL_RAM_GB = 12.5    # a PC sold as 12 GB reports a little less
+
+
+def idle_unload_minutes():
+    """FINDR_IDLE_UNLOAD minutes without a question before the reranker is let go (0: never); not set: IDLE_UNLOAD_MIN on a
+    PC with 12 GB or less, never on larger ones"""
+    v = os.environ.get("FINDR_IDLE_UNLOAD", "")
+    try:
+        if v != "":
+            return max(0.0, float(v))
+    except ValueError:
+        pass
+    try:
+        from governor import ram_total_gb
+        ram = ram_total_gb()
+    except Exception:   # noqa: BLE001
+        ram = None
+    return float(IDLE_UNLOAD_MIN) if ram and ram < SMALL_RAM_GB else 0.0
+
+
+def idle_unload(f=None, now=None, minutes=None):
+    """let go of the reranker (and the second lane's model) after `minutes` without a question; True when it did. They load
+    again at the next question that needs them. A question in progress keeps its own reference until it is done"""
+    minutes = idle_unload_minutes() if minutes is None else minutes
+    now = time.time() if now is None else now
+    if minutes <= 0 or not _CE_USED[0] or now - _CE_USED[0] < minutes * 60:
+        return False
+    with _CE_LOCK:
+        if not CE or now - _CE_USED[0] < minutes * 60:
+            return False
+        CE.clear()
+    if f is not None and getattr(f, "_l2enc", None) is not None:
+        f._l2enc = None   # loaded again by lane2_enc when a question needs it
+    try:
+        from governor import give_back
+        give_back()
+    except Exception:   # noqa: BLE001
+        pass
+    print(f"FINDR_IDLE_UNLOAD reranker let go after {minutes:g} min without a question", flush=True)
+    return True
+
+
+def idle_watch(f, every=30.0):
+    """the engine's idle unload, looked at every `every` seconds (a thread; nothing when it is off)"""
+    if idle_unload_minutes() <= 0:
+        return
+    def run():
+        while True:
+            time.sleep(every)
+            try:
+                idle_unload(f())
+            except Exception as e:   # noqa: BLE001
+                print(f"FINDR_IDLE_UNLOAD failed {type(e).__name__}", flush=True)
+    threading.Thread(target=run, daemon=True, name="findr-idle").start()
 
 
 MPS_FP16_RAM_GB = 15.5   # an Apple GPU with less shared memory than this holds the reranker in 16 bits
@@ -2427,10 +2489,34 @@ def winpath(s):
     return re.sub(r"^/mnt/([a-z])/", lambda m: m.group(1).upper() + ":\\", s).replace("/", "\\") if s.startswith("/mnt/") else s
 
 
+_NUMRUN = re.compile(r"\d+(?:[,.\-:/]\d+)*")   # 1,234,567 / 010-1234-5678 / 2026.11.14 / 12:30:05
+
+
+def snip_at(t, words, n=160):
+    """(snippet, start): start is where the snippet's first source character sits in `t` (the text as given, before
+    whitespace is folded). The cut never falls inside a number run: it moves out to the run's edge."""
+    t = t or ""
+    idx, chars, prev = [], [], False
+    for i, c in enumerate(t):   # fold whitespace runs to one space, remembering each kept character's place in t
+        if c.isspace():
+            if not prev:
+                idx.append(i); chars.append(" ")
+            prev = True
+        else:
+            idx.append(i); chars.append(c); prev = False
+    f = "".join(chars)
+    pos = min([i for i in (f.lower().find(w.lower()) for w in words) if i >= 0] or [0])
+    a, e = max(0, pos - 40), min(len(f), max(0, pos - 40) + n)
+    for m in _NUMRUN.finditer(f):
+        if m.start() < a < m.end():
+            a = m.start()
+        if m.start() < e < m.end():
+            e = m.end()
+    return ("…" if a else "") + f[a:e] + ("…" if e < len(f) else ""), (idx[a] if a < len(idx) else len(t))
+
+
 def snip(t, words, n=160):
-    t = re.sub(r"\s+", " ", t or "")
-    pos = min([i for i in (t.lower().find(w.lower()) for w in words) if i >= 0] or [0])
-    a = max(0, pos - 40); return ("…" if a else "") + t[a:a + n] + ("…" if a + n < len(t) else "")
+    return snip_at(t, words, n)[0]
 
 
 PAGE = """<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -2948,6 +3034,21 @@ FAILS = {}   # client -> [count, first failure time]; slows password guessing th
 TUNNEL_FAILS = [0, 0.0]   # wrong passwords through any tunnel or proxy, every client together: [count, first failure time]
 FAIL_WINDOW, FAIL_PER_CLIENT, FAIL_TUNNEL = 600, 10, 100
 FAIL_LOCK = _thl.Lock()   # the page answers on several threads
+def masked_json(body):
+    """a JSON answer with index.mask_obj applied (paths and names kept): an index made before a masking rule was added, or a
+    text read past the index (a cached answer, a summary), still never shows a key. Unchanged when it is not JSON"""
+    try:
+        import index as _ix
+    except ImportError:
+        from . import index as _ix
+    try:
+        o = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return body
+    m = _ix.mask_obj(o)
+    return body if m == o else json.dumps(m, ensure_ascii=False, default=str).encode()
+
+
 SEC_HEADERS = [("X-Content-Type-Options", "nosniff"), ("X-Frame-Options", "DENY"), ("Referrer-Policy", "no-referrer"),
                ("Cache-Control", "no-store"),
                ("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
@@ -3323,7 +3424,38 @@ def watch_parent(stop, every=5.0, alive=None, hard_exit=None):
     return th
 
 
+STARTED = time.time()   # this engine's start: /healthz says it, so the app can tell the engine it started from an older one
+LOADED = threading.Event()   # the index and the models are in: requests other than /healthz, /ready and /progress wait for it
+LOAD_WAIT = 600   # a request waits this long for the load at most (a slow PC's first start loads for a minute or more)
+STARTING_FILE = "engine_starting.json"   # cli._mark_starting: an indexer waits for an engine that says it is starting
+
+
+def _version():
+    try:
+        from findr import __version__
+        return __version__
+    except Exception:   # noqa: BLE001  (the engine run on its own, outside the package)
+        return ""
+
+
+def health():
+    """what /healthz says besides 'ok' (as headers, so the body stays 'ok' for the watchdogs that read it)"""
+    return {"version": _version(), "started": round(STARTED, 3), "pid": os.getpid(), "loaded": LOADED.is_set(), "ready": READY.is_set()}
+
+
+def _starting_done():
+    try:
+        (Path(os.environ.get("FINDR_DATA") or (Path.home() / ".findr")) / STARTING_FILE).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def serve(f, port):
+    """f: the Finder, or a function that makes it. With a function the port opens first and the index and the models load
+    behind it (LOADED); a request that needs them waits"""
+    make = f if callable(f) and not hasattr(f, "search") else None
+    if make is None:
+        LOADED.set()
     _stage_timers()
     try:   # a cap on the engine's threads from the start (engine_threads): one logical core stays with the person
         n = engine_threads()
@@ -3357,6 +3489,8 @@ def serve(f, port):
             answer_errors(self, self._post)
 
         def reply(self, code, body, ct):
+            if ct.startswith("application/json") and len(body) < 20_000_000:
+                body = masked_json(body)   # every answer the page or a tool gets: key-like values masked, as the index stores them
             self.send_response(code); self.send_header("Content-Type", ct)
             for k_, v_ in SEC_HEADERS:
                 self.send_header(k_, v_)
@@ -3364,8 +3498,17 @@ def serve(f, port):
 
         def _get(self):
             set_lang(parse_qs(urlparse(self.path).query).get("lang", [""])[0])   # every request sets it: Korean unless lang=en
-            if urlparse(self.path).path == "/healthz":   # for the watchdog: says nothing but "ok"
-                return self.reply(200, b"ok", "text/plain")
+            if urlparse(self.path).path == "/healthz":   # for the watchdog: "ok", with this engine's version and start
+                if parse_qs(urlparse(self.path).query).get("json"):
+                    return self.reply(200, json.dumps({"ok": True, **health()}).encode(), "application/json")
+                h_ = health()
+                self.send_response(200); self.send_header("Content-Type", "text/plain")
+                for k_, v_ in (("X-Findr-Version", h_["version"]), ("X-Findr-Started", h_["started"]), ("X-Findr-Pid", h_["pid"]),
+                               ("X-Findr-Loaded", int(h_["loaded"]))):
+                    self.send_header(k_, str(v_))
+                for k_, v_ in SEC_HEADERS:
+                    self.send_header(k_, v_)
+                self.send_header("Content-Length", "2"); self.end_headers(); self.wfile.write(b"ok"); return
             if urlparse(self.path).path == "/ready":   # 'answers' is not 'ready' (#68): the page says so while the engine warms up
                 return self.reply(200, json.dumps({"ready": READY.is_set()}).encode(), "application/json")
             if urlparse(self.path).path == "/canopen":   # the page shows 열기 / 폴더 only in a browser on this PC
@@ -3411,7 +3554,8 @@ def serve(f, port):
                     self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Cache-Control", "no-store")
                     self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
                 self.send_response(401); self.end_headers(); return
-            if not self.authed():
+            # the page itself shows at once and says the engine is getting ready (/ready); what needs the index waits
+            if not self.authed() or (urlparse(self.path).path not in ("/", "/index.html") and not self.loaded()):
                 return
             try:
                 self.route()
@@ -3689,8 +3833,16 @@ def serve(f, port):
                 body = (pg.read_text(encoding="utf-8") if pg.exists() else PAGE).encode(); ct = "text/html; charset=utf-8"
             self.reply(200, body, ct)
 
+        def loaded(self):
+            """the index and the models are in; else wait for them (the port opens before they load), or say 503"""
+            if LOADED.wait(LOAD_WAIT) and make_err[0] is None:
+                return True
+            self.reply(503, json.dumps({"error": M("검색 엔진을 준비하는 중입니다. 잠시 후 다시 시도해 주세요.", "The search engine is getting ready. Please try again in a moment."),
+                                        "results": []}, ensure_ascii=False).encode(), "application/json; charset=utf-8")
+            return False
+
         def _post(self):
-            if not self.authed():
+            if not self.authed() or not self.loaded():
                 return
             if self.headers.get("X-Findr") == "1" and urlparse(self.path).path == "/embed":
                 # document vectors for the indexer, from the encoder this engine already holds: one copy of the model on the
@@ -3817,6 +3969,33 @@ def serve(f, port):
     watch_parent(httpd.shutdown)
     if os.environ.get("FINDR_READY_LINE"):
         print(os.environ["FINDR_READY_LINE"], flush=True)
+    make_err = [None]
+
+    def load():
+        """the index and the models, behind the open port; a load that fails ends the engine as it did before the port"""
+        nonlocal f
+        t = time.time()
+        try:
+            f = make()
+        except BaseException as e:   # noqa: BLE001
+            make_err[0] = e
+            traceback.print_exc()
+            LOADED.set()
+            threading.Thread(target=httpd.shutdown, daemon=True).start()
+            return
+        finally:
+            _starting_done()
+        print(f"FINDR_LOADED {time.time() - t:.1f}s", flush=True)
+        LOADED.set()
+        start_warm()
+        idle_watch(lambda: f)
+
+    def start_warm():
+        if os.environ.get("FINDR_WARM", "1") != "1":
+            READY.set()
+            return
+        threading.Thread(target=warm, daemon=True).start()
+
     if os.environ.get("FINDR_WARM", "1") == "1":   # the first question loaded the reranker and GPU kernels: 2.3 s instead of 0.2 s
         def warm():
             try:
@@ -3837,13 +4016,18 @@ def serve(f, port):
                 print(f"FINDR_WARM failed {type(e).__name__}", flush=True)
             finally:
                 READY.set()
-        threading.Thread(target=warm, daemon=True).start()
+    if make is not None:
+        threading.Thread(target=load, daemon=True, name="findr-load").start()
     else:
-        READY.set()
+        _starting_done()
+        start_warm()
+        idle_watch(lambda: f)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:   # Ctrl+C: one line, not a traceback (#67); the helper servers stop with the process
         print("검색 화면을 껐습니다.", flush=True)
+    if make_err[0] is not None:
+        raise make_err[0]
 
 
 def main():

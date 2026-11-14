@@ -170,10 +170,11 @@ You can search while indexing runs. The search page shows a small progress chip 
 
 AI assistants on your PC can find your files through findr. Ask "find last month's quote from the supplier and summarize it", and the assistant searches with findr and reads the file it found. findr speaks MCP, the standard way assistants connect to local tools.
 
-Four tools are offered, so that an assistant can look around the way a person does.
+Five tools are offered, so that an assistant can look around the way a person does.
 - `search_files` returns the likely files with their odds, location, date and a short excerpt. It can be narrowed to a format (pdf, hwp, slides...), a kind of document, a period or a folder.
 - `list_folder` lists the files of one indexed folder.
 - `versions` lists the other versions of a file, including similar files that may be a version under another name.
+- `file_relations` ties one file to others: its characteristic words (tf-idf over the text findr already read, Korean particles removed), a stable file id (kept when the file is re-indexed, edited in place, moved or renamed; a copy is a new file), the id of its version family (the same one `versions` reports), and the files with exactly the same content (sha1). `findr relations PATH` prints the same as JSON. Ids are written into the index on first use; an existing index is upgraded in place with no re-read.
 - `read_file` returns the text findr already read from a file in its index; it never opens other paths.
 
 There are 14 kinds of document, such as minutes, contracts, quotes, reports, official letters, regulations and lecture material. The kind is read from what the index already holds, with no extra reading. Measured on real documents it is right about 65% of the time, so only files that are surely of another kind are left out; the rest stay in the list, marked as uncertain.
