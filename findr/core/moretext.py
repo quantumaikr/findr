@@ -178,6 +178,9 @@ def _walk(msg):
         part, depth = stack.pop()
         seen += 1
         try:
+            if part.get_content_maintype() == "message" and depth > 0:   # a mail inside a mail (forwarded as attachment):
+                atts.append((part.get_filename() or "", part))              # its name only, never its text or attachments
+                continue
             if part.is_multipart():
                 if depth < MAIL_MAX_DEPTH:
                     stack.extend((c, depth + 1) for c in reversed(part.get_payload()))
@@ -214,7 +217,7 @@ def _attachment_text(name, part, deadline=None):
     import tempfile
     import time
     ext = Path(name).suffix.lower()
-    if ext not in _ATT_EXT or (deadline is not None and time.monotonic() > deadline):
+    if ext not in _ATT_EXT or part.get_content_maintype() in ("message", "multipart") or (deadline is not None and time.monotonic() > deadline):
         return ""
     try:
         data = part.get_payload(decode=True)

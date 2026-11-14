@@ -32,7 +32,8 @@ DOC = {".pdf", ".docx", ".xlsx", ".pptx", ".hwpx", ".hwp", ".doc", ".ppt", ".xls
        ".xlsb", ".ods", ".rtf", ".eml", ".emlx", ".mbox", ".pages", ".numbers"}   # moretext.py (sheets, RTF, e-mail), keynote_text (iWork)
 AUD = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".wma", ".ogg"}   # transcribed locally by stt_cache.py (faster-whisper)
 OLD = {".hwp", ".doc", ".ppt", ".xls"}   # old binary formats: converted locally by LibreOffice (+ H2Orestart for hwp), cached
-SECRET = re.compile(r"^(\.env(\..*)?|\.netrc|\.pgpass|\.git-credentials|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|credentials(\.json|\.ya?ml|\.txt)?"
+SECRET = re.compile(r"^(\.env(\..*)?|\.envrc|\.netrc|_netrc|\.pgpass|pgpass\.conf|\.npmrc|\.pypirc|\.git-credentials|kubeconfig(\.ya?ml)?"
+                    r"|id_(rsa|dsa|ecdsa|ed25519)(_sk)?(\.pub)?|credentials(\.json|\.ya?ml|\.txt|\.csv)?|.*_credentials\.csv|.*_accesskeys\.csv"
                     r"|secrets?\.(json|ya?ml|toml|txt|env)|.*\.(pem|pfx|p12|kdbx|kdb|keystore|jks|ppk|1pux|1pif)"
                     r"|\.(bash|zsh|sh|python|psql|mysql|node_repl|lesshst)_?history|\.history|ConsoleHost_history\.txt"   # shell histories hold typed tokens
                     r"|(sign|km)(Cert\.der|Pri\.key)"   # a Korean joint certificate (공동인증서): the certificate and its private key
@@ -56,9 +57,19 @@ CERT_EXTS = {".der", ".key", ".pfx", ".p12", ".cer", ".crt", ".pem"}
 # a CSV whose name says password / 비밀번호 but is not one of the known export names: secret when its header row is a
 # credential export (a password column with a user name or site column); 'password_policy_review.csv' with other columns is read
 CRED_NAME = re.compile(r"(password|비밀번호|passwd).*\.csv$", re.I)
-_CRED_PW = {"password", "passwd", "pwd", "pass", "login_password", "비밀번호", "암호", "패스워드"}
-_CRED_ID = {"username", "user", "user name", "login", "login_username", "email", "e-mail", "account", "아이디", "사용자", "사용자 이름",
-            "계정", "url", "login_uri", "website", "site", "web site", "origin", "hostname", "사이트", "웹사이트", "주소"}
+# column names compared without spaces, '_' and '-' ('User Name', 'login_username', 'e-mail')
+_CRED_PW = {"password", "passwd", "pwd", "pass", "passcode", "loginpassword", "비밀번호", "비번", "암호", "패스워드", "secret"}
+_CRED_ID = {"username", "user", "userid", "login", "loginusername", "loginname", "email", "mail", "account", "id", "아이디", "사용자",
+            "사용자이름", "계정", "url", "uri", "loginuri", "website", "site", "origin", "originurl", "hostname", "host", "사이트",
+            "웹사이트", "주소", "이메일", "name", "title"}
+_CRED_PW_IN = ("password", "passwd", "비밀번호", "패스워드")   # inside a longer column name ('Password (encrypted)')
+_CRED_ID_IN = ("username", "login", "아이디", "url")
+# kinds of file whose first line is looked at: a password export saved as .txt or .tsv is one too
+CRED_EXTS = {".csv", ".tsv", ".txt"}
+# copy markers people's systems add to a name: 'Copy of x', 'x 2', 'x (1)', 'x copy', 'x - Copy', 'x - 복사본', 'x 복사본'
+_COPY_PRE = re.compile(r"^(?:copy of |사본 - |복사본 - )+", re.I)
+_COPY_SUF = re.compile(r"(?:\s*-\s*(?:복사본|사본|copy)(?:\s*\(\d+\))?|\s+(?:복사본|사본|copy)(?:\s+\d{1,3})?|\s*\(\d{1,3}\)|\s+\d{1,3})$", re.I)
+_SECOND_EXT = re.compile(r"^(.+\.[^.]+)\.(txt|text|bak|old|orig|backup|copy|download|crdownload|part)$", re.I)
 # '.key' is both a cryptographic key and an Apple Keynote deck: Keynote is a ZIP, a key file is not (see is_secret)
 # values that look like keys are masked inside indexed text (a key pasted into a note or log never reaches the index)
 # the name of a setting that holds a secret, with words before it (AWS_SECRET_ACCESS_KEY, client_secret, DB_PASSWORD) and
@@ -152,34 +163,85 @@ def secret_path(s):
 
 
 def cred_header(head):
-    """True when the first line of a CSV (bytes or text) is a credential export's header: a password column and a user
-    name or site column"""
+    """True when the first line of a CSV / TSV / text file (bytes or text) is a credential export's header: two or more
+    short columns, one a password column and one a user name or site column (English or Korean)"""
     if isinstance(head, bytes):
-        head = head[:4096].decode("utf-8-sig", "replace")
-    line = (head or "").lstrip("\ufeff").splitlines()[0] if (head or "").strip() else ""
-    cols = {c.strip().strip('"\'').strip().casefold() for c in re.split(r"[,;\t]", line)}
-    return bool(cols & _CRED_PW) and bool(cols & _CRED_ID)
+        b = head[:4096]
+        head = b.decode("utf-16", "replace") if b[:2] in (b"\xff\xfe", b"\xfe\xff") else _decode_text(b)
+    line = next((x for x in (head or "").lstrip("\ufeff").splitlines() if x.strip()), "")
+    cols = [unicodedata.normalize("NFC", c).strip().strip('"\'').strip().casefold() for c in re.split(r"[,;\t|]", line)]
+    cols = [re.sub(r"[\s_\-]+", "", c) for c in cols if c]
+    if len(cols) < 2 or any(len(c) > 40 for c in cols):
+        return False   # a sentence, not a header
+    pw = [c for c in cols if c in _CRED_PW or any(w in c for w in _CRED_PW_IN)]
+    who = [c for c in cols if c not in pw and (c in _CRED_ID or any(w in c for w in _CRED_ID_IN))]
+    return bool(pw) and bool(who)
+
+
+def name_forms(name):
+    """the forms of a file name the secret rules are tried on: NFC and case-folded, with trailing spaces and dots dropped
+    (Windows ignores them: '.env ' is '.env'), backup endings, a second extension ('passwords.csv.txt') and copy markers
+    ('Copy of logins.csv', 'logins 2.csv', '비밀번호 - 복사본.csv') taken off"""
+    n = nfc(str(name or "")).casefold()
+    n = n.rstrip(" .") or n
+    forms, todo = [], [n]
+    while todo and len(forms) < 24:
+        x = todo.pop()
+        if not x or x in forms:
+            continue
+        forms.append(x)
+        todo.append(BAK.sub("", x).rstrip(" ."))
+        m = _SECOND_EXT.match(x)
+        if m:
+            todo.append(m.group(1).rstrip(" ."))
+        stem, ext = os.path.splitext(x)
+        if ext and " " in ext:   # 'logins.csv 2' is not an extension
+            stem, ext = x, ""
+        s2 = _COPY_SUF.sub("", _COPY_PRE.sub("", stem)).rstrip(" .")
+        if s2 and s2 != stem:
+            todo.append(s2 + ext)
+        s3 = _COPY_PRE.sub("", x)
+        if s3 and s3 != x:
+            todo.append(s3)
+    return forms
+
+
+_SECRET_DIRS_CF = {d.casefold() for d in SECRET_DIRS}
 
 
 def secret_name(p):
-    """the rules that need only the path (names and certificate folders): what a secret file is, without opening it"""
-    return bool(SECRET.search(p.name) or SECRET.search(BAK.sub("", p.name)) or secret_path(p))
+    """the rules that need only the path (names, certificate folders, folders of keys such as .ssh and .kube): what a
+    secret file is, without opening it"""
+    if any(SECRET.search(f) for f in name_forms(p.name)) or secret_path(p):
+        return True
+    parts = re.split(r"[\\/]+", nfc(str(p)))
+    return any(x.casefold().rstrip(" .") in _SECRET_DIRS_CF for x in parts[:-1])
 
 
-def is_secret(p: Path, head=None):
-    """key and credential files are never read; a '.key' file is a secret unless it is a Keynote deck (a ZIP); a CSV named
-    with password / 비밀번호 that is not a known export name is secret when its header is a credential export. `head`: the
-    file's first bytes when they are at hand (a mail attachment); otherwise they are read from `p`"""
+def _head(p):
+    try:
+        with open(p, "rb") as f:
+            return f.read(4096)
+    except OSError:
+        return b""   # nothing to read: nothing to hide either
+
+
+def is_secret(p: Path, head=None, sniff=True, follow=True):
+    """key and credential files are never read; a '.key' file is a secret unless it is a Keynote deck (a ZIP); a CSV, TSV
+    or text file whose first line is a credential export's header is secret whatever its name. `head`: the file's first
+    bytes when they are at hand (a mail attachment); otherwise they are read from `p`. sniff=False reads the first line
+    only of a file whose name speaks of passwords (the scan of names: the content stage looks at the others).
+    follow: a link is judged by where it points as well (a harmless name linking to a key, or into .ssh)"""
     if secret_name(p):
         return True
-    if CRED_NAME.search(BAK.sub("", nfc(p.name))):
-        if head is None:
-            try:
-                with open(p, "rb") as f:
-                    head = f.read(4096)
-            except OSError:
-                return False   # nothing to read: nothing to hide either
-        return cred_header(head)
+    if follow and head is None:
+        t = link_target(p)
+        if t is not None and is_secret(Path(t), sniff=sniff, follow=False):
+            return True
+    forms = name_forms(p.name)
+    if any(real_ext(Path(f)) in CRED_EXTS for f in forms) and (head is not None or sniff or any(CRED_NAME.search(f) for f in forms)):
+        if cred_header(_head(p) if head is None else head):
+            return True
     if real_ext(p) == ".key":
         try:
             with open(p, "rb") as f:
@@ -189,9 +251,20 @@ def is_secret(p: Path, head=None):
     return False
 
 
-def tier(p: Path):
+def link_target(p):
+    """where a path really leads when it is, or goes through, a link (or a junction, a Windows short name); None when it
+    leads where it says"""
+    try:
+        a = os.path.abspath(str(p))
+        r = os.path.realpath(a)
+    except (OSError, ValueError):
+        return None
+    return None if os.path.normcase(r) == os.path.normcase(a) else r
+
+
+def tier(p: Path, sniff=False):
     s = p.as_posix(); ext = real_ext(p)
-    if is_secret(p):
+    if is_secret(p, sniff=sniff, follow=os.path.islink(p)):   # the walk does not go through linked folders: only the file itself can be a link
         return 0
     if ext in AUD:
         return 1 if transcript(p) is not None else 3
@@ -695,6 +768,8 @@ def _main():
                 seen.add(s)
                 tick("names", k, len(roots), scanned=scanned + len(seen), folder=_short(dpl)[len(str(root)):].lstrip("/\\")[:80] or root.name)
                 tr = tier(p)
+                if tr == 1 and s in known and known[s][3] == 0:
+                    tr = tier(p, sniff=True)   # found secret by its first line when read: still so unless that changed
                 if tr in (1, 2) and cloud_only(st):
                     tr = 3   # OneDrive 'online-only': reading it would download it; found by name until it is on the PC
                 if s in known and known[s][0] == st.st_size and abs(known[s][1] - st.st_mtime) < 1 and known[s][3] == tr:
@@ -1187,14 +1262,17 @@ def read_wave(con, root, a):
             locked += 1
             continue
         p = Path(s)
-        cs = chunks(txt)[: (1 if tr == 2 else 2000)] or [""]
+        cred = txt and any(real_ext(Path(f)) in CRED_EXTS for f in name_forms(p.name)) and cred_header(txt[:4096])
+        cs = [""] if cred else chunks(txt)[: (1 if tr == 2 else 2000)] or [""]   # a password export under any name: its name only
         con.execute("DELETE FROM fts WHERE rowid IN (SELECT id FROM chunks WHERE file=? AND n>=0)", (fid,))
         con.execute("DELETE FROM chunks WHERE file=? AND n>=0", (fid,))
+        if cred:
+            con.execute("UPDATE files SET tier=0 WHERE id=?", (fid,))
         rel = s[len(root.as_posix()):]
         for n, c in enumerate(cs):
             cid = con.execute("INSERT INTO chunks(file,n,text) VALUES(?,?,?)", (fid, n, c)).lastrowid
             con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(p.name), nfc(rel), nfc(c)))
-        part = first and tr == 1 and ext not in DATA and (len(txt) >= GIST - 64 or (ext not in RICH and _size(s) > GIST))   # cut at the gist
+        part = not cred and first and tr == 1 and ext not in DATA and (len(txt) >= GIST - 64 or (ext not in RICH and _size(s) > GIST))   # cut at the gist
         # (plain text is read by bytes: Korean takes 3 per character, so the file size tells): the deep run reads the rest
         con.execute("UPDATE files SET pending=? WHERE id=?", (2 if part else 0, fid))
         if (i + 1) % 200 == 0:
