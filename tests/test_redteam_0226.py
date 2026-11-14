@@ -46,6 +46,26 @@ def test_lines_without_both_kinds_of_column_are_not_headers(text):
     assert not index.cred_header(text), text
 
 
+# ---------------------------------------------------------------- 2. assignment operators and typed declarations
+@pytest.mark.parametrize("line", [
+    "DB_PASSWORD := {v}", "API_TOKEN ?= {v}", "SMTP_PASSWORD += {v}", "opts.token ||= '{v}'", "password ::= {v}",
+    "token <- \"{v}\"", "secret -> {v}", "apiKey => '{v}'", "\tdbPassword := \"{v}\"", "var dbPassword string = \"{v}\"",
+    "const apiKey: string = \"{v}\";", "String password = \"{v}\";", "val token: String = \"{v}\"", "let secret = \"{v}\"",
+    "private static final String DB_PASSWORD = \"{v}\";", "var apiToken []byte = []byte(\"{v}\")", "password ??= '{v}'",
+    "std::string password = \"{v}\";", "let mut token: Option<String> = Some(\"{v}\".into());",
+])
+def test_assignments_are_masked(line):
+    out = index.mask(line.format(v=V))
+    assert V not in out, out
+
+
+@pytest.mark.parametrize("line", ["if password == \"{v}\":", "password != {v}", "token <= {v}", "token >= {v}",
+                                  "password =~ /{v}/", "Password::Hash({v})"])
+def test_comparisons_are_not_assignments(line):
+    s = line.format(v=V)
+    assert index.mask(s) == s
+
+
 # ---------------------------------------------------------------- 6. labels spelled to pass, HTML
 @pytest.mark.parametrize("label", ["pаssword", "ｐａｓｓｗｏｒｄ", "PASS​WORD",
                                    "pass­word", "pаss‍wоrd", "\U0001d429\U0001d41a\U0001d42c\U0001d42c\U0001d430\U0001d428\U0001d42b\U0001d41d",

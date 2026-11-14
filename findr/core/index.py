@@ -100,9 +100,16 @@ _PEM_B64 = r"LS0tLS1CRUdJTi[A-Za-z0-9+/=]*(?:\r?\n[A-Za-z0-9+/=]{8,})*"
 # 'password: correct horse battery staple', '비밀번호: ...', a short JSON "password": "..."). Quoted: what is inside the
 # quotes; not quoted: to the end of the line (a phrase with spaces). Korean labels as well
 # 'PW:', 'pw=', 'P/W:' as a word of their own (a note's 'ID: kim / PW: ...'), at a line's start or after a space
-_SEP = r"""['"]?\s*(?:=>|->|[:=：](?!=))"""
-# (a word not followed by a separator is passed over before its letters are looked at: most words of a text are such)
-_LABEL = (r"(?:(?=[A-Za-z0-9_.\-]{1,64}" + _SEP + r")" + _KV_NAME + r"|(?:비밀번호|패스워드|비번|암호)"
+# Separators (red-team 0.2.26: Makefile ':=' / '?=' / '+=', Go 'dbPassword := ...' and typed declarations passed): ':', '=',
+# '=>', '->', '<-', ':=', '::=', '?=', '??=', '+=', '||=', and a type between the name and an assignment (Go 'var
+# dbPassword string = ...', 'apiKey: string = ...' takes ':' already). Comparisons ('==', '!=', '<=', '>=', '=~') are not
+_OP = r"(?:=>|->|<-(?!-)|::=|:=|\?\?=|\?=|\+=|\|\|=|[=：](?![=~])|:(?![:=]))"
+_SET = r"(?:::=|:=|\?\?=|\?=|\+=|\|\|=|=(?![=~>]))"
+_TYPED = r"[ \t]+[A-Za-z_*&\[][A-Za-z0-9_<>\[\]?.:*& ]{0,40}?[ \t]*" + _SET   # after a space: a word's own letters are not a type
+_SEP = r"""['"]?(?:\s*""" + _OP + "|" + _TYPED + ")"
+# (a word not followed by a separator is passed over before its letters are looked at: most words of a text are such; and
+# only where a word starts, as _KV_NAME itself)
+_LABEL = (r"(?:(?<![A-Za-z0-9_.\-/])(?=[A-Za-z0-9_.\-]{1,64}" + _SEP + r")" + _KV_NAME + r"|(?:비밀번호|패스워드|비번|암호)"
           r"|(?<!\S)(?i:p/?w)(?=[ \t]*[:：]|=(?!=)))")   # 'pw = x' with spaces is code
 # not a value but one left for the next lines (YAML 'password: |', TOML '= """', a '\' line continuation): see _block_mask
 _NOT_VALUE = r"""(?![|>][+\-0-9]*[ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)|\\[ \t]*(?:\r?\n|$)|"{3}|'{3})"""
@@ -299,7 +306,7 @@ def mask(text):
 _TRIPLE = re.compile(r"(?P<h>" + _LABEL + _SEP + r"""[ \t]*(?P<q>"{3}|'{3}))(?P<v>[\s\S]{0,20000}?)(?=(?P=q)|\Z)""")
 _TRIPLE_HINT = re.compile(r"""[:=][ \t]*(?:"{3}|'{3})""")
 _BLOCK_END = set(":=：|>\\+-0123456789")   # how a label line that leaves its value to the next lines ends
-_BLOCK_HEAD = re.compile(r"(?P<ind>[ \t]*)(?:-[ \t]+)?['\"]?" + _LABEL + r"""['"]?[ \t]*[:=][ \t]*(?P<k>[|>][+\-0-9]*|\\)?[ \t]*(?:#.*)?\r?$""")
+_BLOCK_HEAD = re.compile(r"(?P<ind>[ \t]*)(?:-[ \t]+)?['\"]?" + _LABEL + r"""['"]?[ \t]*(?:::=|:=|\?\?=|\?=|\+=|\|\|=|[:=])[ \t]*(?P<k>[|>][+\-0-9]*|\\)?[ \t]*(?:#.*)?\r?$""")
 
 
 def _block_mask(text):
