@@ -100,21 +100,83 @@ def _engine_search(query, limit, ask=None):
     except Exception:
         return None
     got, roots = r.get("results") or [], _deny_roots()
-    kept = [x for x in got if not _denied(x.get("path"), roots)]
+    con = _db()
+    kept = [x for x in got if not _denied(x.get("path"), roots) and _tier_ok(con, x.get("path"))]
     if len(kept) < len(got) and len(kept) < limit and ask is None and len(got) >= limit:
         more = _engine_search(query, limit, ask=min(50, limit + 2 * (len(got) - len(kept)) + 5))
         if more is not None:
+            if con is not None:
+                con.close()
             return more
+    kept = kept[:limit]
+    probs = _reprob(kept, r.get("p_none"), bool(r.get("note")))
     out = []
-    con = _db() if any(x.get("chunk_id") is not None for x in kept[:limit]) else None
-    for x in kept[:limit]:
+    for x, pr in zip(kept, probs):
         out.append({"name": x.get("name"), "path": x.get("path"), "modified": x.get("date"),
-                    "chance": round(x["prob"], 2) if x.get("prob") is not None else None,
+                    "chance": round(pr, 2) if pr is not None else None,
                     "excerpt": _mask(x.get("snippet") or "")[:300], "excerpt_start": x.get("snippet_start"),
                     **_excerpt_place(con, x.get("chunk_id"), x.get("snippet_start"))})
     if con is not None:
         con.close()
-    return {"results": out, "note": r.get("note") or "", "engine": "full"}
+    return {"results": out, "note": _note(out, r.get("note")), "engine": "full"}
+
+
+def _tier_ok(con, p):
+    """an engine result the index keeps as a secret (tier 0: found by its content, a credential header or a key, or by a
+    rule of an older run) is left out as the index search leaves it out"""
+    if con is None or not p:
+        return True
+    for f in _path_forms(str(p)):
+        row = con.execute("SELECT tier FROM files WHERE path=? OR nfc(path)=?", (f, unicodedata.normalize("NFC", f))).fetchone()
+        if row:
+            return row[0] in (1, 2, 3)
+    return True
+
+
+NOTE_NONE = "Nothing matched. Try other words, or list_folder to look around."
+NOTE_UNSURE = "No file clearly matches; these are the closest, most likely first."
+
+
+def _note(out, engine_note):
+    """the note from what is shown, never from what was left out: the engine's own note can say whether a word is in some
+    file anywhere in the index, a file in the data folder or a deny folder included (an existence oracle). Only its gist
+    is kept, in fixed words"""
+    if not out:
+        return NOTE_NONE
+    return NOTE_UNSURE if engine_note else ""
+
+
+_CALIB = [None]
+
+
+def _reprob(kept, p_none, noted):
+    """each shown file's chance, from the files shown only (the engine's odds depend on the rank and the top score of its whole
+    list, files left out here included): the engine's calibration (search.add_probs) on the kept list. The engine's chances
+    when it gave no scores or the calibration is not on this PC"""
+    import math
+    eng = [x.get("prob") for x in kept]
+    ce = [x.get("ce") for x in kept]
+    if not kept or any(c is None for c in ce) or any(x.get("photo_p") is not None for x in kept):
+        return eng
+    if _CALIB[0] is None:
+        try:
+            f = os.environ.get("CALIB_P") or str(paths.MODELS / "gate" / "calibP.json")
+            with open(f, encoding="utf-8") as fh:
+                _CALIB[0] = json.load(fh)["w"]
+        except (OSError, ValueError, KeyError):
+            _CALIB[0] = []
+    w = _CALIB[0]
+    if not w:
+        return eng
+    top = max(ce); second = sorted(ce, reverse=True)[1] if len(ce) > 1 else -1.0
+    pn = p_none if p_none is not None else 0.5
+    out = []
+    for i, c in enumerate(ce):
+        pos = i + 1
+        f = [1.0, c, c - top, math.log(pos), 1.0 if pos == 1 else 0.0, (top - second) if pos == 1 else 0.0, pn, 1.0 if noted else 0.0, 0.0]
+        z = sum(a * b for a, b in zip(w, f))
+        out.append(1 / (1 + math.exp(-z)))
+    return out
 
 
 def _excerpt_place(con, cid, start):
