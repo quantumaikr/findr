@@ -76,29 +76,58 @@ _SECOND_EXT = re.compile(r"^(.+\.[^.]+)\.(txt|text|bak|old|orig|backup|copy|down
 # values that look like keys are masked inside indexed text (a key pasted into a note or log never reaches the index)
 # the name of a setting that holds a secret, with words before it (AWS_SECRET_ACCESS_KEY, client_secret, DB_PASSWORD) and
 # at most two after it (DB_PASSWORD_PROD); 'tokenizer' or 'max_tokens' is not one
-_KV_NAME = (r"(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[_.\-]){0,4}(?i:api[_-]?key|secret(?:[_-]?access)?(?:[_-]?key)?|password|passwd|pwd"
+_KV_NAME = (r"(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[_.\-]){0,4}(?i:api[_-]?key|secret(?:[_-]?access)?(?:[_-]?key)?|password|passwd|passphrase|pwd"
             r"|token|private[_-]?key)(?:[_.\-][A-Za-z0-9]+){0,2}(?![A-Za-z0-9])")
 # PEM / PGP private key: to its END line; with none (a note cut short), to the end of the text or to the first blank line
-# that is not followed by more key lines (a PGP block has one blank line after its headers)
-_PEM = (r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----(?:[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"
+# that is not followed by more key lines (a PGP block has one blank line after its headers). Any case, any spacing, and its
+# header split over two lines ('-----BEGIN RSA PRIVATE\nKEY-----')
+_PEM_LINE = r"-----[ \t]*{0}\s+(?:[A-Z0-9]+\s+){{0,4}}?PRIVATE\s+KEY(?:\s+BLOCK)?[ \t]*-----"
+_PEM = (r"(?i:" + _PEM_LINE.format("BEGIN") + r")(?:[\s\S]*?(?i:" + _PEM_LINE.format("END") + r")"
         r"|[\s\S]*?(?=\n[ \t]*\r?\n(?![ \t]*[A-Za-z0-9+/=]{20,}[ \t]*(?:\r?\n|$))|\Z))")
+# a PEM block written out in base64 ('LS0tLS1CRUdJTi' is '-----BEGIN' in base64): the whole blob, over its lines
+_PEM_B64 = r"LS0tLS1CRUdJTi[A-Za-z0-9+/=]*(?:\r?\n[A-Za-z0-9+/=]{8,})*"
+# a value under a label that names a secret: the label is kept, the value masked whatever its length (red-team 0.2.24:
+# 'password: correct horse battery staple', '비밀번호: ...', a short JSON "password": "..."). Quoted: what is inside the
+# quotes; not quoted: to the end of the line (a phrase with spaces). Korean labels as well
+_LABEL = r"(?:" + _KV_NAME + r"|(?:비밀번호|패스워드|비번|암호))"
+_SEP = r"""['"]?\s*[:=：](?!=)"""
+_LABELED = (r'(?P<lq>' + _LABEL + _SEP + r'[ \t]*")(?:\\.|[^"\\\r\n])+(?=")'
+            r"|(?P<ls>" + _LABEL + _SEP + r"[ \t]*')(?:\\.|[^'\\\r\n])+(?=')"
+            r"|(?P<lu>" + _LABEL + _SEP + r"""[ \t]*['"]?)(?=[^\s'"])[^\r\n]+"""
+            # XML: <password>...</password>, and a KeePass entry's <Key>Password</Key><Value>...</Value>
+            r"|(?P<lx><(?i:password|passwd|pwd|passphrase|secret|token|api[_-]?key|client[_-]?secret|private[_-]?key|비밀번호|암호)"
+            r"(?:\s[^<>]*)?>)[^<]+(?=</)"
+            r"|(?P<lk>(?i:<Key>\s*(?:password|passwd|비밀번호|암호)\s*</Key>\s*<Value(?:\s[^<>]*)?>))[^<]+(?=</Value>)")
 KEYLIKE = re.compile(r"(sk-[A-Za-z0-9_\-]{20,}|sk-ant-[A-Za-z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|hf_[A-Za-z0-9]{30,}"
                      r"|github_pat_[A-Za-z0-9_]{22,}|glpat-[A-Za-z0-9_\-]{20,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}"
-                     r"|xox[abposr]-[A-Za-z0-9\-]{10,}|AIza[0-9A-Za-z_\-]{35}|" + _PEM +
+                     r"|xox[abposr]-[A-Za-z0-9\-]{10,}|AIza[0-9A-Za-z_\-]{35}|" + _PEM + r"|" + _PEM_B64 +
                      r"|Private-Lines:\s*\d+(?:\s+[A-Za-z0-9+/=]{4,}(?![\-:A-Za-z0-9+/=]))+"   # a PuTTY key's private part
                      r"|(?i:bearer)\s+[A-Za-z0-9\-._~+/]{16,}=*"
                      r"|eyJ[A-Za-z0-9_\-]{5,}\.eyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]*"   # a JWT
-                     r"|(?P<url>\b[A-Za-z][A-Za-z0-9+.\-]*://[^\s:/@'\"<>]+:)[^\s@/'\"<>]+(?=@)"   # scheme://user:PASSWORD@host
-                     r"|" + _KV_NAME + r"['\"]?\s*[:=]\s*['\"]?[^\s'\"]{12,})")
+                     r"|npm_[A-Za-z0-9]{30,}|SG\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}|GOCSPX-[A-Za-z0-9_\-]{20,}"   # npm, SendGrid,
+                     r"|ya29\.[A-Za-z0-9_\-]{20,}"   # a Google OAuth client secret and access token
+                     r"|(?P<hook>hooks\.slack\.com/services/)[A-Za-z0-9/_\-]+"   # a Slack webhook
+                     # Azure storage: AccountKey=..., SharedAccessSignature=..., a SAS URL's sig=...
+                     r"|(?P<az>(?i:AccountKey|SharedAccessKey|SharedAccessSignature)\s*=\s*)[^;\s'\"<>]+"
+                     r"|(?P<sig>(?<![A-Za-z0-9])sig=)[^&;\s'\"<>]+"
+                     # Twilio: an SK / AC id or a 32-hex auth token after 'twilio' or 'auth' on the same line
+                     r"|(?P<tw>(?i:\b(?:twilio|auth(?:[_ -]?token)?)\b)[^\r\n]{0,80}?)(?<![A-Za-z0-9])(?:SK|AC)?[0-9a-fA-F]{32}(?![0-9A-Za-z])"
+                     # scheme://user:PASSWORD@host, the password up to the last '@' before the host (it may hold '@' and
+                     # '/'); 'host:8080/path@x' is a port, not a password
+                     r"""|(?P<url>\b[A-Za-z][A-Za-z0-9+.\-]*://[^\s:/@'"<>]+:)(?!\d+(?:[/?#\s'"<>]|$))[^\s'"<>]+(?=@[^\s@/'"<>]+(?:[:/?#\s'"<>]|$))"""
+                     r"|" + _LABELED + r")")
+_KEEP = ("url", "lq", "ls", "lu", "lx", "lk", "hook", "az", "sig", "tw")
 # a fixed piece of text every KEYLIKE match contains: SQLite LIKE (ASCII case-insensitive, '_' any one character) keeps only the
 # chunks that may hold one, so the regex runs on a few rows instead of all of them (a run with no change scanned 920k chunks
 # in Python for 58 s, #67). Keep in step with KEYLIKE: tests/test_mask_prefilter.py checks every alternative is covered
-KEYLIKE_HINTS = ("sk-", "akia", "gh_", "hf_", "xox", "aiza", "private key", "api", "secret", "password", "passwd", "token",
-                 "github_pat", "glpat", "k_live", "k_test", "private-lines", "bearer", "eyj", "://", "pwd", "private_key", "privatekey")
+KEYLIKE_HINTS = ("sk-", "akia", "gh_", "hf_", "xox", "aiza", "private", "api", "secret", "password", "passwd", "token",
+                 "github_pat", "glpat", "k_live", "k_test", "private-lines", "bearer", "eyj", "://", "pwd", "private_key", "privatekey",
+                 "-----", "ls0tls1crudjti", "npm_", "sg.", "gocspx-", "ya29.", "hooks.slack.com", "accountkey", "sharedaccess",
+                 "sig=", "twilio", "auth", "비밀번호", "패스워드", "비번", "암호", "passphrase")
 
 
 def _mask_one(m):
-    return (m.group("url") or "") + "[가림]"
+    return next((m.group(k) for k in _KEEP if m.group(k)), "") + "[가림]"
 
 
 def mask(text):

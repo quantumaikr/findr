@@ -10,7 +10,13 @@ EXAMPLES = ["sk-" + "a" * 24, "sk-ant-" + "b" * 24, "AKIA" + "A" * 16, "gh" + "p
             "token=" + "l" * 16, "sk_" + "live_" + "m" * 20, "rk_" + "test_" + "m" * 20, "github_" + "pat_" + "n" * 24,
             "gl" + "pat-" + "o" * 20, "xo" + "xp-" + "p" * 12, "Bearer " + "q" * 20, "eyJ" + "r" * 8 + ".eyJ" + "s" * 8 + "." + "t" * 8,
             "-----BEGIN PGP PRIVATE KEY BLOCK-----\nabc", "Private-Lines: 1\nAAAA" + "u" * 20, "https://kim:" + "v" * 8 + "@example.com",
-            '{"client_secret": "' + "w" * 16 + '"}', "DB_PWD=" + "x" * 16, "private_key: " + "y" * 16]
+            '{"client_secret": "' + "w" * 16 + '"}', "DB_PWD=" + "x" * 16, "private_key: " + "y" * 16,
+            # red-team 0.2.24
+            "비밀번호: z", "암호 = z", "패스워드：z", "비번=z", "password: a b c", "<passphrase>z</passphrase>",
+            "<Key>Password</Key><Value>z</Value>", "AccountKey=" + "z" * 8, "SharedAccessSignature=sv=1", "x?sig=" + "z" * 8,
+            "npm" + "_" + "z" * 36, "S" + "G." + "z" * 20 + "." + "z" * 20, "GOC" + "SPX-" + "z" * 24, "ya" + "29." + "z" * 24,
+            "https://hooks.slack.com/services/T0/B0/zz", "twilio SK" + "0a" * 16, "auth token " + "0a" * 16,
+            "LS0tLS1CRUdJTi" + "z" * 20, "-----BEGIN RSA PRIVATE\nKEY-----\nabc", "-----begin private key-----\nabc"]
 
 
 def _db():

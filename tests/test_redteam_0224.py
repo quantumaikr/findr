@@ -170,3 +170,50 @@ def test_ordinary_json_and_xml_are_not_password_exports():
                     ("feed.xml", "<rss><channel><title>t</title><link>https://example.invalid</link></channel></rss>"),
                     ("form.json", '{"fields": ["user", "password"]}')):
         assert not index.secret_text(name, t), name
+
+
+# ---------------------------------------------------------------- 6, 7. masking
+P1 = "Gor" + "illa88zzQx"
+MASKED = [
+    "은행 비밀번호: " + P1, "공유기 암호 = " + P1, "패스워드：" + P1, "비번=" + P1,
+    "password: correct horse " + P1, '{"password": "x' + P1 + '"}', '{"pwd": "' + P1[:3] + '"}', "token: " + P1[:2],
+    "[db]\npasswd = " + P1, "client_secret: '" + P1 + "'", "<password>" + P1 + "</password>", "<api_key>" + P1 + "</api_key>",
+    "<Key>Password</Key><Value>" + P1 + "</Value>",
+    "DefaultEndpointsProtocol=https;AccountName=fakeacct;AccountKey=" + P1 + "==;EndpointSuffix=core.windows.net",
+    "SharedAccessSignature=sv=2020&" + P1, "https://acct.blob.example/c?sv=2020-01-01&sig=" + P1 + "%3D&se=1",
+    "npm" + "_" + "Q9wErTyUiOpAsDfGhJkL" + P1 + "1234567", "S" + "G." + "abcdefghijklmnopqrstuv." + P1 + "ABCDEFGHIJKLMN",
+    "GOC" + "SPX-" + P1 + "AbCdEfGhIjKl", "ya" + "29." + P1 + "a0AfH6SMBexampleexample",
+    "https://hooks.slack.com/services/T0000/B0000/" + P1, "postgres://admin:p@ss/" + P1 + "@db.example:5432/app",
+    "-----BEGIN RSA PRIVATE\nKEY-----\nMIIEp" + P1 + "\n", "-----begin rsa private key-----\nMIIEp" + P1 + "\n-----end rsa private key-----",
+    "-----BEGIN  RSA PRIVATE KEY-----\nMIIEp" + P1 + "\n-----END RSA PRIVATE KEY-----",
+]
+
+
+@pytest.mark.parametrize("leak", MASKED)
+def test_masked_whatever_its_form(leak):
+    out = index.mask("앞 글\n" + leak + "\n뒤 글")
+    assert P1 not in out and "[가림]" in out and out.endswith("뒤 글"), out
+
+
+def test_base64_pem_and_twilio():
+    pem = "-----BEGIN RSA PRIVATE KEY-----\n" + "MIIEpAIBAAKCAQEAzQx7examplekeymaterial\n" * 4 + "-----END RSA PRIVATE KEY-----\n"
+    b64 = base64.b64encode(pem.encode()).decode()
+    out = index.mask("backup:\n" + b64[:76] + "\n" + b64[76:] + "\nafter")
+    assert "LS0tLS1CRUdJTi" not in out and b64[80:120] not in out and out.endswith("after"), out
+    hexid = "0123456789abcdef" * 2
+    out = index.mask("twilio SK" + hexid + " auth " + hexid[::-1])
+    assert hexid not in out and hexid[::-1] not in out, out
+    assert index.mask("commit " + hexid) == "commit " + hexid   # a bare hash is not a token
+
+
+def test_labels_keep_prose_and_code():
+    for t in ("The password policy requires 12 characters.", "if password == expected:", "암호화 방식: AES", "max_tokens = 4096",
+              "sig figures", "author: kim " + "0123456789abcdef" * 2):
+        assert index.mask(t) == t, t
+
+
+def test_mask_stays_fast_on_large_text():
+    import time
+    big = ("평범한 회의 메모 password policy token bucket auth flow sig figures https://example.com/a@b " * 20000)
+    t0 = time.time(); index.mask(big)
+    assert time.time() - t0 < 10
