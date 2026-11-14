@@ -83,3 +83,24 @@ def test_secret_files_leave_the_word_index(tmp_path):
     assert index.fts_no_secrets(con) == 1
     assert con.execute("SELECT count(*) FROM fts WHERE fts MATCH 'creds'").fetchone()[0] == 0
     assert con.execute("SELECT count(*) FROM fts WHERE fts MATCH 'glimmerfax'").fetchone()[0] == 1
+
+
+# ---------------------------------------------------------------- 3, 4. credential exports by their header
+@pytest.mark.parametrize("text", [
+    "Saved sign-ins (exported 2026-10-02)\nurl,username,password\nhttps://plum.example,trent,Marm0t!77\n",
+    "\n\nMy accounts\n\nsite;user;pw\nkelp.example;quill;B4dger\n",
+    "사이트,아이디,PW\nhttps://kelp.example,quill,B4dger#55\n",
+    "주소\t사용자\t비번\nkelp.example\tquill\tx\n",
+    "도메인,이메일,암호\nkelp.example,q@example.invalid,x\n",
+    "Domain|ID|Pwd\nkelp.example|quill|x\n",
+    "계정,패스워드\nquill,x\n",
+])
+def test_credential_header_below_a_title_or_with_short_names(tmp_path, text):
+    p = tmp_path / "list.csv"
+    p.write_text(text, encoding="utf-8")
+    assert index.cred_header(text) and index.is_secret(p) and index.secret_text(p.name, text)
+
+
+def test_ordinary_tables_are_not_credentials(tmp_path):
+    for text in ("name,phone,city\nkim,010,seoul\n", "Report\na\nb\nc\nd\ne\nurl,username,password\n", "pass rate,year\n0.8,2026\n"):
+        assert not index.cred_header(text), text

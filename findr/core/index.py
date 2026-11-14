@@ -58,11 +58,13 @@ CERT_EXTS = {".der", ".key", ".pfx", ".p12", ".cer", ".crt", ".pem"}
 # credential export (a password column with a user name or site column); 'password_policy_review.csv' with other columns is read
 CRED_NAME = re.compile(r"(password|비밀번호|passwd).*\.csv$", re.I)
 # column names compared without spaces, '_' and '-' ('User Name', 'login_username', 'e-mail')
-_CRED_PW = {"password", "passwd", "pwd", "pass", "passcode", "loginpassword", "비밀번호", "비번", "암호", "패스워드", "secret"}
+# (a whole cell: 'pw' and 'pwd' only as the column's whole name, case aside: 'PW', 'Pwd')
+_CRED_PW = {"password", "passwd", "pwd", "pw", "pass", "passcode", "passphrase", "loginpassword", "비밀번호", "비번", "암호",
+            "패스워드", "secret"}
 _CRED_ID = {"username", "user", "userid", "login", "loginusername", "loginname", "email", "mail", "account", "id", "아이디", "사용자",
-            "사용자이름", "계정", "url", "uri", "loginuri", "website", "site", "origin", "originurl", "hostname", "host", "사이트",
-            "웹사이트", "주소", "이메일", "name", "title"}
-_CRED_PW_IN = ("password", "passwd", "비밀번호", "패스워드")   # inside a longer column name ('Password (encrypted)')
+            "사용자이름", "사용자명", "계정", "url", "uri", "loginuri", "website", "site", "origin", "originurl", "hostname", "host",
+            "domain", "사이트", "웹사이트", "주소", "도메인", "이메일", "name", "title"}
+_CRED_PW_IN = ("password", "passwd", "비밀번호", "패스워드", "비번")   # inside a longer column name ('Password (encrypted)')
 _CRED_ID_IN = ("username", "login", "아이디", "url")
 # kinds of file whose first line is looked at: a password export saved as .txt or .tsv is one too
 CRED_EXTS = {".csv", ".tsv", ".txt"}
@@ -178,13 +180,21 @@ def secret_path(s):
     return real_ext(Path(parts[-1])) in CERT_EXTS and any(w in x for x in parts[:-1] for w in CERT_WORDS)
 
 
+CRED_LINES = 5   # non-empty lines looked at for a credential header: an export may start with a title line
+
+
 def cred_header(head):
-    """True when the first line of a CSV / TSV / text file (bytes or text) is a credential export's header: two or more
-    short columns, one a password column and one a user name or site column (English or Korean)"""
+    """True when one of the first CRED_LINES non-empty lines of a CSV / TSV / text file (bytes or text) is a credential
+    export's header: two or more short columns, one a password column and one a user name or site column (English or
+    Korean). Not only the first line: 'Saved sign-ins (exported ...)' above the header hid one (red-team 0.2.24)"""
     if isinstance(head, bytes):
         b = head[:4096]
         head = b.decode("utf-16", "replace") if b[:2] in (b"\xff\xfe", b"\xfe\xff") else _decode_text(b)
-    line = next((x for x in (head or "").lstrip("\ufeff").splitlines() if x.strip()), "")
+    lines = [x for x in (head or "").replace("\ufeff", "").splitlines() if x.strip()][:CRED_LINES]
+    return any(_cred_line(x) for x in lines)
+
+
+def _cred_line(line):
     cols = [unicodedata.normalize("NFC", c).strip().strip('"\'').strip().casefold() for c in re.split(r"[,;\t|]", line)]
     cols = [re.sub(r"[\s_\-]+", "", c) for c in cols if c]
     if len(cols) < 2 or any(len(c) > 40 for c in cols):
@@ -192,6 +202,12 @@ def cred_header(head):
     pw = [c for c in cols if c in _CRED_PW or any(w in c for w in _CRED_PW_IN)]
     who = [c for c in cols if c not in pw and (c in _CRED_ID or any(w in c for w in _CRED_ID_IN))]
     return bool(pw) and bool(who)
+
+
+def secret_text(name, text):
+    """the content rules on text already read (the content stage, and an index from before a rule): a credential export's
+    header in a CSV / TSV / text file"""
+    return any(real_ext(Path(f)) in CRED_EXTS for f in name_forms(name)) and cred_header(text[:4096])
 
 
 def name_forms(name):
@@ -396,7 +412,8 @@ def transcript(p: Path):
 # so files these readers newly handle are queued once when the reader version goes up.
 #   2: .xls/.xlsb/.ods without LibreOffice (#29), distribution(배포용) .hwp (#28)
 #   3: mail attachments under the secret rules and nested mail by name only; password exports found by their first line
-READERS = 3
+#   4: credential headers below a title line, password-manager exports by their content (secret_text)
+READERS = 4
 REREAD_EXT = {2: (".xls", ".xlsb", ".ods", ".hwp")}
 REREAD_ALL = {3: (".eml", ".emlx", ".mbox")}   # read again even with text stored: what they stored may now be left out
 
@@ -412,10 +429,11 @@ def reread_for_new_readers(con):
     every = sorted({e for v, es in REREAD_ALL.items() if v > have for e in es})
     if every:
         n += con.execute(f"UPDATE files SET pending=1 WHERE tier=1 AND ext IN ({','.join('?' * len(every))})", every).rowcount
-    if have < 3:   # text files already read whose first line is a password export's header: read again (the content stage keeps the name only)
+    if have < 4:   # files already read that the content rules now mark (a password export's header, by its first lines
+        # since 4): read again, so the content stage keeps the name only
         hit = [fid for fid, name, t in con.execute("""SELECT f.id, f.name, c.text FROM files f JOIN chunks c ON c.file=f.id AND c.n=0
-                                                      WHERE f.tier=1 AND f.ext IN ('.csv', '.tsv', '.txt', '')""")
-               if t and any(real_ext(Path(x)) in CRED_EXTS for x in name_forms(name)) and cred_header(t[:4096])]
+                                                      WHERE f.tier=1""")
+               if t and secret_text(name, t)]
         for fid in hit:
             con.execute("UPDATE files SET pending=1 WHERE id=?", (fid,))
         n += len(hit)
@@ -1337,7 +1355,7 @@ def read_wave(con, root, a):
             locked += 1
             continue
         p = Path(s)
-        cred = txt and any(real_ext(Path(f)) in CRED_EXTS for f in name_forms(p.name)) and cred_header(txt[:4096])
+        cred = bool(txt) and secret_text(p.name, txt)
         cs = [""] if cred else chunks(txt)[: (1 if tr == 2 else 2000)] or [""]   # a password export under any name: its name only
         con.execute("DELETE FROM fts WHERE rowid IN (SELECT id FROM chunks WHERE file=? AND n>=0)", (fid,))
         con.execute("DELETE FROM chunks WHERE file=? AND n>=0", (fid,))
