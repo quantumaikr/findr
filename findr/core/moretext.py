@@ -201,12 +201,25 @@ def _walk(msg):
 _MAIL_HDR = re.compile(r"(?i)^(from|to|cc|subject|date|content-type|mime-version|message-id|received|return-path|reply-to)\s*:")
 
 
+# a MIME header block inside a text: a multipart Content-Type, or a part's header with a base64 attachment
+_MIME_MULTI = re.compile(r"(?im)^content-type:[ \t]*multipart/")
+_MIME_B64 = re.compile(r"(?im)^content-transfer-encoding:[ \t]*base64")
+_MIME_ATT = re.compile(r"(?im)^content-disposition:[ \t]*attachment")
+
+
 def looks_like_mail(data):
     """bytes (or text) that are an RFC 822 message: a header block of 'Name: value' lines (two or more of the usual mail
-    headers, From or Content-Type among them) before the first blank line. A mail attached as a .txt is a nested mail"""
+    headers, From or Content-Type among them) before the first blank line, after blank lines or an mbox 'From ' line, if
+    any. A text holding a MIME header block (a multipart Content-Type, a base64 attachment) is one too. A mail attached
+    as a .txt is a nested mail: its name only"""
     t = data[:8192].decode("utf-8", "replace") if isinstance(data, (bytes, bytearray)) else str(data or "")[:8192]
+    t = t.lstrip("\ufeff").lstrip("\r\n \t")   # blank lines before the head (red-team 0.2.25)
+    if t.startswith("From "):   # an mbox 'From sender date' line before it
+        t = t.split("\n", 1)[1] if "\n" in t else ""
+    if _MIME_MULTI.search(t) or (_MIME_B64.search(t) and _MIME_ATT.search(t)):   # a MIME message's parts (a multipart head, a base64 attachment) anywhere in it
+        return True
     seen = set()
-    for line in t.lstrip("\ufeff").splitlines():
+    for line in t.splitlines():
         if not line.strip():
             break
         if line[:1] in (" ", "\t"):
@@ -227,7 +240,7 @@ def _is_secret(name, data):
     except ImportError:
         from index import is_secret
     try:
-        return is_secret(Path(name), head=(data or b"")[:4096])
+        return is_secret(Path(name), head=(data or b"")[:16384])
     except Exception:   # noqa: BLE001  (a name the path rules cannot take: not read)
         return True
 

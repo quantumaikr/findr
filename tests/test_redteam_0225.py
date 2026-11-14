@@ -174,6 +174,30 @@ def test_binary_with_zero_bytes_is_still_binary(tmp_path):
     assert index.extract(p, 100000) == ""
 
 
+# ---------------------------------------------------------------- 6. nested mail
+def _nested(tag):
+    inner = EmailMessage(); inner["From"] = "x@example.invalid"; inner["To"] = "y@example.invalid"; inner["Subject"] = "keys"
+    inner.set_content("see attached")
+    inner.add_attachment(("STRIPE_LIVE=" + P1 + "\n").encode(), maintype="application", subtype="octet-stream", filename="cfg.bin")
+    raw = inner.as_bytes()
+    return {"mbox": b"From x@example.invalid Sat Nov 14 10:00:00 2026\n" + raw, "blank": b"\n\n" + raw,
+            "mid": b"notes first\n\n" + raw}[tag]
+
+
+@pytest.mark.parametrize("tag", ["mbox", "blank", "mid"])
+def test_nested_mail_after_mbox_line_or_blank_lines(tmp_path, tag):
+    body = _nested(tag)
+    assert moretext.looks_like_mail(body)
+    p = _eml(tmp_path, "fyi", [("saved_message.txt", body, ("text", "plain"))])
+    t = moretext.eml_text(p)
+    assert "saved_message.txt" in t and P1 not in t and base64.b64encode(("STRIPE_LIVE=" + P1).encode()).decode()[:16] not in t
+
+
+def test_ordinary_text_is_not_mail():
+    for t in ("From the start, we planned.\nNext line\n", "Subject line: not a mail\nbody\n", "Content-Type is a header name.\n"):
+        assert not moretext.looks_like_mail(t), t
+
+
 # ---------------------------------------------------------------- 3. terms from masked text
 def test_file_relations_terms_never_hold_a_masked_value(tmp_path, monkeypatch):
     data = tmp_path / "data"; data.mkdir()
