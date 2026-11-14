@@ -827,6 +827,39 @@ def _main():
         elif all(rs != k for rs, _ in inside):   # a chosen root that is the folder itself keeps all of it
             held[k] = [x for pair in inside for x in pair]
     # the same folders by identity, for spellings no text compare can see (hard links, bind mounts, case, firmlinks)
+    data_dirs = [d for d in owns if d not in copies and not is_findr_checkout(Path(d))]
+    linked = []   # [(set of (st_dev, st_ino), complete?)]: the data folder's own files, looked at once a hard link is met
+
+    def data_file(st):
+        """a file that is one of the data folder's own files under another name (a hard link: its name and folder say
+        nothing of that; red-team 0.2.24 found ~/.findr/.password served through one). Only files with more than one name
+        are looked up; the data folder's files are listed once per run (DATA_LINK_SCAN at most, past which every hard-linked
+        file is left out)"""
+        if st.st_nlink <= 1 or not st.st_ino:
+            return False
+        if not linked:
+            ids, n, whole = set(), 0, True
+            for d in data_dirs:
+                for dp_, _, fns_ in os.walk(_long(str(d))):
+                    for fn_ in fns_:
+                        n += 1
+                        if n > DATA_LINK_SCAN:
+                            whole = False; break
+                        f_ = os.path.join(dp_, fn_)
+                        if not left_out(key(Path(_short(f_)).as_posix())):
+                            continue   # a chosen folder inside the data folder: the person's files
+                        try:
+                            st_ = os.lstat(f_)
+                        except OSError:
+                            continue
+                        ids.add((st_.st_dev, st_.st_ino))
+                    if not whole:
+                        break
+                if not whole:
+                    break
+            linked.append((ids, whole))
+        ids, whole = linked[0]
+        return (st.st_dev, st.st_ino) in ids or not whole
     excl_ids = {i: d for i, d in own_ids.items() if key(Path(d).as_posix()).rstrip("/") in excl}
     held_ids = {i: d for i, d in own_ids.items() if key(Path(d).as_posix()).rstrip("/") in held}
     root_ids = samepath.ids_of(roots)
@@ -920,6 +953,8 @@ def _main():
                     continue
                 if not _stat.S_ISREG(st.st_mode):
                     continue   # sockets, pipes, devices: nothing to read (CEF's SingletonSocket failed here)
+                if data_file(st):
+                    continue   # findr's own data file under another name (a hard link): not the person's file
                 s = p.as_posix()
                 try:
                     s.encode("utf-8")
@@ -1767,6 +1802,9 @@ def fts_no_secrets(con):
     if n > 0:
         print(f"FINDR_FTS_SECRET {n} rows of secret files left the word index", flush=True)
     return n
+
+
+DATA_LINK_SCAN = 200_000   # files of the data folder listed at most to recognise them by hard link
 
 
 def remask(con):

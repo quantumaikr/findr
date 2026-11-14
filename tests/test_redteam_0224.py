@@ -229,3 +229,54 @@ def test_invisible_characters_and_key_name_suffixes(name):
 def test_ordinary_names_stay_readable():
     for name in ("envelope.txt", "identity.md", "id_card.pdf", "rsa_notes.md", "my env notes.txt"):
         assert not index.secret_name(index.Path(name)), name
+
+
+# ---------------------------------------------------------------- 10. hard links
+def _link_or_skip(src, dst):
+    try:
+        os.link(src, dst)
+    except (OSError, NotImplementedError) as e:
+        pytest.skip(f"no hard links here ({type(e).__name__})")
+
+
+def test_hard_link_to_a_data_folder_file_is_not_indexed(tmp_path):
+    import subprocess
+    from pathlib import Path
+    home, root = tmp_path / "fhome", tmp_path / "root"
+    (home / "notes").mkdir(parents=True); root.mkdir()
+    (home / ".password").write_text("synthpw-Quokka91\n", encoding="utf-8")
+    (home / "notes" / "memo.txt").write_text("hidden memo Quokka90\n", encoding="utf-8")
+    (root / "plain.txt").write_text("plain memo\n", encoding="utf-8")
+    _link_or_skip(home / ".password", root / "pw_hard.txt")
+    _link_or_skip(home / "notes" / "memo.txt", root / "memo_hard.txt")
+    db = tmp_path / "i.db"
+    env = {**os.environ, "FINDR_OCR": "0", "FINDR_HOME": str(home), "FINDR_DATA": str(home)}
+    r = subprocess.run([sys.executable, str(Path(index.__file__)), "--root", str(root), "--db", str(db), "--no-embed"],
+                       env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    assert r.returncode == 0, r.stderr[-500:]
+    con = sqlite3.connect(db)
+    names = {n for (n,) in con.execute("SELECT name FROM files")}
+    assert names == {"plain.txt"}, names
+    assert not any("Quokka" in (t or "") for (t,) in con.execute("SELECT text FROM chunks"))
+
+
+def test_mcp_hides_a_hard_link_to_a_denied_file(tmp_path, monkeypatch):
+    deny = tmp_path / "denyme"; deny.mkdir()
+    m, data = _mcp(tmp_path, monkeypatch, deny)
+    docs = tmp_path / "docs"
+    _index(data, [(deny / "plan.txt", "quarry plan Quokka92", 1), (docs / "other.txt", "quarry note", 1)])
+    _link_or_skip(deny / "plan.txt", docs / "plan_hard.txt")
+    con = sqlite3.connect(str(data / "index.db"))
+    fid = con.execute("INSERT INTO files(path,name,ext,size,mtime,tier) VALUES(?,?,?,?,?,1)",
+                      ((docs / "plan_hard.txt").as_posix(), "plan_hard.txt", ".txt", 20, 1.7e9)).lastrowid
+    cid = con.execute("INSERT INTO chunks(file,n,text) VALUES(?,0,'quarry plan Quokka92')", (fid,)).lastrowid
+    con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, "plan_hard.txt", "x", "quarry plan Quokka92"))
+    con.commit(); con.close()
+    p = (docs / "plan_hard.txt").as_posix()
+    assert "error" in m.read_file(p) and "error" in m.file_relations(p) and "file" not in m.versions(p)
+    assert [x["name"] for x in m.search_files("quarry")["results"]] == ["other.txt"]
+    assert "plan_hard.txt" not in json.dumps(m.list_folder(docs.as_posix()))
+    _link_or_skip(docs / "other.txt", tmp_path / "other_copy.txt")   # a hard link between two shown files: shown
+    assert "text" in m.read_file((docs / "other.txt").as_posix())
+    monkeypatch.setattr(m, "HARDLINK_SCAN", 0)   # too many files to look through: every hard-linked file is left out
+    assert "error" in m.read_file((docs / "other.txt").as_posix())

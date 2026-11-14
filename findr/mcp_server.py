@@ -245,8 +245,54 @@ def _canon(p):
 
 
 class _Roots(set):
-    """the deny folders' canonical texts, and .ids: the same folders by (st_dev, st_ino)"""
+    """the deny folders' canonical texts, .ids: the same folders by (st_dev, st_ino), and .dirs: the folders as given"""
     ids = {}
+    dirs = ()
+
+
+HARDLINK_SCAN = 100_000   # files under the data folder and deny folders looked at for hard links, per tool call
+_LINKED = {}   # tuple(deny folders) -> (set of (st_dev, st_ino) of their files, complete?): emptied at each tool call (_db)
+
+
+def _files_under(dirs):
+    """(st_dev, st_ino) of every file under these folders (links not followed), and whether all were seen (HARDLINK_SCAN)"""
+    key = tuple(dirs)
+    if key in _LINKED:
+        return _LINKED[key]
+    ids, n, whole = set(), 0, True
+    for d in dirs:
+        for dp, _, fns in os.walk(d):
+            for fn in fns:
+                n += 1
+                if n > HARDLINK_SCAN:
+                    whole = False
+                    break
+                try:
+                    st = os.lstat(os.path.join(dp, fn))
+                except OSError:
+                    continue
+                if st.st_ino:
+                    ids.add((st.st_dev, st.st_ino))
+            if not whole:
+                break
+        if not whole:
+            break
+    _LINKED[key] = (ids, whole)
+    return ids, whole
+
+
+def _hard_linked(p, roots):
+    """True for a file with more than one name (a hard link) that is one of the files under the data folder or a deny folder:
+    its other name says nothing of that (red-team 0.2.24: data/visible/x.txt hard-linked to a denied file). When those
+    folders hold more than HARDLINK_SCAN files, every hard-linked file is taken as one of them"""
+    try:
+        st = os.stat(p)
+    except (OSError, ValueError):
+        return False
+    if st.st_nlink <= 1 or not st.st_ino or not getattr(roots, "dirs", ()):
+        return False
+    ids, whole = _files_under(roots.dirs)
+    return (st.st_dev, st.st_ino) in ids or not whole
 
 
 def _deny_roots():
@@ -260,6 +306,7 @@ def _deny_roots():
             out |= {_canon(f) for f in forms}
             dirs += [os.path.expanduser(f) for f in forms if os.path.isabs(os.path.expanduser(f))]
     out.ids = samepath.ids_of(dirs)
+    out.dirs = tuple(dict.fromkeys(d for d in dirs if os.path.isdir(d)))
     return out
 
 
@@ -295,6 +342,8 @@ def _denied(p, roots=None):
     from .core import samepath
     if getattr(roots, "ids", None) and os.path.isabs(str(p)) and samepath.under(str(p), roots.ids) is not None:
         return True   # the same folder under a spelling text cannot tell (a hard link, a bind mount, a firmlink, case)
+    if os.path.isabs(str(p)) and _hard_linked(str(p), roots):
+        return True   # the same file under another name (a hard link)
     return _secret(p)
 
 
@@ -304,6 +353,7 @@ def _db():
     con = sqlite3.connect(f"file:{paths.DB}?mode=ro", uri=True, timeout=10)
     con.create_function("nfc", 1, lambda s: unicodedata.normalize("NFC", s) if s else s, deterministic=True)
     _real_dir.cache_clear()
+    _LINKED.clear()
     from .core import samepath
     samepath.clear()
     roots = _deny_roots()
