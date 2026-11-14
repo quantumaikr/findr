@@ -110,7 +110,7 @@ def _engine_search(query, limit, ask=None):
     for x in kept[:limit]:
         out.append({"name": x.get("name"), "path": x.get("path"), "modified": x.get("date"),
                     "chance": round(x["prob"], 2) if x.get("prob") is not None else None,
-                    "excerpt": (x.get("snippet") or "")[:300], "excerpt_start": x.get("snippet_start"),
+                    "excerpt": _mask(x.get("snippet") or "")[:300], "excerpt_start": x.get("snippet_start"),
                     **_excerpt_place(con, x.get("chunk_id"), x.get("snippet_start"))})
     if con is not None:
         con.close()
@@ -609,6 +609,7 @@ def file_relations(path: str, terms: int = 10) -> dict:
     if con is not None:
         try:
             words = relations.terms(con, fid, max(1, min(int(terms or 10), 30)))
+            words = [w for w in words if _mask(w) == w]   # a key-like word of an index from before a masking rule
             sig = relations.content_sig(con, fid)
             roots = _deny_roots()
             same = [{"name": c["name"], "path": c["path"], "modified": _day(c["mtime"]), "file_id": c["id"], "_fid": c["fid"]}
@@ -646,7 +647,7 @@ def read_file(path: str, max_chars: int = 4000) -> dict:
             text.append(t); n += len(t)
         if n >= max_chars:
             break
-    body = "\n".join(text)[:max_chars]
+    body = _mask("\n".join(text))[:max_chars]   # stored text is masked; an index from before a newer rule is masked here
     out = {"name": row[1], "path": path, "text": body, "truncated": n > max_chars,
            "note": "" if body else "findr has only the name of this file so far (its text is read later, or it has none)"}
     try:   # what the index cannot say: why a file is unreadable, a docx's pages, and the file read now when the index has no text
@@ -666,7 +667,7 @@ def read_file(path: str, max_chars: int = 4000) -> dict:
 def _mask(text):
     """values that look like keys, masked as the index masks them (index.chunks)"""
     from .core import index
-    return index.KEYLIKE.sub("[가림]", text)
+    return index.mask(text)
 
 
 def _deep_ok(path, tier):

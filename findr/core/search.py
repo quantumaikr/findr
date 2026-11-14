@@ -3034,6 +3034,21 @@ FAILS = {}   # client -> [count, first failure time]; slows password guessing th
 TUNNEL_FAILS = [0, 0.0]   # wrong passwords through any tunnel or proxy, every client together: [count, first failure time]
 FAIL_WINDOW, FAIL_PER_CLIENT, FAIL_TUNNEL = 600, 10, 100
 FAIL_LOCK = _thl.Lock()   # the page answers on several threads
+def masked_json(body):
+    """a JSON answer with index.mask_obj applied (paths and names kept): an index made before a masking rule was added, or a
+    text read past the index (a cached answer, a summary), still never shows a key. Unchanged when it is not JSON"""
+    try:
+        import index as _ix
+    except ImportError:
+        from . import index as _ix
+    try:
+        o = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return body
+    m = _ix.mask_obj(o)
+    return body if m == o else json.dumps(m, ensure_ascii=False, default=str).encode()
+
+
 SEC_HEADERS = [("X-Content-Type-Options", "nosniff"), ("X-Frame-Options", "DENY"), ("Referrer-Policy", "no-referrer"),
                ("Cache-Control", "no-store"),
                ("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
@@ -3474,6 +3489,8 @@ def serve(f, port):
             answer_errors(self, self._post)
 
         def reply(self, code, body, ct):
+            if ct.startswith("application/json") and len(body) < 20_000_000:
+                body = masked_json(body)   # every answer the page or a tool gets: key-like values masked, as the index stores them
             self.send_response(code); self.send_header("Content-Type", ct)
             for k_, v_ in SEC_HEADERS:
                 self.send_header(k_, v_)

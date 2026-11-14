@@ -243,7 +243,7 @@ def deep_read(path, max_chars=4000, seconds=None):
             else:
                 text = "\n".join(lines)
                 out["ocr"] = {"pages_read": 1, "pages_total": 1}
-    text = ix.KEYLIKE.sub("[가림]", text)   # as index.chunks masks what it stores
+    text = ix.mask(text)   # as index.chunks masks what it stores
     out["text"] = text[:max_chars]
     out["truncated"] = len(text) > max_chars
     return out

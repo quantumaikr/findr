@@ -61,13 +61,49 @@ _CRED_ID = {"username", "user", "user name", "login", "login_username", "email",
             "계정", "url", "login_uri", "website", "site", "web site", "origin", "hostname", "사이트", "웹사이트", "주소"}
 # '.key' is both a cryptographic key and an Apple Keynote deck: Keynote is a ZIP, a key file is not (see is_secret)
 # values that look like keys are masked inside indexed text (a key pasted into a note or log never reaches the index)
+# the name of a setting that holds a secret, with words before it (AWS_SECRET_ACCESS_KEY, client_secret, DB_PASSWORD) and
+# at most two after it (DB_PASSWORD_PROD); 'tokenizer' or 'max_tokens' is not one
+_KV_NAME = (r"(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[_.\-]){0,4}(?i:api[_-]?key|secret(?:[_-]?access)?(?:[_-]?key)?|password|passwd|pwd"
+            r"|token|private[_-]?key)(?:[_.\-][A-Za-z0-9]+){0,2}(?![A-Za-z0-9])")
+# PEM / PGP private key: to its END line; with none (a note cut short), to the end of the text or to the first blank line
+# that is not followed by more key lines (a PGP block has one blank line after its headers)
+_PEM = (r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----(?:[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"
+        r"|[\s\S]*?(?=\n[ \t]*\r?\n(?![ \t]*[A-Za-z0-9+/=]{20,}[ \t]*(?:\r?\n|$))|\Z))")
 KEYLIKE = re.compile(r"(sk-[A-Za-z0-9_\-]{20,}|sk-ant-[A-Za-z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|hf_[A-Za-z0-9]{30,}"
-                     r"|xox[abpr]-[A-Za-z0-9\-]{10,}|AIza[0-9A-Za-z_\-]{35}|-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"
-                     r"|(?i:(api[_-]?key|secret|password|passwd|token)\s*[:=]\s*['\"]?)[^\s'\"]{12,})")
+                     r"|github_pat_[A-Za-z0-9_]{22,}|glpat-[A-Za-z0-9_\-]{20,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}"
+                     r"|xox[abposr]-[A-Za-z0-9\-]{10,}|AIza[0-9A-Za-z_\-]{35}|" + _PEM +
+                     r"|Private-Lines:\s*\d+(?:\s+[A-Za-z0-9+/=]{4,}(?![\-:A-Za-z0-9+/=]))+"   # a PuTTY key's private part
+                     r"|(?i:bearer)\s+[A-Za-z0-9\-._~+/]{16,}=*"
+                     r"|eyJ[A-Za-z0-9_\-]{5,}\.eyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]*"   # a JWT
+                     r"|(?P<url>\b[A-Za-z][A-Za-z0-9+.\-]*://[^\s:/@'\"<>]+:)[^\s@/'\"<>]+(?=@)"   # scheme://user:PASSWORD@host
+                     r"|" + _KV_NAME + r"['\"]?\s*[:=]\s*['\"]?[^\s'\"]{12,})")
 # a fixed piece of text every KEYLIKE match contains: SQLite LIKE (ASCII case-insensitive, '_' any one character) keeps only the
 # chunks that may hold one, so the regex runs on a few rows instead of all of them (a run with no change scanned 920k chunks
 # in Python for 58 s, #67). Keep in step with KEYLIKE: tests/test_mask_prefilter.py checks every alternative is covered
-KEYLIKE_HINTS = ("sk-", "akia", "gh_", "hf_", "xox", "aiza", "private key", "api", "secret", "password", "passwd", "token")
+KEYLIKE_HINTS = ("sk-", "akia", "gh_", "hf_", "xox", "aiza", "private key", "api", "secret", "password", "passwd", "token",
+                 "github_pat", "glpat", "k_live", "k_test", "private-lines", "bearer", "eyj", "://", "pwd", "private_key", "privatekey")
+
+
+def _mask_one(m):
+    return (m.group("url") or "") + "[가림]"
+
+
+def mask(text):
+    """values that look like keys, passwords and tokens replaced by [가림]: what the index stores and every text findr
+    returns (read_file, excerpts, the search page). A URL keeps its address, only the password in it is masked"""
+    return KEYLIKE.sub(_mask_one, text) if text else text
+
+
+def mask_obj(o, keep=frozenset({"path", "name", "date", "modified", "folder", "fid", "route", "kind", "ext", "file_id", "family_id"})):
+    """mask() on every text in a result (dicts and lists, as JSON holds them), except paths, names and other fields that
+    say which file it is (a file is opened by its path)"""
+    if isinstance(o, str):
+        return mask(o)
+    if isinstance(o, list):
+        return [mask_obj(x, keep) for x in o]
+    if isinstance(o, dict):
+        return {k: (v if k in keep else mask_obj(v, keep)) for k, v in o.items()}
+    return o
 LIB = re.compile(r"/(site-packages|python_embeded|node_modules|__pycache__|\.git|dist-packages|\.venv|venv)(/|$)")
 # folders of keys and sign-ins, never read, whatever folder was chosen (`findr index ~` read .kube/config, .docker/config.json
 # and shell histories, whose tokens the key masking does not all catch, and served them to AI tools)
@@ -405,7 +441,7 @@ def convert_old(p: Path):
 
 def chunks(text):
     text = text.encode("utf-8", "replace").decode("utf-8")   # a lone surrogate from any reader would stop the whole index
-    text = KEYLIKE.sub("[가림]", text)
+    text = mask(text)
     text = re.sub(r"[ \t]{3,}", "  ", text).strip()
     if not text:
         return []
@@ -1464,7 +1500,7 @@ def ocr_wave(con, root, first_pages=None, deep_pages=None):
             p_ = Path(s); rel = s[len(root.as_posix()):]
             con.execute("DELETE FROM fts WHERE rowid IN (SELECT id FROM chunks WHERE file=? AND n>=0)", (fid,))
             con.execute("DELETE FROM chunks WHERE file=? AND n>=0", (fid,))
-            for n, c in enumerate((texts if texts is not None else chunks(txt))[:2000] or [""]):
+            for n, c in enumerate(([mask(t) for t in texts] if texts is not None else chunks(txt))[:2000] or [""]):
                 cid = con.execute("INSERT INTO chunks(file,n,text) VALUES(?,?,?)", (fid, n, c)).lastrowid
                 con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(p_.name), nfc(rel), nfc(c)))
             got += 1; chars += len(txt)
@@ -1492,7 +1528,7 @@ def remask(con):
     rows = con.execute(f"SELECT c.id, c.file, c.text FROM {src} WHERE {w}", [f"%{h}%" for h in KEYLIKE_HINTS]).fetchall()
     for cid, fid, txt in rows:
         if txt and KEYLIKE.search(txt):
-            t = KEYLIKE.sub("[가림]", txt); name, path = con.execute("SELECT name, path FROM files WHERE id=?", (fid,)).fetchone()
+            t = mask(txt); name, path = con.execute("SELECT name, path FROM files WHERE id=?", (fid,)).fetchone()
             con.execute("DELETE FROM fts WHERE rowid=?", (cid,))
             con.execute("INSERT INTO fts(rowid,name,path,text) VALUES(?,?,?,?)", (cid, nfc(name), nfc(path), t))
             con.execute("UPDATE chunks SET text=?, emb=NULL WHERE id=?", (t, cid)); hit += 1
