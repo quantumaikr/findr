@@ -71,3 +71,9 @@ def test_boost_counts_translated_ideas_only_when_asked():
     assert search.xling_translated("handbook.pdf", ideas) == 1
     assert search.xling_translated("handbook.pdf", ideas, strong=True) == 0   # one idea: not a name of the question
     assert search.xling_translated("직원_핸드북.hwp", ideas) == 0   # the question's own words
+
+
+def test_language_words_are_no_topic_for_the_lane(tmp_path):
+    f = _finder(tmp_path, [("KIOSK-200 User Manual.pdf", 1), ("Hoist_Operation_Manual_EN.pdf", 1)])
+    assert f.xling_lane(search.xling_ideas("접수 무인기 영문 사용 설명서")) == []   # 'EN' + manual: not two topics
+    assert f.xling_lane(search.xling_ideas("운영 영문 설명서")) == [20]

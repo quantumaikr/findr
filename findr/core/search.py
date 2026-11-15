@@ -998,6 +998,9 @@ class Finder:
     def xling_lane(self, ideas, cap=200):
         """first pieces of the files whose name carries two ideas of the question or more, one at least in the other
         language: most ideas first. Nothing when the question has fewer than two ideas or too many names qualify"""
+        # the language a question asks for (영문, 영어로) is not a topic of the name: 'Hoist_Operation_Manual_EN.pdf' came in
+        # for '접수 무인기 영문 사용 설명서' by EN and manual, over the kiosk's manual (virtual PCs, 11/15)
+        ideas = [i for i in ideas if (i[1] if i[0] == "?" else i[0]) not in XL_LANG]
         if len(ideas) < 2:
             return []
         self.load_scan()
@@ -2887,6 +2890,7 @@ XL_ABBR = {"meeting": "mtg", "meetings": "mtg mtgs", "invoice": "inv", "report":
            "marketing": "mktg", "business": "biz", "customer": "cust", "project": "proj prj", "technical": "tech",
            "technology": "tech", "summary": "summ", "specification": "spec", "assignment": "asgmt", "homework": "hw",
            "organization": "org", "calendar": "cal", "version": "ver"}
+XL_LANG = {"영문", "영어", "영어로", "영문판", "국문", "한글", "한국어", "english", "korean", "en", "kr", "ko"}
 _XL_MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
 _XL_MONTH = re.compile(r"(?<!\d)(\d{1,2})\s*월")
 
