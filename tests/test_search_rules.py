@@ -203,7 +203,7 @@ def test_loanwords_by_sound(monkeypatch):
     assert search.xling_ideas("판다스 예제")[0] == ["판다스"]   # off by default
     monkeypatch.setenv("XLING_SOUND", "1")
     assert search.xling_ideas("불러오기 예제")[0] == ["불러오기"]   # no sound spelling for a verb form
-    assert search.xling_ideas("도커 예제")[0] == ["도커"]   # tk: too short to trust
+    assert not any(sp[:1] == "~" for sp in search.xling_ideas("도커 예제")[0])   # tk: too short to trust (docker: the word list)
     res = [{"name": "notes.md"}, {"name": "Pandas_Example.ipynb"}]
     assert search.xling_name_first("판다스 예제", res) == 1
     assert search.xling_cover("instacartorders_analysis.ipynb", search.xling_ideas("인스타카트 분석"))[0]   # held in a longer word
@@ -221,7 +221,7 @@ def test_relax_sound_only_words_are_optional(monkeypatch):
 
 def test_particle_alone_is_no_idea():
     """'에서' alone strips to nothing: no idea, no crash (a gate run hit IndexError on it)"""
-    assert search.xling_ideas("서버 에서 설정") == [["서버", "server"], ["설정", "config", "setting"]]
+    assert search.xling_ideas("서버 에서 설정") == [["서버", "server"], ["설정", "config", "setting", "cfg", "conf"]]   # short forms (#220)
     assert search.xling_name_first("서버 에서 설정", [{"name": "a.txt"}, {"name": "server_config.yaml"}]) == 1
 
 
