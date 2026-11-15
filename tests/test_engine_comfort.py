@@ -105,10 +105,11 @@ def test_a_slow_reload_waits_longer(tmp_path):
     seen = []
     f.con.set_trace_callback(seen.append)
     f.refresh()
-    assert not seen   # 60 s would have passed; ten times 30 s has not
+    # 60 s would have passed; ten times 30 s has not: only the index's version is read (for the names, #221)
+    assert seen and all("data_version" in s for s in seen)
     f._seen_at = time.time() - 301
     f.refresh()
-    assert seen       # now it looks
+    assert f._seen_at > time.time() - 5   # now it looks
 
 
 # ---------- #1 the engine's threads and the indexer's batches ----------
