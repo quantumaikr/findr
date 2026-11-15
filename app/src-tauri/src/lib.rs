@@ -333,7 +333,8 @@ fn set_upgrade(on: bool) -> Result<(), String> {
 }
 
 /// after the search page is up: changed files now and every 10 minutes (#106; names only on battery), at once when the
-/// person presses '지금 반영' on the search page (the `refresh_now` file), and once the later pieces of long documents
+/// person presses '지금 반영' on the search page (the `refresh_now` file), new files by name within seconds when the engine
+/// sees them in a folder (the `names_now` file, #221: any power or idle state), and once the later pieces of long documents
 fn start_refresher() {
     use std::sync::atomic::Ordering;
     if REFRESHER.swap(true, Ordering::SeqCst) {
@@ -344,22 +345,31 @@ fn start_refresher() {
         let started = std::time::Instant::now();
         let mut last_refresh: Option<std::time::Instant> = None;
         let mut last_look: Option<std::time::Instant> = None;
+        let mut last_names: Option<std::time::Instant> = None;
         let asked = || home().join("refresh_now").exists();
         loop {
-        // a cheap look every 5 seconds for '지금 반영'; the rest (battery, idle time) every 10 minutes
+        // a cheap look every 5 seconds for '지금 반영' and for new files the engine saw; the rest (battery, idle time) every
+        // 10 minutes. New files (#221): a names-only run at once, at most every 30 seconds, whatever the battery or idle
+        // time; their content comes with the 10-minute run. Before, a new file waited up to 10 minutes, and a run nobody
+        // asked for could stop on the person's typing before it reached the file's folder
         let now_asked = asked();
-        if !now_asked && last_look.map(|t| t.elapsed().as_secs() < 600).unwrap_or(false) {
+        let names_asked = home().join("names_now").exists() && last_names.map(|t| t.elapsed().as_secs() >= 30).unwrap_or(true);
+        let ten = !last_look.map(|t| t.elapsed().as_secs() < 600).unwrap_or(false);
+        if !now_asked && !names_asked && !ten {
             thread::sleep(std::time::Duration::from_secs(5));
             continue;
         }
-        last_look = Some(std::time::Instant::now());
+        let names_turn = names_asked && !now_asked && !ten;   // only new names: the 10-minute clock and the deep run stay
+        if !names_turn {
+            last_look = Some(std::time::Instant::now());
+        }
         let folders = load_folders();
         if !folders.is_empty() && home().join("index.db").exists() {
             // on battery new files still come in by name (an hour without them, or none at all unplugged, read as broken);
             // their content, the meaning vectors and the deep run wait for the charger. '지금 반영' reads them in full.
             let battery = on_battery();
             // the hourly refresh missed files saved minutes ago; with #104 a run that finds nothing new costs ~3 s
-            let refresh_due = now_asked || last_refresh.map(|t| t.elapsed().as_secs() >= 600).unwrap_or(true);
+            let refresh_due = now_asked || names_turn || last_refresh.map(|t| t.elapsed().as_secs() >= 600).unwrap_or(true);
             // the deep run waits for idle time, as the model upgrade does: started right after the page opened, its 28 minutes
             // made the first search 27.9 s and left 0.5 GB free on an 8 GB laptop (#66 rerun)
             let idle = match idle_seconds() {
@@ -371,13 +381,16 @@ fn start_refresher() {
                 // files added since the last one get the same care
                 let fresh = std::fs::metadata(home().join(".deep-done")).and_then(|m| m.modified()).ok()
                     .and_then(|t| t.elapsed().ok()).map(|e| e.as_secs() < 6 * 3600).unwrap_or(false);
-                if (deep && (battery || fresh || !idle || asked())) || (!deep && !refresh_due) {
+                if (deep && (names_turn || battery || fresh || !idle || asked())) || (!deep && !refresh_due) {
                     continue;
                 }
-                if !deep {
+                if !deep && !names_turn {
                     last_refresh = Some(std::time::Instant::now());
                 }
-                let names_only = !deep && battery && !now_asked;
+                if !deep {
+                    last_names = Some(std::time::Instant::now());
+                }
+                let names_only = !deep && ((battery && !now_asked) || names_turn);
                 if now_asked && !deep {
                     stop_upgrade(); // the person asked: the model upgrade gives way (it keeps what it computed)
                 }
@@ -388,6 +401,7 @@ fn start_refresher() {
                 }
                 if !deep {
                     let _ = std::fs::remove_file(home().join("refresh_now")); // taken: a press during this run asks again
+                    let _ = std::fs::remove_file(home().join("names_now")); // every run takes new names in first
                 }
                 let log = std::fs::File::create(home().join("logs").join(if deep { "deep.log" } else { "refresh.log" }));
                 let mut c = low_priority(python());

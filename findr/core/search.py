@@ -536,6 +536,7 @@ def lane2_interleave(score, lane, top=LANE2_TOP, eps=LANE2_EPS):
 
 VEC_BLOCK = 4096      # rows per step when the vectors are read in a scan
 VEC_STEP = 500        # ids per lookup when only some vectors are read again
+NAMES_EVERY = 2.0   # seconds between two reads of every file's name while the index changes (#221; ~0.1 s on 100k files)
 RELOAD_ROOM_GB = 1.0  # free memory kept besides the new set while a reload builds it next to the old one
 
 
@@ -714,6 +715,7 @@ class Finder:
 
     def __init__(self, db, model="bge-m3"):
         self.db_uri = Path(db).expanduser().resolve().as_uri() + "?mode=ro"   # the reload thread reads on its own connection
+        self.db_path = str(Path(db).expanduser().resolve())
         self.con = sqlite3.connect(Path(db).expanduser(), check_same_thread=False)
         import unicodedata as _ud
         self.con.create_function("nfc", 1, lambda s: _ud.normalize("NFC", s) if s else s, deterministic=True)
@@ -743,12 +745,17 @@ class Finder:
         answered from the vectors already loaded (#67: questions during indexing stalled 8-11 s in the reload). A reload
         that took long waits ten times its own time before the next (no reload after reload while a large index grows)"""
         now = time.time()
+        dv = self.con.execute("PRAGMA data_version").fetchone()[0]   # changes only when another connection (the indexer) commits
+        if getattr(self, "name_rows", None) is not None and dv != getattr(self, "_dv_names", None) and now - getattr(self, "_names_at", 0) >= NAMES_EVERY:
+            # names first, at every question (#221): a file the indexer just added by name is found by name at once. Before,
+            # names were read again only with the vectors (every minute at best, and never while memory was too short for a
+            # second set of vectors: an 8 GB Mac with a large index kept the names of its start)
+            self.name_rows = None
         if every > 0:
             every = max(every, 10 * getattr(self, "_reload_secs", 0.0))
         if now - getattr(self, "_seen_at", 0) < every:
             return
         self._seen_at = now
-        dv = self.con.execute("PRAGMA data_version").fetchone()[0]   # changes only when another connection (the indexer) commits
         if dv == getattr(self, "_dv", None):
             return   # nothing new: skip the count below, a full scan of chunks (~25 s on a 5 GB index, every minute) (#21)
         self._dv = dv
@@ -798,7 +805,7 @@ class Finder:
                     self.encoder = e_; self.enc = enc
                 self.ids = ids
                 self.M = M if M is not None else np.zeros((0, len(self.qvec("준비"))), np.float32)
-                self.Mg = None; self.name_rows = None; self._top = top
+                self.Mg = None; self.name_rows = None; self.card_txt = None; self._top = top
                 self.lane2_set(got)
             print(f"FINDR_RELOAD vectors {len(ids)} (read {read}) {self._reload_secs:.1f}s", flush=True)
         except Exception as e:   # a failed reload keeps the vectors the page already has
@@ -845,12 +852,16 @@ class Finder:
                 score[cid] = score.get(cid, 0) + 1 / (60 + r)
 
     def load_scan(self):
-        if getattr(self, "name_rows", None) is not None:
-            return
-        self.card_txt = [(cid, (t or "").lower()) for cid, t in self.con.execute(
-            "SELECT c.id, c.text FROM chunks c JOIN files f ON f.id=c.file WHERE c.n=-1 AND f.tier=1 ORDER BY c.id")]
-        self.name_rows = [(cid, nm.lower(), tr) for cid, nm, tr in self.con.execute(
-            "SELECT c.id, f.name, f.tier FROM files f JOIN chunks c ON c.file=f.id AND c.n=0 ORDER BY f.id")]
+        """the file cards' text and every file's name, in memory for the scans of short words (names again on their own
+        when the index changed: refresh)"""
+        if getattr(self, "card_txt", None) is None:
+            self.card_txt = [(cid, (t or "").lower()) for cid, t in self.con.execute(
+                "SELECT c.id, c.text FROM chunks c JOIN files f ON f.id=c.file WHERE c.n=-1 AND f.tier=1 ORDER BY c.id")]
+        if getattr(self, "name_rows", None) is None:
+            self.name_rows = [(cid, nm.lower(), tr) for cid, nm, tr in self.con.execute(
+                "SELECT c.id, f.name, f.tier FROM files f JOIN chunks c ON c.file=f.id AND c.n=0 ORDER BY f.id")]
+            self._names_at = time.time()
+            self._dv_names = self.con.execute("PRAGMA data_version").fetchone()[0]
 
     def dense_all(self, qv):
         """query x every chunk vector on the GPU (2026-11-05: 256k chunks took most of the 1.1 s on the CPU)"""
@@ -3450,6 +3461,18 @@ def _starting_done():
         pass
 
 
+def watch_new_files(f):
+    """the app's engine looks for new files in the indexed folders (#221, newfiles.py); a plain `findr serve` has no
+    refresher to take them in, so it does not look"""
+    if os.environ.get("FINDR_APP") != "1" or not getattr(f, "db_path", None):
+        return
+    try:
+        import newfiles
+        newfiles.start(f.db_path, Path(os.environ.get("FINDR_DATA") or Path.home() / ".findr"))
+    except Exception as e:   # noqa: BLE001  (new files then come with the ten-minute run, as before)
+        print(f"FINDR_WATCH off ({type(e).__name__})", flush=True)
+
+
 def serve(f, port):
     """f: the Finder, or a function that makes it. With a function the port opens first and the index and the models load
     behind it (LOADED); a request that needs them waits"""
@@ -3540,6 +3563,11 @@ def serve(f, port):
                     except (OSError, ValueError):
                         pass
                     p_["refresh_asked"] = (data_ / "refresh_now").exists()
+                    try:   # new files seen in the folders and not yet in the index (#221): the page says so
+                        import newfiles
+                        p_["new_waiting"] = newfiles.waiting()
+                    except Exception:   # noqa: BLE001
+                        pass
                 return self.reply(200, json.dumps(p_, ensure_ascii=False).encode(), "application/json; charset=utf-8")
             if urlparse(self.path).path == "/auth":   # the desktop app opens the page once with its key; a cookie keeps it signed in
                 import hmac
@@ -3989,6 +4017,7 @@ def serve(f, port):
         LOADED.set()
         start_warm()
         idle_watch(lambda: f)
+        watch_new_files(f)
 
     def start_warm():
         if os.environ.get("FINDR_WARM", "1") != "1":
@@ -4022,6 +4051,7 @@ def serve(f, port):
         _starting_done()
         start_warm()
         idle_watch(lambda: f)
+        watch_new_files(f)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:   # Ctrl+C: one line, not a traceback (#67); the helper servers stop with the process

@@ -334,7 +334,7 @@ async function settings(s: AppState) {
     <h2>${L('색인', 'Indexing')}</h2>
     <div class="card"><p>${L('새로 생기거나 바뀐 파일만 다시 읽습니다.', 'Only new or changed files are read again.')}</p>
       <div class="actions" style="margin-top:6px"><button class="primary" id="re">${L('바뀐 파일 반영', 'Update changed files')}</button><button id="fold">${L('폴더 바꾸기', 'Change folders')}</button></div>
-      <p class="muted" style="margin:14px 0 6px">${L('findr가 열려 있는 동안 바뀐 파일은 10분마다(배터리일 때는 이름만), 긴 문서의 뒷부분은 처음 한 번 낮은 우선순위로 알아서 반영합니다.', 'While findr is open, changed files are picked up every 10 minutes (names only on battery), and the later parts of long documents are added once, at low priority.')}
+      <p class="muted" style="margin:14px 0 6px">${L('findr가 열려 있는 동안 새 파일은 몇 초 안에 이름으로 찾을 수 있고, 바뀐 파일의 내용은 10분마다(배터리일 때는 이름만), 긴 문서의 뒷부분은 처음 한 번 낮은 우선순위로 알아서 반영합니다.', 'While findr is open, new files can be found by name within seconds; changed content is picked up every 10 minutes (names only on battery), and the later parts of long documents are added once, at low priority.')}
         ${L('지금 바로 하고 싶을 때만 아래를 누르세요.', 'Use the button below only if you want it done right now.')}</p>
       <div class="actions" style="margin-top:0"><button id="deep">${L('깊은 내용까지 계산', 'Index full contents now')}</button></div></div>
     <div id="upg"></div>

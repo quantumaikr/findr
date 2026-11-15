@@ -301,7 +301,8 @@ if(!APP)fetch('/canopen').then(r=>r.json()).then(j=>{LOCAL=!!j.local;if(LOCAL&&l
   const c=now();if(c&&P.total)d+=Math.min(1,P.done/P.total);return Math.round(100*d/ST.length)}
  function render(){
   const p=pct(),c=now();chip.style.setProperty('--p',p);chip.classList.toggle('paused',!!P.paused);chip.classList.toggle('ok',!active);
-  chip.querySelector('.ixt').textContent=!active?T('모두 준비됐어요','All set'):P.pausing?T('멈추는 중…','Pausing…'):P.paused?T('잠시 멈춤','Paused'):P.memwait?T(`메모리를 기다리는 중 ${p}%`,`Waiting for memory ${p}%`):T(`살펴보는 중 ${p}%`,`Scanning ${p}%`);
+  const nw=Number(P.new_waiting)||0;chip.classList.toggle('ok',!active&&!nw);
+  chip.querySelector('.ixt').textContent=!active?(nw?T(`새 파일 ${nw}개 반영 중`,`Adding ${nw} new file${nw>1?'s':''}`):T('모두 준비됐어요','All set')):P.pausing?T('멈추는 중…','Pausing…'):P.paused?T('잠시 멈춤','Paused'):P.memwait?T(`메모리를 기다리는 중 ${p}%`,`Waiting for memory ${p}%`):T(`살펴보는 중 ${p}%`,`Scanning ${p}%`);
   chip.setAttribute('aria-label',chip.querySelector('.ixt').textContent+T(' · 자세히 보기',' · details'));
   if(pan.hidden)return;
   const sg=P.stages||{};
@@ -315,7 +316,7 @@ if(!APP)fetch('/canopen').then(r=>r.json()).then(j=>{LOCAL=!!j.local;if(LOCAL&&l
    <div class="ixsub">${files}${T('이 PC 안에서만 처리해요','Processed only on this PC')}</div></div><button class="ixx" aria-label="${T('닫기','Close')}">✕</button></div>
    <p class="ixn">${active&&P.memwait&&!P.paused?T('PC의 메모리가 모자라 잠시 기다리고 있어요. 다른 프로그램을 닫으면 바로 이어서 해요.','The PC is short of memory, so indexing is waiting. It goes on as soon as other programs are closed.'):active?T('지금도 검색할 수 있어요. 새로 읽은 내용은 곧 결과에 들어가요.','You can search now. Newly read files show up in results soon.'):T('처음부터 끝까지 살펴봤어요. 바뀐 파일은 알아서 다시 읽어요.','Everything has been scanned. Changed files are re-read automatically.')}</p>
    ${active||Object.keys(sg).length?`<ol>${rows}</ol>`:''}
-   ${!active&&P.app?`<div class="ixa"><button class="ixnow" ${P.refresh_asked?'disabled':''}>${P.refresh_asked?T('곧 시작해요…','Starting soon…'):T('지금 반영','Update now')}</button><span class="ixsub">${P.last_refresh?T('마지막 반영 ','Last update ')+hm(P.last_refresh)+' · ':''}${T('새 파일은 10분마다 알아서 들어와요','New files are picked up every 10 minutes')}</span></div>`:''}
+   ${!active&&P.app?`<div class="ixa"><button class="ixnow" ${P.refresh_asked?'disabled':''}>${P.refresh_asked?T('곧 시작해요…','Starting soon…'):T('지금 반영','Update now')}</button><span class="ixsub">${P.last_refresh?T('마지막 반영 ','Last update ')+hm(P.last_refresh)+' · ':''}${nw?T(`새 파일 ${nw}개 반영 중 · 이름으로 먼저 찾을 수 있어요`,`Adding ${nw} new file${nw>1?'s':''} · findable by name first`):T('새 파일은 몇 초 안에 이름으로, 내용은 10분 안에 들어와요','New files are findable by name within seconds, by content within 10 minutes')}</span></div>`:''}
    ${active?`<div class="ixa"><button class="ixpause">${P.paused?T('이어서 하기','Resume'):T('잠시 멈추기','Pause')}</button><span class="ixsub">${P.paused?T('1시간 뒤에는 저절로 이어서 해요','Resumes on its own after 1 hour'):T('PC가 느려지면 멈춰 두세요','Pause it if your PC feels slow')}</span></div>`:''}`;
  }
  // one look at a time: opening or closing the panel during a look started a second chain of looks that never ended
@@ -324,7 +325,7 @@ if(!APP)fetch('/canopen').then(r=>r.json()).then(j=>{LOCAL=!!j.local;if(LOCAL&&l
   try{const q=await (await fetch('/progress')).json();
    const fresh=q.stage&&q.stage!=='done'&&Date.now()/1000-q.t<900;
    if(fresh){P=q;active=true;wasActive=true}else{if(active){doneAt=Date.now();P.stages=Object.fromEntries(ST.map(s=>[s[0],(P.stages||{})[s[0]]==='later'?'later':'done']))}active=false;
-    P.app=q.app;P.last_refresh=q.last_refresh;P.refresh_asked=q.refresh_asked}
+    P.app=q.app;P.last_refresh=q.last_refresh;P.refresh_asked=q.refresh_asked;P.new_waiting=q.new_waiting}
    chip.hidden=!active&&!P.app&&!(wasActive&&Date.now()-doneAt<10000)&&pan.hidden; render()}catch(e){}
   looking=false; timer=setTimeout(tick,pan.hidden?5000:1500)}
  function open_(){pan.hidden=false;render();tick();pan.querySelector('.ixx')?.focus()}
