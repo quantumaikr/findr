@@ -967,9 +967,12 @@ class Finder:
         for ideas in sets:
             if any(xling_cover(x.get("name"), ideas)[0] for x in res[:10]):
                 return []
-            cids = [cid for cid, nm, tr in self.name_rows if tr != 2
-                    and all(any(sp[:1] == "~" or sp in nm for sp in idea) for idea in ideas)   # cheap substring pass first: 100k names
-                    and xling_cover(nm, ideas) == (True, True)]
+            cand = [cid for cid, nm, tr in self.name_rows if tr != 2   # cheap substring pass first: 100k names
+                    and all(idea[0] == "?" or any(sp[:1] == "~" or sp in nm for sp in idea) for idea in ideas)]
+            # then the names as written: a short spelling is a whole word of the name split at its case changes (#220)
+            if len(cand) > 2000:
+                return []
+            cids = [cid for cid, nm in self.names_of(cand) if xling_cover(nm, ideas) == (True, True)]
             if len(cids) > limit:   # a pair of common words is not a name search
                 return []
             if cids:
@@ -991,6 +994,36 @@ class Finder:
                 return [f_ for (f_,) in self.con.execute(
                     f"SELECT f.id FROM chunks c JOIN files f ON f.id=c.file WHERE c.id IN ({qm}) ORDER BY f.mtime DESC", cids)]
         return []
+
+    def xling_lane(self, ideas, cap=200):
+        """first pieces of the files whose name carries two ideas of the question or more, one at least in the other
+        language: most ideas first. Nothing when the question has fewer than two ideas or too many names qualify"""
+        if len(ideas) < 2:
+            return []
+        self.load_scan()
+        # cheap pass first, one pattern per idea (100k names: ~40 ms instead of ~80 with a loop over the spellings)
+        rx = [re.compile("|".join(re.escape(sp) for sp in sorted(sps, key=len, reverse=True))) for sps in
+              ([sp for sp in (idea[1:] if idea[0] == "?" else idea) if sp[:1] != "~"] for idea in ideas) if sps]
+        if len(rx) < 2:
+            return []
+        cand = [cid for cid, nm, tr in self.name_rows if tr != 2 and sum(1 for r in rx if r.search(nm)) >= 2]
+        if len(cand) > 5000:
+            return []
+        out = []
+        for cid, nm in self.names_of(cand):
+            hit, _, bare = _xling_hits(nm, ideas)
+            en = sum(1 for h, i_ in zip(hit, bare) if h and h != i_[0])
+            if en and sum(bool(h) for h in hit) >= 2:
+                out.append((-sum(bool(h) for h in hit), -en, cid))
+        return [cid for *_, cid in sorted(out)][:cap]
+
+    def names_of(self, cids):
+        """(chunk id, the file's name as written) for these first pieces, in their order"""
+        got = {}
+        for i in range(0, len(cids), 500):
+            part = cids[i:i + 500]
+            got.update(self.con.execute(f"SELECT c.id, f.name FROM chunks c JOIN files f ON f.id=c.file WHERE c.id IN ({','.join('?' * len(part))})", part))
+        return [(c, got[c]) for c in cids if c in got]
 
     def coverage(self, text, top):
         """share of the question's content words (2+ chars, particles stripped) present in the file's name, path or text"""
@@ -1548,8 +1581,16 @@ class Finder:
         if nw:
             self.load_scan()
             named = [cid for cid, nm, tr in self.name_rows if tr != 2 and sum(1 for w in nw if w in nm) >= 2][:200]
+        # names in the other language (#220): the question's ideas as the English a file name uses (an English question's
+        # as Korean), short forms whole words of the name split at its case changes; files whose name carries two ideas or
+        # more, one at least by translation, come in by their first piece; the reranker decides. Names only: the same words
+        # over the text pulled code and config files in (XLING2, sealed sets 11/9). Also raising such names in the fused
+        # order (XLING_BOOST=1) found more on virtual PCs (218 Korean-English questions, #1 54 -> 78 on a CPU) but swapped
+        # 6 answers out of #1 and 6 in on this PC's 120 field questions (11/15): off
+        xi = xling_ideas(q) if _xl_on("XLING_LANE") else []
+        xnamed = self.xling_lane(xi) if xi else []
         score = {}
-        for lst in (dense, lex, named):
+        for lst in (dense, lex, named, xnamed):
             for r, cid in enumerate(dict.fromkeys(lst)):
                 score[cid] = score.get(cid, 0) + 1 / (60 + r)
         if os.environ.get("XFAIR", "0") == "1":
@@ -1561,7 +1602,7 @@ class Finder:
         qm = ",".join("?" * len(score))
         rows = self.con.execute(f"""SELECT c.id, c.text, f.path, f.name, f.ext, f.size, f.mtime, f.tier, f.id FROM chunks c
                                     JOIN files f ON f.id=c.file WHERE c.id IN ({qm})""", list(score)).fetchall()
-        best = {}
+        best, xl_seen = {}, {}
         for cid, ctext, path, name, ext, size, mtime, tr, fid in rows:
             if fids is not None and fid not in fids:
                 continue
@@ -1580,6 +1621,8 @@ class Finder:
             sc *= 1.6 if p.get("pkgs") and any(f"site-packages/{g}/" in path.lower() for g in p["pkgs"]) else 1.0
             nl = name.lower()   # a name that carries the question's words (manual_rev5.md for "매뉴얼 개정판")
             hits = sum(1 for w in words if len(w) >= 2 and w.lower() in nl)
+            if xi and os.environ.get("XLING_BOOST", "0") != "0":   # XLING_BOOST=1: and the ideas it carries in the other language (#220)
+                hits += xl_seen.setdefault(name, xling_translated(name, xi, strong=os.environ.get("XLING_BOOST") == "2"))
             sc *= 1 + 0.4 * min(hits, 3)
             if path not in best or sc > best[path][0]:
                 best[path] = (sc, ctext, name, ext, size, mtime, tr, fid, cid)
@@ -2818,11 +2861,98 @@ def _xl_extra():
     return _XL_EXTRA
 
 
-def _xl_get(w):
+def _xl_on(flag):
+    """the cross-lingual name rules of #220, on unless the flag is set to 0"""
+    return os.environ.get(flag, "1") == "1"
+
+
+def _xl_get(w, names=False):
+    """the English spellings of a Korean word. For file names (names=True) the extra list counts too (#220): a name is
+    matched only when it carries every idea, so the longer list cannot pull a file in by one word; the word search
+    (xl_expand) uses it only with XLING2=1"""
     v = XLING.get(w)
-    if v is None and os.environ.get("XLING2") == "1":
+    if v is None and (os.environ.get("XLING2") == "1" or (names and _xl_on("XLING_NAMES"))):
         v = _xl_extra().get(w)
     return v
+
+
+# short forms English file names use for a word (#220: weekly_mtg_notes, inv_2026_0412, projectProposal_v2): matched as
+# whole words only, so 'inv' is not found inside 'inventory'
+XL_ABBR = {"meeting": "mtg", "meetings": "mtg mtgs", "invoice": "inv", "report": "rpt", "proposal": "prop", "presentation": "pres ppt",
+           "slides": "ppt", "deck": "ppt", "agreement": "agmt", "management": "mgmt", "department": "dept",
+           "requirement": "req reqs", "requirements": "req reqs", "estimate": "est", "schedule": "sched", "statement": "stmt",
+           "account": "acct", "receipt": "rcpt", "information": "info", "configuration": "cfg conf", "config": "cfg conf",
+           "development": "dev", "production": "prod", "purchase": "purch", "quarter": "qtr", "employee": "emp",
+           "reference": "ref", "certificate": "cert", "certification": "cert", "finance": "fin", "financial": "fin",
+           "marketing": "mktg", "business": "biz", "customer": "cust", "project": "proj prj", "technical": "tech",
+           "technology": "tech", "summary": "summ", "specification": "spec", "assignment": "asgmt", "homework": "hw",
+           "organization": "org", "calendar": "cal", "version": "ver"}
+_XL_MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
+_XL_MONTH = re.compile(r"(?<!\d)(\d{1,2})\s*월")
+
+
+def _xl_abbr(sp):
+    """the spellings with their short forms added (XL_ABBR)"""
+    if not _xl_on("XLING_ABBR"):
+        return sp
+    return list(dict.fromkeys(sp + [a for x in sp for a in XL_ABBR.get(x, "").split()]))
+
+
+def _xl_month(n):
+    """the spellings of month n in a file name: 10월, october, oct (sept too)"""
+    m = _XL_MONTHS[n - 1]
+    return [f"{n}월", m] + ([m[:3]] if m != "may" else []) + (["sept"] if n == 9 else [])
+
+
+def _xl_months(q):
+    """the months a Korean question names, each an optional idea (#220: '10월 회의록' for meeting_minutes_oct.txt). Optional:
+    a month is often the time the file was made, not a word of its name, so it counts when the name has it and never blocks"""
+    if not _xl_on("XLING_MONTH"):
+        return []
+    return [["?"] + _xl_month(int(n)) for n in _XL_MONTH.findall(q) if 1 <= int(n) <= 12]
+
+
+_XL_REV = None
+# English words that say nothing about a file's content (an English question about a Korean name: #220)
+_EN_STOP = {"the", "a", "an", "for", "of", "and", "or", "to", "in", "on", "at", "with", "my", "our", "your", "from", "about",
+            "file", "files", "document", "documents", "doc", "docs", "find", "where", "is", "it", "that", "this", "some", "any",
+            "me", "we", "was", "were", "be", "made", "saved", "written", "last", "new", "old", "latest"}
+
+
+def _xl_rev():
+    """English word -> the Korean words that list it as their spelling (XLING and the extra list): the other way round,
+    for an English question about a Korean file name ('customer list' for 고객명단.xlsx)"""
+    global _XL_REV
+    if _XL_REV is None:
+        rev = {}
+        for d in (XLING, _xl_extra()):
+            for k, v in d.items():
+                if len(k) >= 2 and v:
+                    for e in v.split():
+                        rev.setdefault(e, [])
+                        if k not in rev[e]:
+                            rev[e].append(k)
+        _XL_REV = rev
+    return _XL_REV
+
+
+def xling_ideas_en(q):
+    """the ideas of an English question, each with the Korean words a file name may carry for it (#220: 'november meeting
+    minutes' for 회의록_11월.txt); [] when no word has a Korean spelling or there are fewer than two ideas"""
+    if not _xl_on("XLING_EN") or re.search(r"[가-힣]", q):
+        return []
+    rev, ideas, ko = _xl_rev(), [], False
+    short = {m[:3]: i for i, m in enumerate(_XL_MONTHS, 1)} | {m: i for i, m in enumerate(_XL_MONTHS, 1)} | {"sept": 9}
+    for w in re.findall(r"[A-Za-z][A-Za-z0-9]+", q):
+        w = w.lower()
+        if w in _EN_STOP:
+            continue
+        if w in short and w not in ("mar", "may"):   # (march, may: also ordinary words)
+            ideas.append(["?"] + _xl_month(short[w])); continue
+        k = list(dict.fromkeys(rev.get(w, []) + (rev.get(w[:-1], []) if w.endswith("s") and len(w) > 3 else [])))   # results: 결과
+        ko = ko or bool(k)
+        ideas.append(_xl_abbr([w]) + k)
+    return ideas if ko and len(ideas) >= 2 else []
 
 
 # numbered parts of a course or a book, as English names write them: 3강 lec03, 2장 ch2, 1주차 week1 (Windows 11/9)
@@ -2866,28 +2996,34 @@ def xling_ideas(q, relax=False):
     relax: only the ideas a name can carry in English (words of the list, English words). People ask with words no
     file name has ('히스토그램 그려 보는 실습': 그려, 보는), and each of them blocked the name (field, 0.2.13: 5 of 10 out of
     the top 10)"""
+    if not re.search(r"[가-힣]", q):
+        return xling_ideas_en(q)
+    g = lambda w: _xl_get(w, names=True)
     ords = _xl_ordinals(q) if os.environ.get("XLING2") == "1" else []
     if ords:
         q = _XL_ORD.sub(" ", q)
+    mons = _xl_months(q)
+    if mons:
+        q = _XL_MONTH.sub(" ", q)
     words = re.findall(r"[가-힣]{2,}|[A-Za-z][A-Za-z0-9]+", q)
     if not (words or ords) or not (ords or any(re.match(r"[가-힣]", w) for w in words)):
         return []
-    ideas = list(ords)
+    ideas = list(ords) + mons
     for w in words:
         if re.match(r"[A-Za-z]", w):
             ideas.append([w.lower()]); continue
-        stem = w if _xl_get(w) is not None else _XL_JOSA.sub("", w)
-        if _xl_get(stem) == "" or _xl_get(w) == "":
+        stem = w if g(w) is not None else _XL_JOSA.sub("", w)
+        if g(stem) == "" or g(w) == "":
             continue   # 자료, 문서, 파일 …: not an idea of the content
         if not stem:
             continue   # a particle alone (에서)
         # sound spellings are off unless XLING_SOUND=1: the GPU PC gate moved nothing, the field sets decide (2026-11-08)
-        sk = "" if _xl_get(stem) or _NOT_LOAN.search(stem) or os.environ.get("XLING_SOUND") != "1" else ko_sound(stem)
-        sp = (_xl_get(stem) or "").split() + (["~" + sk] if len(sk) >= 3 else [])
+        sk = "" if g(stem) or _NOT_LOAN.search(stem) or os.environ.get("XLING_SOUND") != "1" else ko_sound(stem)
+        sp = _xl_abbr((g(stem) or "").split()) + (["~" + sk] if len(sk) >= 3 else [])
         if relax and (not sp or stem in XL_GENERIC):
             continue
         # relax: a word with only a sound spelling may be a native word (경사도 sounds like nothing): it counts when it matches
-        ideas.append((["?"] if relax and not _xl_get(stem) else []) + [stem] + sp)
+        ideas.append((["?"] if relax and not g(stem) else []) + [stem] + sp)
     return ideas if len(ideas) >= 2 else []
 
 
@@ -2901,12 +3037,30 @@ def xling_sets(q):
 
 def _xling_hits(name, ideas):
     """for each idea, the spelling of it found in the name (None if none), with the optional flags and the bare ideas"""
-    nm = unicodedata.normalize("NFC", name or "").lower()
+    nm = unicodedata.normalize("NFC", name or "")
+    # short spellings are whole words: of the name split where its case changes too (projMtg, QuarterlyRevenue: #220)
+    words = name_split(nm) if _xl_on("XLING_SPLIT") else nm.lower()
+    nm = nm.lower()
     opt = [idea[:1] == ["?"] for idea in ideas]
     ideas = [idea[1:] if o else idea for idea, o in zip(ideas, opt)]
     hit = [next((sp for sp in idea if (_sounds_in(sp[1:], nm) if sp[:1] == "~" else sp in nm if len(sp) > 3 or re.match(r"[가-힣]", sp)
-                                       else re.search(rf"(?<![a-z]){re.escape(sp)}(?![a-z])", nm))), None) for idea in ideas]
+                                       else re.search(rf"(?<![a-z]){re.escape(sp)}(?![a-z])", words))), None) for idea in ideas]
     return hit, opt, ideas
+
+
+def xling_translated(name, ideas, strong=False):
+    """how many ideas of the question the name carries in the other language (by translation or a short form); strong:
+    only for a name that carries two ideas or more (one word in English is common in names: report.pdf)"""
+    hit, _, bare = _xling_hits(name, ideas)
+    if strong and sum(bool(h) for h in hit) < 2:
+        return 0
+    return sum(1 for h, i_ in zip(hit, bare) if h and h != i_[0])
+
+
+def name_split(name):
+    """a file name in lower case with a space where its case changes (projectProposal_v2 -> project proposal_v2,
+    QuarterlyRevenueForecast -> quarterly revenue forecast, APISpec -> api spec)"""
+    return re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", " ", name or "").lower()
 
 
 def xling_cover(name, ideas):
