@@ -143,6 +143,19 @@ def test_people_and_periods_are_said_as_people_say_them():
     assert p("2026-10-15")[0] == p("2026-10-01")[0] != p("2026-09-30")[0]
 
 
+def test_a_whole_home_folder_is_quick():
+    """30,000 files (a large home folder): each question is checked only against the files that share its words"""
+    import random
+    import time
+    rnd = random.Random(0)
+    vocab = [f"낱말{i}" for i in range(3000)]
+    F = {i: {"path": f"/pc/d{i % 400}/f{i}.txt", "terms": rnd.sample(vocab, 10), "ev": [], "ext": "txt",
+             "folder": f"d{i % 400}", "date": "2026-10-0%d" % (1 + i % 9)} for i in range(30000)}
+    t = time.time()
+    qs, st = GQ.generate(F, NOW, 500, seed=0)
+    assert st["questions"] == 500 and time.time() - t < 20
+
+
 def test_same_seed_same_questions_and_the_report_holds_no_names(tmp_path):
     con, _ = office(tmp_path)
     facts = _facts_file(tmp_path, con)

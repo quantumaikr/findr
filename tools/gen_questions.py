@@ -183,11 +183,29 @@ def make_one(rnd, fid, f, now):
     return text, parts, "+".join(shape)
 
 
-def negatives(fid, f, F, parts, k=5):
+class Lookup:
+    """which files have a word, belong to a family, sit in a folder: a question is checked against the files that share
+    its words only (a whole home folder has tens of thousands of files)"""
+    def __init__(self, F):
+        self.by_term, self.by_family, self.by_folder = (collections.defaultdict(set) for _ in range(3))
+        for g, h in F.items():
+            for w in h["terms"]:
+                self.by_term[w].add(g)
+            if h.get("family"):
+                self.by_family[h["family"]].add(g)
+            self.by_folder[h.get("folder")].add(g)
+
+    def sharing(self, parts):
+        words = [p["value"] for p in parts if p["kind"] == "term"]
+        return set.intersection(*(self.by_term.get(w, set()) for w in words)) if words else None
+
+
+def negatives(fid, f, F, parts, L, k=5):
     """files that fit part of the question: the document's other versions first, then files sharing its words in its folder"""
-    out = [g for g, h in F.items() if g != fid and f.get("family") and h.get("family") == f["family"]]
+    out = sorted(L.by_family.get(f.get("family"), set()) - {fid}) if f.get("family") else []
     words = {p["value"] for p in parts if p["kind"] == "term"}
-    out += [g for g, h in F.items() if g != fid and g not in out and h.get("folder") == f.get("folder") and words & set(h["terms"])]
+    near = set().union(*(L.by_term.get(w, set()) for w in words)) if words else set()
+    out += sorted((near & L.by_folder.get(f.get("folder"), set())) - {fid} - set(out))
     return [F[g]["path"] for g in out[:k]]
 
 
@@ -197,6 +215,7 @@ def generate(F, now, n, seed=0):
     order = sorted(F); rnd.shuffle(order)
     if not order:
         return [], stats([], 0, 0)
+    L = Lookup(F)
     out, seen, dropped = [], set(), 0
     for i in range(n * 20):
         if len(out) >= n:
@@ -208,12 +227,13 @@ def generate(F, now, n, seed=0):
         text, parts, shape = got
         if text in seen:
             continue
-        if any(g != fid and fits(h, parts, now) for g, h in F.items()):
+        pool = L.sharing(parts)   # every question names a word of its file, so only files with all its words can fit
+        if any(g != fid and fits(F[g], parts, now) for g in (pool if pool is not None else F)):
             dropped += 1   # another file fits everything said: no right answer by construction
             continue
         seen.add(text)
         out.append({"id": f"G{len(out) + 1:05d}", "kind": "known", "q": text, "answers": [f["path"]], "shape": shape,
-                    "facts": parts, "negatives": negatives(fid, f, F, parts)})
+                    "facts": parts, "negatives": negatives(fid, f, F, parts, L)})
     return out, stats(out, dropped, len(F))
 
 
