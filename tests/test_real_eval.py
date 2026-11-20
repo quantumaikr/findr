@@ -14,6 +14,19 @@ def test_rank_across_spellings_and_copies():
     assert RE.rank_of(res, ["/elsewhere.pdf"]) is None
 
 
+def test_a_miss_says_what_the_first_file_is_to_the_answer(tmp_path):
+    def put(rel, text):
+        p = tmp_path / rel; p.parent.mkdir(parents=True, exist_ok=True); p.write_text(text, encoding="utf-8"); return p.as_posix()
+    ans = put("a/보고서_v2.txt", "둘째 판")
+    assert RE.miss_kind(put("a/보고서_v1.txt", "첫 판"), [ans]) == "version"     # the same document, another version
+    assert RE.miss_kind(put("b/보고서_v2.txt", "둘째 판"), [ans]) == "copy"       # the same bytes elsewhere
+    assert RE.miss_kind(put("a/예산.txt", "예산"), [ans]) == "folder"
+    assert RE.miss_kind(put("c/메모.txt", "메모"), [ans]) == "other"
+    assert RE.miss_kind(None, [ans]) == "empty"
+    s = RE.summarize([{"id": "A1", "kind": "known", "rank": 2, "miss": "version"}, {"id": "A2", "kind": "known", "rank": 1}])
+    assert s["miss"] == {"copy": 0, "version": 1, "folder": 0, "other": 0, "empty": 0}
+
+
 def test_summary_and_compare_hold_no_text():
     rows = [{"id": "A1", "kind": "known", "rank": 1, "ms": 300, "q": "비밀 질문"}, {"id": "A2", "kind": "known", "rank": 4, "ms": 900},
             {"id": "N1", "kind": "none", "note": "없음", "ms": 200}]

@@ -10,6 +10,9 @@ Questions (JSONL, written before any search and not changed after seeing results
 A copy folded under an answer (DUP_COLLAPSE, 'copies') counts as the answer. Another version folded under a line
 (VERSION_GROUP, 'versions') counts at that line, with one more file to open. --base also asks the first stage (k=50).
 opens: files a person opens until the answer (11 when it is not in the first 10).
+miss: when the first line is not the answer, what that first file is to the answer -- 'copy' (the same bytes), 'version'
+(the same document in the same folder, as the engine groups versions), 'folder' (another file of the same folder) or 'other'
+-- so a run says whether misses are wrong versions or wrong documents. Counted in the summary; the kinds hold no names.
 """
 import argparse
 import base64
@@ -46,6 +49,51 @@ def rank_of(results, answers, versions=False):
     return (None, False) if versions else None
 
 
+MISS_KINDS = ("copy", "version", "folder", "other", "empty")
+_FAMILY = []   # [search.family] once loaded, [None] when the engine's module cannot be loaded with this Python
+
+
+def _family(path):
+    """(folder, name without version marks) as the engine groups versions (search.family), or None"""
+    if not _FAMILY:
+        try:
+            core = str(Path(__file__).resolve().parents[1] / "findr" / "core")
+            if core not in sys.path:
+                sys.path.insert(0, core)
+            import search
+            _FAMILY.append(search.family)
+        except Exception:   # noqa: BLE001  (a Python without the engine's packages: versions are then told by folder only)
+            _FAMILY.append(None)
+    f = _FAMILY[0]
+    return f({"path": path}) if f else None
+
+
+def _same_bytes(a, b):
+    try:
+        if os.path.getsize(a) != os.path.getsize(b):
+            return False
+        import hashlib
+        h = lambda p: hashlib.sha1(Path(p).read_bytes()).hexdigest()
+        return h(a) == h(b)
+    except OSError:   # not on this PC (a run read elsewhere): not counted as a copy
+        return False
+
+
+def miss_kind(top, answers):
+    """what the first result is to the answer when it is not the answer: copy / version / folder / other / empty"""
+    if not top:
+        return "empty"
+    t, A = norm(top), [norm(a) for a in answers]
+    if any(_same_bytes(t, a) for a in A):
+        return "copy"
+    ft = _family(t)
+    if ft and ft[1] and any(_family(a) == ft for a in A):
+        return "version"
+    if any(t.rsplit("/", 1)[0] == a.rsplit("/", 1)[0] for a in A):
+        return "folder"
+    return "other"
+
+
 def opens_of(r):
     rk = r.get("rank")
     return min(11, rk + (1 if r.get("in_versions") else 0)) if rk and rk <= 10 else 11
@@ -62,7 +110,8 @@ def summarize(rows):
          "in_versions": sum(1 for r in known if r.get("in_versions")),
          "opens": round(sum(opens_of(r) for r in known) / max(len(known), 1), 2),
          "none": len(none), "none_said": sum(1 for r in none if r.get("note")),
-         "p50_ms": ms[len(ms) // 2] if ms else None, "max_ms": ms[-1] if ms else None}
+         "p50_ms": ms[len(ms) // 2] if ms else None, "max_ms": ms[-1] if ms else None,
+         "miss": {k: sum(1 for r in known if r.get("miss") == k) for k in MISS_KINDS}}
     if any("base_rank" in r for r in known):
         s["base_hit1"] = sum(1 for r in known if r.get("base_rank") == 1)
         s["base_in50"] = sum(1 for r in known if r.get("base_rank"))
@@ -114,6 +163,8 @@ def main():
         if row["kind"] == "known" and answers:
             row["rank"], row["in_versions"] = rank_of(r.get("results"), answers, versions=True)
             row["folded_versions"] = sum(len(y.get("versions") or []) for y in (r.get("results") or [])[:5])
+            if row["rank"] != 1:
+                row["miss"] = miss_kind(row["top"][0] if row["top"] else None, answers)
             if a.base:
                 b, _ = ask(x["q"], "base", 50); row["base_rank"] = rank_of(b.get("results"), answers)
         rows.append(row)

@@ -50,6 +50,8 @@ uv pip install --python .venv/bin/python -e .      # git pull은 새 의존성�
 | SQL이 표 전체를 읽는가 | `sqlite3 <db> "EXPLAIN QUERY PLAN <쿼리>"`에서 `SCAN`, `/usr/bin/time -p sqlite3 …`로 시간 (L15) |
 | 모델 한 단계의 속도 | 같은 입력으로 그 함수만, 워밍업 1회 뒤 중앙값 (L5) |
 | 단계별로 언제 무엇이 되는가 | `FINDR_STAGE` 출력과 `progress.json`의 시각 (L13) |
+| 틀린 1위가 다른 판인가, 다른 문서인가 | `tools/real_eval.py` 요약의 `miss` (아래) |
+| 사람이 쓰지 않은 질문 수천 개로 재기 | `tools/fact_cards.py` → `tools/gen_questions.py` (아래) |
 
 ### tools/field_check.py
 
@@ -88,6 +90,25 @@ uv pip install --python .venv/bin/python -e .      # git pull은 새 의존성�
 - **응답 시간은 검색 화면(API)으로 잽니다.** `findr ask`는 켜진 엔진이 있으면 그 엔진에 묻습니다(#77, 2.4초). 엔진이 없거나 `--local`이면 모델과 색인을 새로 불러와 18~29초가 걸리고, CPU에서는 순위도 화면과 다를 수 있습니다(#66).
 - 같은 질문을 되풀이하면 두 번째부터 재순위 점수 캐시(#102)가 듭니다. 응답 시간은 서버를 켠 뒤 **첫 번째 질문**과 **되풀이**를 나눠 적습니다.
 - `FINDR_SLOW` 줄은 CLI `serve`에서는 터미널에만 나옵니다. 출력을 파일로 남겨 두세요: `./findr.sh serve 2>&1 | tee <데이터 폴더>/logs/serve.log`
+
+### 틀린 1위의 종류: tools/real_eval.py의 miss
+
+1위가 정답이 아닐 때, 그 1위 파일이 정답과 어떤 사이인지 셉니다: `copy`(같은 내용), `version`(같은 폴더의 같은 문서, 엔진의 버전 묶음 규칙 `search.family`), `folder`(같은 폴더의 다른 파일), `other`, `empty`(결과 없음). 요약에는 종류별 개수만 나옵니다. 새 질문에서 틀린 것 대부분이 버전 고르기라는 README의 관찰을, 이제 실행마다 숫자로 확인합니다.
+
+### 사실로 만든 질문: tools/fact_cards.py, tools/gen_questions.py
+
+색인이 이미 아는 사실(특징 낱말, 형식, 폴더, 날짜, 작성자, 메일·메신저로 받음·보냄·인쇄 같은 기억 흔적, 버전 묶음 안의 자리)로 질문을 만들고, 그 사실을 가진 파일을 정답으로 둡니다. AtlasKV(2025)의 KG2KV처럼 사실의 한쪽을 가려 질문으로 바꾸는 방식이고, 틀에서 찍은 질문보다 훨씬 다양하다는 것이 그 논문의 관찰입니다. 다른 파일도 질문의 모든 조건에 맞으면 그 질문은 버리므로 정답은 만들 때부터 하나입니다. 조건 일부에만 맞는 파일(같은 문서의 다른 판, 같은 폴더의 같은 낱말 파일)은 `negatives`로 남겨 재순위 조정에 씁니다.
+
+```bash
+cp ~/.findr/index.db /tmp/idx.db          # 색인 사본 (엔진이 쓰는 중이어도 안전)
+.venv/bin/python tools/fact_cards.py /tmp/idx.db --out ~/.findr/facts.jsonl
+.venv/bin/python tools/gen_questions.py ~/.findr/facts.jsonl --now 2026-11-20 --n 2000 --out ~/.findr/gen_q.jsonl
+.venv/bin/python tools/real_eval.py ~/.findr/gen_q.jsonl --out ~/.findr/gen_run.json
+```
+
+- 사실·질문 파일에는 파일 이름과 사람 이름이 들어가므로 데이터 폴더에 둡니다(L9). 화면에는 개수와 다양성(서로 다른 질문 모양 수, 낱말 쌍 다양성 distinct-2, 평균 길이)만 나옵니다.
+- 만든 질문은 **조정용**입니다. 사람이 검색 전에 쓴 새 질문 묶음은 조정에 쓰지 않고 끝에 한 번만 채점합니다. 두 묶음에서 설정 순위가 같은 방향으로 움직여야 만든 질문을 믿습니다.
+- 같은 사실, 같은 `--now`, 같은 `--seed`면 같은 질문이 나옵니다.
 
 ## 5. 증상으로 찾기
 
